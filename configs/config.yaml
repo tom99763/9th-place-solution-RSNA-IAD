@@ -1,0 +1,13 @@
+# conf/config.yaml
+# These are some base parameters for the experiment
+project_name: "rsna-intracranial-aneurysm-detection"
+
+training:
+  epochs: 10
+  batch_size: 32
+
+# The 'defaults' list tells Hydra which configs to load by default.
+# It will look for 'lightgbm.yaml' inside the 'model' sub-directory.
+defaults:
+  - optimizer: adam
+  - _self_
