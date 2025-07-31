@@ -90,27 +90,36 @@ def process_dicom_series(uid: str):
                 slices.append((0,process_slice(img,ds)))
 
 
+    # sometimes it's the case that the starting instance number is greater than 1. So we want to get the start_instance_number and then substract it from the z axis.
     instance_numbers = sorted(instance_numbers)
     start_instance_number = instance_numbers[0] - 1
 
 
+    # we sort all the slices by ImagePositionPatient or InstanceNumber
     slices = sorted(slices, key = lambda x: x[0])
     
     volume = np.array([slice[-1] for slice in slices])
 
+    # We get nth slice of the volume
     selected_idxs = [*range(0,volume.shape[0],FACTOR)]
 
     uid_label_df = label_df[label_df["SeriesInstanceUID"] == uid]
 
+    # make sure that all the instance_numbers starts from 0.
     required_idxs = [idx - start_instance_number for idx in list(uid_label_df["z"])]
     
     if len(required_idxs) != 0:
+
+        # If the current case is positive, then we make sure that we get all the corresponding slices in the z axis regardless of the factor
         final_idxs = sorted(list(set(selected_idxs).union(required_idxs)))
     else:
         final_idxs = sorted(selected_idxs)
 
     if len(required_idxs) != 0:
+
+        # Since the factor have changed the original indexes, we want to remap them.
         mapped_idxs = [final_idxs.index(idx) for idx in required_idxs]
+
         # label_df.loc[label_df["SeriesInstanceUID"] == uid,'z'] = mapped_idxs
     
         return volume[final_idxs], mapped_idxs
@@ -145,6 +154,9 @@ if __name__ == "__main__":
     label_df = pd.read_csv(root_path / "train_localizers.csv")
     mf_dicom_uids = pd.read_csv(root_path / "multiframe_dicoms.csv")
 
+
+    # We don't want to include multiframe dicoms as we can't get there z axis
+    # Discussion: https://www.kaggle.com/competitions/rsna-intracranial-aneurysm-detection/discussion/591546
     ignore_uids = [
         "1.2.826.0.1.3680043.8.498.11145695452143851764832708867797988068",
         "1.2.826.0.1.3680043.8.498.35204126697881966597435252550544407444",
@@ -167,6 +179,7 @@ if __name__ == "__main__":
     for idx,rowdf in label_df.iterrows():
         uid,f = rowdf["SeriesInstanceUID"],rowdf["SOPInstanceUID"]
 
+        # we want to get the corresponding z axis for the given volume, usually InstanceNumber starts with 1 so we substract 1 from it.
         label_df.loc[idx,'z'] = int(pydicom.dcmread(root_path / "series" / f"{uid}/{f}.dcm").InstanceNumber) - 1
 
     del label_df["coordinates"]
