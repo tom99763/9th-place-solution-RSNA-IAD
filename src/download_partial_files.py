@@ -14,23 +14,17 @@ def download_by_location(api, df_loc):
         SeriesInstanceUID = sample['SeriesInstanceUID']
         SOPInstanceUID = sample['SOPInstanceUID']
         path = f'series/{SeriesInstanceUID}/{SOPInstanceUID}.dcm'
-        try:
-            api.competition_download_file(dataset_name, path, path='./rsna_data/loc_slices')
-            paths.append(path)
-        except:
-            pass
+        api.competition_download_file(dataset_name, path, path='./rsna_data/loc_slices')
+        paths.append(path)
 
 
 def download_data():
     api = KaggleApi()
     api.authenticate()
-    try:
-        api.competition_download_file(
+    api.competition_download_file(
         dataset_name, 'train.csv', path='./rsna_data')
-        api.competition_download_file(dataset_name, 'train_localizers.csv',
+    api.competition_download_file(dataset_name, 'train_localizers.csv',
                                   path='./rsna_data')
-    except:
-        pass
     df_meta = pd.read_csv('./rsna_data/train.csv')
     df_loc = pd.read_csv('./rsna_data/train_localizers.csv')
     download_by_location(api, df_loc)
