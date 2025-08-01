@@ -1,6 +1,7 @@
 from kaggle.api.kaggle_api_extended import KaggleApi
 import pandas as pd
 import numpy as np
+import time
 
 dataset_name = 'rsna-intracranial-aneurysm-detection'
 
@@ -11,6 +12,7 @@ def download_by_location(api, df_loc):
         SOPInstanceUID = sample['SOPInstanceUID']
         path = f'series/{SeriesInstanceUID}/{SOPInstanceUID}.dcm'
         api.competition_download_file(dataset_name, path, path='./rsna_data/loc_slices')
+        time.sleep(5)
 
 
 def download_data():
