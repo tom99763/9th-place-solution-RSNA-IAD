@@ -23,5 +23,6 @@ def train(cfg: DictConfig) -> None:
     print("\n✅ Training script finished.")
 
 
+
 if __name__ == "__main__":
     train()
