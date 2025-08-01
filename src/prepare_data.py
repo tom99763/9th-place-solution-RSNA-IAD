@@ -4,14 +4,15 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import StratifiedKFold
 import ast
-import pydicom
-
 from pathlib import Path
 import os
 import pydicom
 import cv2
 import multiprocessing
 from tqdm import tqdm
+import sys
+sys.path.append('../')
+from configs.data_config import *
 
 
 def apply_dicom_windowing(img: np.ndarray, window_center: float, window_width: float) -> np.ndarray:
@@ -24,12 +25,6 @@ def apply_dicom_windowing(img: np.ndarray, window_center: float, window_width: f
 
 def get_windowing_params(modality: str) -> tuple[float, float]:
     """Get appropriate windowing for different modalities"""
-    windows = {
-        'CT': (40, 80),
-        'CTA': (50, 350),
-        'MRA': (600, 1200),
-        'MRI': (40, 80),
-    }
     return windows.get(modality, (40, 80))
 
 def process_slice(img,ds):
@@ -46,7 +41,7 @@ def process_slice(img,ds):
 
 def process_dicom_series(uid: str):
     """Process a DICOM series and extract metadata"""
-    series_path = Path(f"../data/series/{uid}")
+    series_path = Path(f"{data_path}/series/{uid}")
     
     # Find all DICOM files
     all_filepaths = []
@@ -128,33 +123,25 @@ def process_dicom_series(uid: str):
 
 def process_and_save(uid):
     """Processes a single DICOM series and saves it to a .npz file."""
-    try:
-        vol, mapped_idx = process_dicom_series(uid)
-        np.savez_compressed(target_dir / f"{uid}.npz", vol=vol) # Use savez_compressed for smaller files
-        return {"uid": uid, "mapped_idx": mapped_idx}, None # Return UID on success
-    except Exception as e:
-        return {"uid": uid, "mapped_idx": []}, e # Return UID and the error if something fails
-
+    # try:
+    #     vol, mapped_idx = process_dicom_series(uid)
+    #     np.savez_compressed(target_dir / f"{uid}.npz", vol=vol) # Use savez_compressed for smaller files
+    #     return {"uid": uid, "mapped_idx": mapped_idx}, None # Return UID on success
+    # except Exception as e:
+    #     return {"uid": uid, "mapped_idx": []}, e # Return UID and the error if something fails
+    vol, mapped_idx = process_dicom_series(uid)
+    np.savez_compressed(target_dir / f"{uid}.npz", vol=vol)  # Use savez_compressed for smaller files
+    return {"uid": uid, "mapped_idx": mapped_idx}, None  # Return UID on success
 
 if __name__ == "__main__":
-
-    IMG_SIZE = 512
-    FACTOR = 3
-    SEED = 42
-    N_FOLDS = 5
-    CORES = 16
-
-
-    root_path = Path("../data")
+    root_path = Path(data_path)
     target_dir = root_path / "processed"
 
-    os.mkdir(target_dir, exist_ok=True)
+    os.makedirs(target_dir, exist_ok=True)
 
     train_df = pd.read_csv(root_path / "train.csv")
     label_df = pd.read_csv(root_path / "train_localizers.csv")
     mf_dicom_uids = pd.read_csv(root_path / "multiframe_dicoms.csv")
-
-
     # We don't want to include multiframe dicoms as we can't get there z axis
     # Discussion: https://www.kaggle.com/competitions/rsna-intracranial-aneurysm-detection/discussion/591546
     ignore_uids = [
