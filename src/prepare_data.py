@@ -73,7 +73,9 @@ def process_dicom_series(uid: str):
             if img.shape[-1] == 3:
                 imgs = [cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)]
             else:
-                imgs = img
+                imgs = []
+                for i in range(img.shape[0]):
+                    imgs.append(img[i, :, :])
 
         else:
             imgs = [img]
@@ -120,8 +122,6 @@ def process_dicom_series(uid: str):
         # Since the factor have changed the original indexes, we want to remap them.
         mapped_idxs = [final_idxs.index(idx) for idx in required_idxs]
 
-        # label_df.loc[label_df["SeriesInstanceUID"] == uid,'z'] = mapped_idxs
-    
         return volume[final_idxs], mapped_idxs
     else:
         return volume[final_idxs], []
@@ -184,7 +184,6 @@ if __name__ == "__main__":
 
     del label_df["coordinates"]
         
-
 
     # Get the list of unique UIDs to process
     uids_to_process = train_df["SeriesInstanceUID"].unique()
