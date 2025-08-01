@@ -97,7 +97,7 @@ def process_dicom_series(uid: str):
 def process_and_save(uid: str):
     try:
         vol, mapped_idx = process_dicom_series(uid)
-        np.savez_compressed(target_dir_global / f"{uid}.npz", vol=vol)
+        np.savez_compressed(target_dir_global / f"slices/{uid}.npz", vol=vol)
         return {"uid": uid, "mapped_idx": mapped_idx}
     except Exception as e:
         print(f"Error processing {uid}: {e}")
@@ -111,6 +111,9 @@ if __name__ == "__main__":
     train_df = pd.read_csv(root_path / "train.csv")
     label_df = pd.read_csv(root_path / "train_localizers.csv")
     mf_dicom_uids = pd.read_csv(root_path / "multiframe_dicoms.csv")
+
+    if not os.path.exists(f'{target_dir}/slices'):
+        os.makedirs(f'{target_dir}/slices')
 
     ignore_uids = [
         "1.2.826.0.1.3680043.8.498.11145695452143851764832708867797988068",
