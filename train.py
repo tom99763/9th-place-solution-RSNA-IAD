@@ -170,7 +170,7 @@ class LitTimmClassifier(pl.LightningModule):
         self.train_loc_auroc.update(pred_locs, loc_labels.long())
         self.train_cls_auroc.update(pred_cls, cls_labels.long())
 
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
         # Log the metric object. Lightning computes and logs it at epoch end.
         self.log('train_loc_auroc', self.train_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_cls_auroc', self.train_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
@@ -205,7 +205,7 @@ class LitTimmClassifier(pl.LightningModule):
         self.val_loc_auroc.update(pred_locs, loc_labels.long())
         self.val_cls_auroc.update(pred_cls, cls_labels.long())
 
-        self.log('val_loss', loss, on_step=True, on_epoch=True)
+        self.log('val_loss', loss, on_step=True, on_epoch=True, logger=False)
         # Log the metric object. Lightning computes and logs it at epoch end.
         self.log('val_loc_auroc', self.val_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_cls_auroc', self.val_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
@@ -234,7 +234,7 @@ def train(cfg: DictConfig) -> None:
                           monitor="val_loss"
                         , mode="min"
                         , dirpath="./models"
-                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'
+                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"fold_id={cfg.fold_id}"
                         )
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
