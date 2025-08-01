@@ -7,7 +7,6 @@ from tqdm import tqdm
 
 dataset_name = 'rsna-intracranial-aneurysm-detection'
 
-paths = []
 def download_by_location(api, df_loc):
     for i in tqdm(range(df_loc.shape[0])):
         sample = df_loc.iloc[i]
@@ -15,8 +14,6 @@ def download_by_location(api, df_loc):
         SOPInstanceUID = sample['SOPInstanceUID']
         path = f'series/{SeriesInstanceUID}/{SOPInstanceUID}.dcm'
         api.competition_download_file(dataset_name, path, path='./rsna_data/loc_slices')
-        paths.append(path)
-
 
 def download_data():
     api = KaggleApi()
@@ -32,3 +29,5 @@ def download_data():
 
 if __name__ == '__main__':
     download_data()
+
+
