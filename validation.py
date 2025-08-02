@@ -2,21 +2,12 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from sklearn.metrics import roc_auc_score
-
 import torch
-from torch.utils.data import Dataset
 import numpy as np
 import pandas as pd
-import random
-
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
-
-import torchmetrics
-import albumentations as A
-from albumentations.pytorch.transforms import ToTensorV2
 from pathlib import Path
-
+from configs import data_config
 from hydra.utils import instantiate
 from tqdm import tqdm
 
@@ -64,7 +55,7 @@ def validation(cfg: DictConfig) -> None:
 
     pl.seed_everything(cfg.seed)
 
-    model = instantiate(cfg.model, pretrained=False)
+    #model = instantiate(cfg.model, pretrained=False)
     pl_model = LitTimmClassifier.load_from_checkpoint("./models/efficient_b2-epoch=27-val_loss=0.7049.ckpt")
     # pl_model = LitTimmClassifier(model, cfg).cuda()
     pl_model.eval()
