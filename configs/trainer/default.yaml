@@ -1,5 +1,6 @@
 max_epochs: 128
 accelerator: gpu
-devices: auto
+devices: 1
 precision: 16-mixed
 check_val_every_n_epoch: 2
+strategy: auto
