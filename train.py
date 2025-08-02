@@ -14,9 +14,9 @@ import torchmetrics
 import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 from pathlib import Path
+from configs.data_config import *
 
 from hydra.utils import instantiate
-
 torch.set_float32_matmul_precision('medium')
 
 class NpzVolumeSliceDataset(Dataset):
@@ -46,7 +46,7 @@ class NpzVolumeSliceDataset(Dataset):
         uid = self.uids[idx]
         rowdf = self.train_df[self.train_df["SeriesInstanceUID"] == uid]
         labeldf = self.label_df[self.label_df["SeriesInstanceUID"] == uid]
-        with np.load(f"./data/processed/{uid}.npz") as data:
+        with np.load(f"./src/data/processed/slices/{uid}.npz") as data:
             volume = data['vol'].astype(np.float32)
 
 
@@ -249,21 +249,5 @@ def train(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-
-    LABELS_TO_IDX = {
-        'Anterior Communicating Artery': 0,
-        'Basilar Tip': 1,
-        'Left Anterior Cerebral Artery': 2,
-        'Left Infraclinoid Internal Carotid Artery': 3,
-        'Left Middle Cerebral Artery': 4,
-        'Left Posterior Communicating Artery': 5,
-        'Left Supraclinoid Internal Carotid Artery': 6,
-        'Other Posterior Circulation': 7,
-        'Right Anterior Cerebral Artery': 8,
-        'Right Infraclinoid Internal Carotid Artery': 9,
-        'Right Middle Cerebral Artery': 10,
-        'Right Posterior Communicating Artery': 11,
-        'Right Supraclinoid Internal Carotid Artery': 12
-    }
     train()
     
