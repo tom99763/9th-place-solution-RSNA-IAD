@@ -2,3 +2,6 @@
 data/
 notebooks/.ipynb_checkpoints/
 outputs/
+logs/
+models/
+src/__pycache__/
