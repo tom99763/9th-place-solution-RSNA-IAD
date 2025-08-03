@@ -20,14 +20,20 @@ from pathlib import Path
 from hydra.utils import instantiate
 from tqdm import tqdm
 
+import torch.cuda.amp as amp
+
 torch.set_float32_matmul_precision('medium')
+
+val_transforms = A.Compose([ A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)) ])
+
 
 @torch.no_grad()
 def eval_one_series(volume, model):
 
+    volume = np.stack([volume,volume,volume],axis=1)
+    volume = val_transforms(image=volume)["image"]
     volume = torch.from_numpy(volume).cuda()
-    volume = torch.stack([volume,volume,volume], dim=1)
-
+  
     pred_cls = []
     pred_locs = []
 
@@ -65,17 +71,21 @@ def validation(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
 
     model = instantiate(cfg.model, pretrained=False)
-    pl_model = LitTimmClassifier.load_from_checkpoint("./models/efficient_b2-epoch=27-val_loss=0.7049.ckpt")
-    # pl_model = LitTimmClassifier(model, cfg).cuda()
-    pl_model.eval()
 
+    model_ckpt_name="efficient_b2_weighted_bce-epoch=23-val_loss=0.9393_fold_id=0"
+    # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
+    # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
+    # return
+
+   
+    model.load_state_dict(torch.load(f"{model_ckpt_name}.pth"))
+    model.cuda().eval()
 
     data_path = Path(cfg.data_dir)
     df = pd.read_csv(data_path / "train_df.csv")
-
+    
     val_uids = list(df[df["fold_id"] == cfg.fold_id]["SeriesInstanceUID"])
-
-
+   
     cls_labels = []
     loc_labels = []
     pred_cls_probs = []
@@ -94,7 +104,7 @@ def validation(cfg: DictConfig) -> None:
 
         with np.load(f"./data/processed/{uid}.npz") as data:
             volume = data['vol'].astype(np.float32)
-            cls_prob, loc_probs =  eval_one_series(volume, pl_model)
+            cls_prob, loc_probs =  eval_one_series(volume, model)
 
             pred_cls_probs.append(cls_prob)
             pred_loc_probs.append(loc_probs)
@@ -105,11 +115,15 @@ def validation(cfg: DictConfig) -> None:
     loc_labels = np.stack(loc_labels)
     pred_loc_probs = np.stack(pred_loc_probs)
 
+    np.savez("labels.npz", cls_probs=pred_cls_probs, loc_probs=pred_loc_probs)
+
+    pred_loc_probs = np.nan_to_num(pred_loc_probs, nan=0.1)
+    pred_cls_probs = np.nan_to_num(pred_cls_probs, nan=0.1)
 
     loc_auc_macro = roc_auc_score(loc_labels, pred_loc_probs, average="micro")
     cls_auc = roc_auc_score(cls_labels, pred_cls_probs)
 
-    print(f"Fold: {cfg.fold_id}, cls_auc: {cls_auc}, loc_auc_macro: {loc_auc_macro}")
+    print(f"Fold: {cfg.fold_id}, cls_auc: {cls_auc}, loc_auc_macro: {loc_auc_macro}, cv: {(cls_auc + loc_auc_macro) / 2}")
 
         
 

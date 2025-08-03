@@ -17,6 +17,7 @@ from pathlib import Path
 
 from hydra.utils import instantiate
 
+
 torch.set_float32_matmul_precision('medium')
 
 class NpzVolumeSliceDataset(Dataset):
@@ -33,7 +34,7 @@ class NpzVolumeSliceDataset(Dataset):
         self.train_df = pd.read_csv(data_path / "train_df.csv")
         self.label_df = pd.read_csv(data_path / "label_df.csv")
 
-        self.num_classes = 13
+        self.num_classes = cfg.model.num_classes
         self.transform = transform
 
         self.mode = mode
@@ -65,6 +66,19 @@ class NpzVolumeSliceDataset(Dataset):
                 label = 1
 
             else:
+                
+                # items = list(range(volume.shape[0]))
+                # mu = volume.shape[0] / 2
+                # sigma = volume.shape[0] * 0.25
+                #
+                #
+                # weights = np.exp(-((items - mu) ** 2) / (2 * sigma ** 2))
+                # weights /= weights.sum()
+                #
+                # # Sample one item
+                # sample = np.random.choice(items, p=weights)
+                # slice = volume[sample, :, :]
+
                 slice_idx = np.random.randint(0, volume.shape[0])
                 slice = volume[slice_idx, :, :]
 
@@ -85,7 +99,7 @@ class NpzVolumeSliceDataset(Dataset):
             volume = np.stack([volume,volume,volume],axis=1)
 
             if self.transform:
-                volume = self.transform(vol=volume)["vol"]
+                volume = self.transform(image=volume)["image"]
             
             if int(rowdf["Aneurysm Present"].iloc[0]) == 1:
                 for slice_idx in labeldf["z"]:
@@ -103,20 +117,15 @@ class NpzDataModule(pl.LightningDataModule):
         self.cfg = cfg
 
         self.train_transforms = A.Compose([
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             A.HorizontalFlip(p=0.5),
-            A.ShiftScaleRotate(
-                shift_limit=0.06,
-                scale_limit=0.1,
-                rotate_limit=15,
-                p=0.7
-            ),
+            A.ShiftScaleRotate( shift_limit=0.06, scale_limit=0.1, rotate_limit=15, p=0.7),
             A.ElasticTransform(p=0.3, alpha=10, sigma=120 * 0.05, alpha_affine=120 * 0.03),
-
-            # Intensity
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.7),
-
-            # Conversion to Tensor (if using PyTorch)
-            ToTensorV2() # This should be the last step if needed
+            ToTensorV2(), # This should be the last step if needed
+        ])
+        self.val_transforms = A.Compose([
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ])
 
     def setup(self, stage: str = None):
@@ -127,7 +136,7 @@ class NpzDataModule(pl.LightningDataModule):
         val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"]
 
         self.train_dataset = NpzVolumeSliceDataset(uids=list(train_uids), cfg=self.cfg,transform=self.train_transforms)
-        self.val_dataset = NpzVolumeSliceDataset(uids=list(val_uids), cfg=self.cfg, transform=None, mode="val")
+        self.val_dataset = NpzVolumeSliceDataset(uids=list(val_uids), cfg=self.cfg, transform=self.val_transforms, mode="val")
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.cfg.batch_size, shuffle=True, num_workers=self.cfg.num_workers, pin_memory=True)
@@ -139,7 +148,7 @@ class NpzDataModule(pl.LightningDataModule):
 class LitTimmClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
         super().__init__()
-        self.save_hyperparameters() # Saves args to checkpoint
+        self.save_hyperparameters(ignore=['model']) # Saves args to checkpoint
         
         self.model = model
         self.cfg = cfg
@@ -151,6 +160,8 @@ class LitTimmClassifier(pl.LightningModule):
 
         self.train_cls_auroc = torchmetrics.AUROC(task="binary")
         self.val_cls_auroc = torchmetrics.AUROC(task="binary")
+        self.automatic_optimization = False
+
 
 
     def forward(self, x):
@@ -165,15 +176,23 @@ class LitTimmClassifier(pl.LightningModule):
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
 
-        loss = 2*cls_loss + loc_loss
+        loss = 3*cls_loss + loc_loss
 
         self.train_loc_auroc.update(pred_locs, loc_labels.long())
         self.train_cls_auroc.update(pred_cls, cls_labels.long())
 
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
+        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         # Log the metric object. Lightning computes and logs it at epoch end.
         self.log('train_loc_auroc', self.train_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_cls_auroc', self.train_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
+
+        
+        # Manual backward pass
+        opt = self.optimizers()
+        opt.zero_grad()
+        self.manual_backward(loss)
+        opt.step()
+
         return loss
 
     def validation_step(self, sample, batch_idx):
@@ -190,8 +209,6 @@ class LitTimmClassifier(pl.LightningModule):
             pred_cls.append(pc)
             pred_locs.append(pl)
 
-
-
         pred_cls = torch.vstack(pred_cls)
         pred_locs = torch.vstack(pred_locs)
 
@@ -200,20 +217,29 @@ class LitTimmClassifier(pl.LightningModule):
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
 
-        loss = 2*cls_loss + loc_loss
+        loss = 3*cls_loss + loc_loss
 
         self.val_loc_auroc.update(pred_locs, loc_labels.long())
         self.val_cls_auroc.update(pred_cls, cls_labels.long())
 
-        self.log('val_loss', loss, on_step=True, on_epoch=True, logger=False)
+        self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
         # Log the metric object. Lightning computes and logs it at epoch end.
         self.log('val_loc_auroc', self.val_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_cls_auroc', self.val_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
         return loss
+
+    def on_train_epoch_end(self):
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
+            sch.step(self.trainer.callback_metrics["val_loss"])
     
     def configure_optimizers(self):
-        return instantiate(self.cfg.optimizer, params=self.parameters())
-
+        optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
+        
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2)
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
 def train(cfg: DictConfig) -> None:
@@ -234,7 +260,9 @@ def train(cfg: DictConfig) -> None:
                           monitor="val_loss"
                         , mode="min"
                         , dirpath="./models"
-                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"fold_id={cfg.fold_id}"
+                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"_fold_id={cfg.fold_id}"
+                        , save_top_k=2
+                        , save_last=True
                         )
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
@@ -244,7 +272,18 @@ def train(cfg: DictConfig) -> None:
         logger=pl.loggers.TensorBoardLogger("logs/", name=cfg.experiment),
         callbacks=[lr_monitor, ckpt_callback]
     )
-    trainer.fit(pl_model, datamodule=datamodule)
+    
+    # tuner = Tuner(trainer)
+    # # 3. Call lr_find on the Tuner instance
+    # lr_find_results = tuner.lr_find(pl_model, datamodule=datamodule)
+    #
+    # # 4. Get the suggested learning rate and plot
+    # suggested_lr = lr_find_results.suggestion()
+    # print(f"Suggested LR: {suggested_lr}")
+    # fig = lr_find_results.plot(suggest=True)
+    # fig.show()
+
+    trainer.fit(pl_model, datamodule=datamodule, ckpt_path="./models/last.ckpt")
 
 
 

@@ -5,3 +5,6 @@ outputs/
 logs/
 models/
 src/__pycache__/
+rsna-iad-modelzoo/
+*.npz
+*.pth
