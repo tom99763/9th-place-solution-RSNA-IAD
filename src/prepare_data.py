@@ -24,12 +24,15 @@ def initializer(label_df, target_dir):
     label_df_global = label_df
     target_dir_global = target_dir
 
-def apply_dicom_windowing(img: np.ndarray, window_center: float, window_width: float) -> np.ndarray:
-    img_min = window_center - window_width // 2
-    img_max = window_center + window_width // 2
-    img = np.clip(img, img_min, img_max)
-    img = (img - img_min) / (img_max - img_min + 1e-7)
-    return (img * 255).astype(np.uint8)
+def apply_dicom_windowing(img: np.ndarray, window_center: float, window_width: float, preserve_contrast=True) -> np.ndarray:
+    img_min = window_center - window_width / 2
+    img_max = window_center + window_width / 2
+    img_clipped = np.clip(img, img_min, img_max)
+    img_normalized = (img_clipped - img_min) / (img_max - img_min + 1e-7)
+    img_processed = (img_normalized * 255).astype(np.uint8)
+    if preserve_contrast:
+        img_processed = cv2.equalizeHist(img_processed)
+    return img_processed
 
 def get_windowing_params(modality: str) -> Tuple[float, float]:
     return windows.get(modality, (40, 80))
