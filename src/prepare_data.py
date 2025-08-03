@@ -138,17 +138,17 @@ def process_and_save(uid):
 
 if __name__ == "__main__":
 
-    IMG_SIZE = 512
-    FACTOR = 3
+    IMG_SIZE = 640
+    FACTOR = 1
     SEED = 42
     N_FOLDS = 5
-    CORES = 16
+    CORES = 8
 
 
-    root_path = Path("../data")
+    root_path = Path("rsna_data")
     target_dir = root_path / "processed"
 
-    os.mkdir(target_dir, exist_ok=True)
+    os.makedirs(target_dir, exist_ok=True)
 
     train_df = pd.read_csv(root_path / "train.csv")
     label_df = pd.read_csv(root_path / "train_localizers.csv")

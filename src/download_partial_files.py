@@ -6,7 +6,7 @@ import os
 from tqdm import tqdm
 
 dataset_name = 'rsna-intracranial-aneurysm-detection'
-mf_dicom_uids = pd.read_csv("./rsna_data/multiframe_dicoms.csv")
+mf_dicom_uids = pd.read_csv("multiframe_dicoms.csv")
 # We don't want to include multiframe dicoms as we can't get there z axis
 # Discussion: https://www.kaggle.com/competitions/rsna-intracranial-aneurysm-detection/discussion/591546
 ignore_uids = [

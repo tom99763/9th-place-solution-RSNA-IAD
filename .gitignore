@@ -2,3 +2,7 @@
 data/
 notebooks/.ipynb_checkpoints/
 outputs/
+rsna_data/
+processed_data/
+series/
+kaggle_evaluation/
