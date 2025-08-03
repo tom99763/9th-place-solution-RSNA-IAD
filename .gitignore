@@ -6,3 +6,6 @@ rsna_data/
 processed_data/
 series/
 kaggle_evaluation/
+logs/
+models/
+src/__pycache__/

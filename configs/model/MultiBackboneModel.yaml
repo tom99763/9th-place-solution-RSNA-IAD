@@ -1,0 +1,10 @@
+
+_target_: src.model.MultiBackboneModel
+model_name: "efficientnet_b2"
+
+in_chans: 3
+img_size: 512
+num_classes: 13
+drop_path_rate: 0.2
+drop_rate: 0.3
+pretrained: True
