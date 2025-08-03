@@ -52,18 +52,16 @@ class LitTimmClassifier(pl.LightningModule):
         cls_labels.squeeze_()
         loc_labels.squeeze_()
 
-        # pred_cls = []
-        # pred_locs = []
-        #
-        # for batch_idx in range(0, x.shape[0], 64):
-        #     pc, pl = self(x[batch_idx:batch_idx + 64])
-        #     pred_cls.append(pc)
-        #     pred_locs.append(pl)
-        #
-        # pred_cls = torch.vstack(pred_cls)
-        # pred_locs = torch.vstack(pred_locs)
+        pred_cls = []
+        pred_locs = []
 
-        pred_cls, pred_locs  = self(x)
+        for batch_idx in range(0, x.shape[0], 64):
+            pc, pl = self(x[batch_idx:batch_idx + 64])
+            pred_cls.append(pc)
+            pred_locs.append(pl)
+
+        pred_cls = torch.vstack(pred_cls)
+        pred_locs = torch.vstack(pred_locs)
 
         pred_cls = pred_cls.squeeze()
 
