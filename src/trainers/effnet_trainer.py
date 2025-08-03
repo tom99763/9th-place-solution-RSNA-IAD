@@ -25,6 +25,7 @@ class LitTimmClassifier(pl.LightningModule):
         return self.model(x)
 
     def training_step(self, batch, _):
+        self.model.train()
         x, cls_labels, loc_labels = batch
 
         pred_cls, pred_locs = self(x)
@@ -45,21 +46,24 @@ class LitTimmClassifier(pl.LightningModule):
         return loss
 
     def validation_step(self, sample, batch_idx):
+        self.model.eval()
         x, cls_labels, loc_labels = sample
         x.squeeze_()
         cls_labels.squeeze_()
         loc_labels.squeeze_()
 
-        pred_cls = []
-        pred_locs = []
+        # pred_cls = []
+        # pred_locs = []
+        #
+        # for batch_idx in range(0, x.shape[0], 64):
+        #     pc, pl = self(x[batch_idx:batch_idx + 64])
+        #     pred_cls.append(pc)
+        #     pred_locs.append(pl)
+        #
+        # pred_cls = torch.vstack(pred_cls)
+        # pred_locs = torch.vstack(pred_locs)
 
-        for batch_idx in range(0, x.shape[0], 64):
-            pc, pl = self(x[batch_idx:batch_idx + 64])
-            pred_cls.append(pc)
-            pred_locs.append(pl)
-
-        pred_cls = torch.vstack(pred_cls)
-        pred_locs = torch.vstack(pred_locs)
+        pred_cls, pred_locs  = self(x)
 
         pred_cls = pred_cls.squeeze()
 

@@ -52,7 +52,7 @@ class NpzDataModule(pl.LightningDataModule):
                           pin_memory=True, persistent_workers=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=1, num_workers=self.cfg.num_workers, pin_memory=True
+        return DataLoader(self.val_dataset, batch_size=1, shuffle=False, num_workers=self.cfg.num_workers, pin_memory=True
                           , persistent_workers=True)
 
 
