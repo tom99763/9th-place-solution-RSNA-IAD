@@ -72,7 +72,7 @@ def validation(cfg: DictConfig) -> None:
 
     model = instantiate(cfg.model, pretrained=False)
 
-    model_ckpt_name="efficient_b2_weighted_bce-epoch=23-val_loss=0.9393_fold_id=0"
+    model_ckpt_name="efficient_b2_gaussian_sample-epoch=47-val_loss=0.4765_fold_id=0"
     # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
     # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
     # return

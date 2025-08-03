@@ -1,5 +1,5 @@
-max_epochs: 32
+max_epochs: 64
 accelerator: gpu
 devices: auto
 precision: 16-mixed
-check_val_every_n_epoch: 2
+check_val_every_n_epoch: 3
