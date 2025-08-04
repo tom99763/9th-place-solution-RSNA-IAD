@@ -41,7 +41,7 @@ def load_model(cfg, device):
 
 def get_paths(cfg):
     image_paths = os.listdir(cfg.image_path)
-    image_paths = map(lambda x: os.path.join(cfg.image_path, f'{x}/{x}.nii'), image_paths)
+    image_paths = list(map(lambda x: os.path.join(cfg.image_path, f'{x}/{x}.nii'), image_paths))
     return image_paths
 
 
@@ -102,6 +102,7 @@ def main(cfg):
     metrics_dict = {}
     with torch.no_grad():
         for idx, image_path in tqdm(enumerate(image_paths), total=len(image_paths), desc="Processing images."):
+            image_name = image_path.split('/')[-1][:-4]
             preds = []  # average over test time augmentations
             for scale in cfg.tta.scales:
                 # apply pre-processing transforms
@@ -140,7 +141,7 @@ def main(cfg):
             # save final pred
             save_writer.write_seg(
                 pred_thresh.astype(np.uint8),
-                output_folder / f"{image_path.name.split('.')[0]}_{cfg.file_app}pred.{file_ending}"
+                output_folder / f"{image_name}.{file_ending}"
             )
     logger.info("Done.")
 
