@@ -1,0 +1,51 @@
+lightning_trainer:
+  _target_: lightning.pytorch.trainer.trainer.Trainer
+  _partial_: True
+  val_check_interval: 1000
+  max_time: "00:12:00:00"
+  max_steps: 46000
+  max_epochs: -1
+  accelerator: gpu
+  enable_checkpointing: True
+  precision: 16-mixed
+  log_every_n_steps: 10
+
+lightning_module:
+  _target_: vesselfm.seg.module.PLModule
+  _partial_: True
+  prediction_threshold: 0.5
+
+  loss:
+    _target_: monai.losses.DiceCELoss
+    sigmoid: True
+    reduction: "mean"
+    squared_pred: True
+    lambda_ce: 0.1
+    lambda_dice: 0.9
+
+  optimizer_factory:
+    _target_: torch.optim.AdamW
+    _partial_: True
+    lr: ${lr}
+    weight_decay: 0.1
+    betas: [0.9, 0.999]
+
+  scheduler_configs:
+    linear_warmup:
+      interval: step
+      frequency: 10
+      scheduler:
+        _target_: torch.optim.lr_scheduler.LinearLR
+        _partial_: True
+        start_factor: 0.01
+        end_factor: 1.0
+        total_iters: 150
+    cosine_annealing:
+      interval: step
+      frequency: 10
+      scheduler:
+        _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+        _partial_: True
+        T_max: 5000
+        eta_min: 0.0
+        last_epoch: -1
