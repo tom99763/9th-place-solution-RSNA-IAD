@@ -1,31 +1,32 @@
 import timm
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class MultiBackboneModel(nn.Module):
     """Flexible model that can use different backbones"""
-    def __init__(self, model_name, in_chans, img_size, num_classes=13, pretrained=True, 
+
+    def __init__(self, model_name, in_chans, img_size, num_classes=13, pretrained=True,
                  drop_rate=0.3, drop_path_rate=0.2):
         super().__init__()
-        
+
         self.model_name = model_name
-        
+
         self.backbone = timm.create_model(
-                model_name, 
-                pretrained=pretrained,
-                in_chans=in_chans,
-                drop_rate=drop_rate,
-                drop_path_rate=drop_path_rate,
-                num_classes=0,  # Remove classifier head
-                global_pool=''  # Remove global pooling
+            model_name,
+            pretrained=pretrained,
+            in_chans=in_chans,
+            drop_rate=drop_rate,
+            drop_path_rate=drop_path_rate,
+            num_classes=0,  # Remove classifier head
+            global_pool=''  # Remove global pooling
         )
-        
+
         with torch.no_grad():
             dummy_input = torch.zeros(1, in_chans, img_size, img_size)
             features = self.backbone(dummy_input)
-            
+
             if len(features.shape) == 4:
                 # Conv features (batch, channels, height, width)
                 num_features = features.shape[1]
@@ -40,13 +41,13 @@ class MultiBackboneModel(nn.Module):
                 num_features = features.shape[1]
                 self.needs_pool = False
                 self.needs_seq_pool = False
-        
+
         print(f"Model {model_name}: detected {num_features} features, output shape: {features.shape}")
-        
+
         # Add global pooling for models that output spatial features
         if self.needs_pool:
             self.global_pool = nn.AdaptiveAvgPool2d(1)
-        
+
         # Combined classifier with batch norm for stability
         self.loc_classifier = nn.Sequential(
             nn.Linear(num_features, 512),
@@ -70,11 +71,11 @@ class MultiBackboneModel(nn.Module):
             nn.Dropout(drop_rate),
             nn.Linear(128, 1)
         )
-        
+
     def forward(self, image):
         # Extract image features
         img_features = self.backbone(image)
-        
+
         # Apply appropriate pooling based on model type
         if hasattr(self, 'needs_pool') and self.needs_pool:
             # Conv features - apply global pooling
@@ -89,9 +90,9 @@ class MultiBackboneModel(nn.Module):
         elif len(img_features.shape) == 3:
             # Fallback for any 3D output
             img_features = img_features.mean(dim=1)
-        
+
         # Classification
         loc_output = self.loc_classifier(img_features)
-        cls_logit  = self.aneurysm_classifier(img_features)
-        
+        cls_logit = self.aneurysm_classifier(img_features)
+
         return cls_logit, loc_output
