@@ -1,10 +1,11 @@
 data_path = './data'
 windows = {
-        'CT': (40, 80),
-        'CTA': (50, 350),
-        'MRA': (600, 1200),
-        'MRI': (40, 80),
-    }
+    'CT': (40, 80),
+    'CTA': (50, 350),
+    'MRA': (600, 1200),
+    'MR': (600, 1200),
+    'MRI': (40, 80),
+}
 
 LABELS_TO_IDX = {
             'Anterior Communicating Artery': 0,
@@ -22,8 +23,8 @@ LABELS_TO_IDX = {
             'Right Supraclinoid Internal Carotid Artery': 12
 }
 
-IMG_SIZE = 512
+IMG_SIZE = 640
 FACTOR = 3
 SEED = 42
 N_FOLDS = 5
-CORES = 16
+CORES = 8

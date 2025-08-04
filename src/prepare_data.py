@@ -11,7 +11,11 @@ from tqdm import tqdm
 import sys
 from typing import Tuple
 
-sys.path.append('../')
+# Add the parent directory to the path to find configs module
+current_dir = Path(__file__).parent
+parent_dir = current_dir.parent
+sys.path.insert(0, str(parent_dir))
+
 from configs.data_config import *
 
 # Globals used by multiprocessing workers
@@ -24,12 +28,15 @@ def initializer(label_df, target_dir):
     label_df_global = label_df
     target_dir_global = target_dir
 
-def apply_dicom_windowing(img: np.ndarray, window_center: float, window_width: float) -> np.ndarray:
-    img_min = window_center - window_width // 2
-    img_max = window_center + window_width // 2
-    img = np.clip(img, img_min, img_max)
-    img = (img - img_min) / (img_max - img_min + 1e-7)
-    return (img * 255).astype(np.uint8)
+def apply_dicom_windowing(img: np.ndarray, window_center: float, window_width: float, preserve_contrast=True) -> np.ndarray:
+    img_min = window_center - window_width / 2
+    img_max = window_center + window_width / 2
+    img_clipped = np.clip(img, img_min, img_max)
+    img_normalized = (img_clipped - img_min) / (img_max - img_min + 1e-7)
+    img_processed = (img_normalized * 255).astype(np.uint8)
+    if preserve_contrast:
+        img_processed = cv2.equalizeHist(img_processed)
+    return img_processed
 
 def get_windowing_params(modality: str) -> Tuple[float, float]:
     return windows.get(modality, (40, 80))
@@ -38,8 +45,11 @@ def process_slice(img, ds):
     modality = getattr(ds, 'Modality', 'CT')
     if hasattr(ds, 'RescaleSlope') and hasattr(ds, 'RescaleIntercept'):
         img = img * ds.RescaleSlope + ds.RescaleIntercept
-    window_center, window_width = get_windowing_params(modality)
-    img = apply_dicom_windowing(img, window_center, window_width)
+    #window_center, window_width = get_windowing_params(modality)
+    #img = apply_dicom_windowing(img, window_center, window_width)
+    img_normalized = (img - img.min()) / (img.max() - img.min() + 1e-7)
+    img = (img_normalized * 255).astype(np.uint8)
+    img = cv2.equalizeHist(img)
     img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
     return img
 
@@ -104,18 +114,9 @@ def process_and_save(uid: str):
         return {"uid": uid, "mapped_idx": []}
 
 if __name__ == "__main__":
-
-    IMG_SIZE = 640
-    FACTOR = 1
-    SEED = 42
-    N_FOLDS = 5
-    CORES = 8
-
-
-    root_path = Path("rsna_data")
+    root_path = Path(data_path)
     target_dir = root_path / "processed"
-
-    os.mkdir(target_dir, exist_ok=True)
+    os.makedirs(target_dir, exist_ok=True)
 
     train_df = pd.read_csv(root_path / "train.csv")
     label_df = pd.read_csv(root_path / "train_localizers.csv")
@@ -156,7 +157,7 @@ if __name__ == "__main__":
     print(f"Starting processing for {len(uids_to_process)} UIDs...")
 
     with multiprocessing.Pool(
-        processes=CORES,
+        processes=4,
         initializer=initializer,
         initargs=(label_df, target_dir)
     ) as pool:
