@@ -1,8 +1,7 @@
 import torch
 import hydra
 from omegaconf import DictConfig, OmegaConf
-import sys
-sys.path.append('./src')
+
 from src.rsna_datasets.datasets import *
 from src.trainers.effnet_trainer import *
 from hydra.utils import instantiate
@@ -57,4 +56,3 @@ def train(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     train()
-    
