@@ -15,6 +15,7 @@ from skimage.morphology import remove_small_objects
 from skimage.exposure import equalize_hist
 from utils.data import generate_transforms
 from utils.io import determine_reader_writer
+import os
 
 
 warnings.filterwarnings("ignore")
@@ -39,15 +40,9 @@ def load_model(cfg, device):
 
 
 def get_paths(cfg):
-    image_paths = list(Path(cfg.image_path).iterdir())
-    if cfg.mask_path:
-        mask_paths = [Path(cfg.mask_path) / f"{p.name}" for p in image_paths]
-        assert all(
-            mask_path.exists() for mask_path in mask_paths
-        ), "All mask paths must exist mask name has to be the same as the image name."
-    else:
-        mask_paths = None
-    return image_paths, mask_paths
+    image_paths = os.listdir(cfg.image_path)
+    image_paths = map(lambda x: os.path.join(cfg.image_path, f'{x}/{x}.nii'), image_paths)
+    return image_paths
 
 
 def resample(image, factor=None, target_shape=None):
@@ -87,7 +82,7 @@ def main(cfg):
     output_folder = Path(cfg.output_folder)
     output_folder.mkdir(exist_ok=True)
 
-    image_paths, mask_paths = get_paths(cfg)
+    image_paths = get_paths(cfg)
     logger.info(f"Found {len(image_paths)} images in {cfg.image_path}.")
 
     file_ending = (cfg.image_file_ending if cfg.image_file_ending else image_paths[0].suffix)

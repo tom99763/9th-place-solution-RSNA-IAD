@@ -4,9 +4,9 @@ defaults:
   - _self_
 
 # i/o
-image_path: ./example
+image_path: ../rsna_data/segmentations
 image_file_ending: nii
-output_folder: ./output
+output_folder: ../rsna_data/vessel_segments
 file_app: ""
 
 mask_path: null
