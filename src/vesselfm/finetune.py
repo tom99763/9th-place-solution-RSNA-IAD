@@ -24,6 +24,9 @@ def main(cfg):
     seed_everything(cfg.seed, True)
     torch.set_float32_matmul_precision("medium")
     uids = os.listdir('../rsna_data/segmentations')
+    train_dataset = RSNASegDataset(uids, cfg.data.RSNA, 'train')
+    image, mask = train_dataset[0]
+    print(image.shape, mask.shape)
     val_dataset = RSNASegDataset(uids, cfg.data.RSNA, 'val')
     image, mask = val_dataset[0]
     print(image.shape, mask.shape)
