@@ -13,6 +13,7 @@ from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 from dataset import UnionDataset
 from utils.evaluation import Evaluator
+from huggingface_hub import hf_hub_download
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -73,11 +74,14 @@ def main(cfg):
     logger.info(f"Test dataset size: {len(test_dataset)}")
 
     # init model
+    hf_hub_download(repo_id='bwittmann/vesselFM', filename='meta.yaml')  # required to track downloads
+    ckpt = torch.load(
+        hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
+        map_location=cfg.device, weights_only=True
+    )
     model = hydra.utils.instantiate(cfg.model)
-    if cfg.path_to_chkpt is not None:
-        chkpt = torch.load(cfg.path_to_chkpt, map_location=f'cuda:{cfg.devices[0]}')
-        model_chkpt = {k.replace("model.", ""): e for k, e in chkpt["state_dict"].items() if "model" in k}
-        model.load_state_dict(model_chkpt)
+    model.load_state_dict(ckpt)
+
 
     # init lightning module
     evaluator = Evaluator()
