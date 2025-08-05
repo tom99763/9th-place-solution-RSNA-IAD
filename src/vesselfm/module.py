@@ -8,8 +8,7 @@ from monai.inferers.inferer import SlidingWindowInfererAdapt
 
 logger = logging.getLogger(__name__)
 
-
-class PLModule(lightning.LightningModule):
+class RSNAModuleFinetune(lightning.LightningModule):
     def __init__(
             self,
             model: torch.nn.Module,
@@ -17,7 +16,13 @@ class PLModule(lightning.LightningModule):
             optimizer_factory,
             prediction_threshold: float,
             scheduler_configs=None,
-            evaluator=None
+            evaluator=None,
+            dataset_name: str = None,
+            input_size: tuple = None,
+            batch_size: int = None,
+            num_shots: int = None,
+            *args,
+            **kwargs
     ):
         super().__init__()
         self.model = model
@@ -27,56 +32,6 @@ class PLModule(lightning.LightningModule):
         self.prediction_threshold = prediction_threshold
         self.rank = 0 if "LOCAL_RANK" not in os.environ else os.environ["LOCAL_RANK"]
         self.evaluator = evaluator
-
-    def configure_optimizers(self):
-        optimizer = self.optimizer_factory(params=self.parameters())
-
-        if self.scheduler_configs is not None:
-            schedulers = []
-            logger.info(f"Initializing schedulers: {self.scheduler_configs}")
-            for scheduler_name, scheduler_config in self.scheduler_configs.items():
-                if scheduler_config is None:
-                    continue  # skip empty configs during finetuning
-
-                logger.info(f"Initializing scheduler: {scheduler_name}")
-                scheduler_config["scheduler"] = scheduler_config["scheduler"](optimizer=optimizer)
-                scheduler_config = dict(scheduler_config)
-                schedulers.append(scheduler_config)
-            return [optimizer], schedulers
-        return optimizer
-
-    def training_step(self, batch, batch_idx):
-        image, mask = batch
-        pred_mask = self.model(image)
-        loss = self.loss(pred_mask, mask)
-        self.log(f"train_loss", loss.item(), logger=(self.rank == 0))
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        image, mask, name = batch
-        pred_mask = self.model(image)
-        loss = self.loss(pred_mask, mask)
-        self.log("val_loss", loss.item(), logger=(self.rank == 0))
-
-        metrics = self.evaluator.estimate_metrics(
-            pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold
-        )
-        for metric, value in metrics.items():
-            value = value.item() if isinstance(value, (torch.Tensor, np.ndarray)) else value
-            self.log(f"val_{name[0]}_{metric}", value, logger=(self.rank == 0))
-
-
-class PLModuleFinetune(PLModule):
-    def __init__(
-            self,
-            dataset_name: str = None,
-            input_size: tuple = None,
-            batch_size: int = None,
-            num_shots: int = None,
-            *args,
-            **kwargs
-    ):
-        # Remove dataset_name from kwargs
         self.dataset_name = dataset_name
         logger.info(f"Dataset name: {self.dataset_name}")
         super().__init__(*args, **kwargs)
@@ -84,6 +39,13 @@ class PLModuleFinetune(PLModule):
             roi_size=input_size, sw_batch_size=batch_size, overlap=0.5,
         )
         self.num_shots = num_shots
+
+    def training_step(self, batch, batch_idx):
+        image, mask = batch
+        pred_mask = self.model(image)
+        loss = self.loss(pred_mask, mask)
+        self.log(f"train_loss", loss.item(), logger=(self.rank == 0))
+        return loss
 
     def validation_step(self, batch, batch_idx):
         image, mask = batch
@@ -117,5 +79,21 @@ class PLModuleFinetune(PLModule):
             for name, value in metrics.items():
                 value = value.item() if isinstance(value, (torch.Tensor, np.ndarray)) else value
                 self.log(f"{self.dataset_name}_test_{name}", value)
-
         return loss
+
+    def configure_optimizers(self):
+        optimizer = self.optimizer_factory(params=self.parameters())
+
+        if self.scheduler_configs is not None:
+            schedulers = []
+            logger.info(f"Initializing schedulers: {self.scheduler_configs}")
+            for scheduler_name, scheduler_config in self.scheduler_configs.items():
+                if scheduler_config is None:
+                    continue  # skip empty configs during finetuning
+
+                logger.info(f"Initializing scheduler: {scheduler_name}")
+                scheduler_config["scheduler"] = scheduler_config["scheduler"](optimizer=optimizer)
+                scheduler_config = dict(scheduler_config)
+                schedulers.append(scheduler_config)
+            return [optimizer], schedulers
+        return optimizer
