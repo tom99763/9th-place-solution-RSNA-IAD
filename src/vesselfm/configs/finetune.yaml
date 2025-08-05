@@ -1,6 +1,6 @@
 defaults:
   - train
-  - data: eval_smile
+  - data: eval_rsna
   - _self_
 
 num_shots: 0
@@ -8,7 +8,7 @@ lr: 0.00001
 devices: [0]
 run_name: vesselfm
 path_to_chkpt: /path/to/pretrained_ckpt
-chkpt_folder:  /path/where/to/store/ckpts
+chkpt_folder:  ./finetune_ckpts
 
 dataloader:
   shuffle: False
@@ -20,7 +20,7 @@ trainer:
     max_epochs: 1
 
   lightning_module:
-    _target_: vesselfm.seg.module.PLModuleFinetune
+    _target_: module.PLModuleFinetune
     _partial_: True
     prediction_threshold: 0.62
     batch_size: ${batch_size}
