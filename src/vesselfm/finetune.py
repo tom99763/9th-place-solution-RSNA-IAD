@@ -77,7 +77,7 @@ def main(cfg):
     hf_hub_download(repo_id='bwittmann/vesselFM', filename='meta.yaml')  # required to track downloads
     ckpt = torch.load(
         hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
-        map_location=cfg.device, weights_only=True
+        map_location=cfg.devices[0], weights_only=True
     )
     model = hydra.utils.instantiate(cfg.model)
     model.load_state_dict(ckpt)
@@ -91,15 +91,9 @@ def main(cfg):
 
     # train loop and eval
     wnb_logger.watch(model, log="all", log_freq=20)
-    if cfg.num_shots == 0:
-        trainer.test(lightning_module, test_loader)  # eval on test set
-    else:
-        logger.info("Starting training")
-        trainer.validate(lightning_module, val_loader)
-        trainer.fit(lightning_module, train_loader, val_loader)
-        logger.info("Finished training")
-        trainer.test(lightning_module, test_loader, ckpt_path="best")
-
+    logger.info("Starting training")
+    trainer.validate(lightning_module, val_loader)
+    trainer.fit(lightning_module, train_loader, val_loader)
 
 if __name__ == "__main__":
     sys.stdout = open(sys.stdout.fileno(), mode="w", buffering=1)
