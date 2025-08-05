@@ -1,15 +1,35 @@
 import logging
 from typing import Tuple
 from pathlib import Path
-
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-
 from utils.io import determine_reader_writer
 from utils.data import generate_transforms
 
 logger = logging.getLogger(__name__)
+
+class RSNASegDataset(Dataset):
+    def __init__(self, uids, dataset_config, mode):
+        super().__init__()
+        # init datasets
+        self.data_path = dataset_config.path
+        self.uids = uids
+        self.reader = determine_reader_writer(dataset_config.file_format)()
+        self.transforms = generate_transforms(dataset_config.transforms[mode])
+
+    def __len__(self):
+        return len(self.uids)
+
+    def __getitem__(self, idx: int):
+        uid = self.uids[idx]
+        vol_path = f'{self.data_path}/{uid}/{uid}.nii'
+        mask_path = f'{self.data_path}/{uid}/{uid}_cowseg.nii'
+        vol = self.reader.read_images(vol_path)[0].astype(np.float32)
+        mask = self.reader.read_images(mask_path)[0].astype(int)
+        transformed = self.transforms({'Image': vol, 'Mask': mask})
+        return transformed['Image'], transformed['Mask'] > 0
+
 
 
 class UnionDataset(Dataset):

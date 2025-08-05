@@ -1,6 +1,7 @@
 defaults:
   - train
   - data: eval_rsna
+  - override data: eval_rsna
   - _self_
 
 num_shots: 0
