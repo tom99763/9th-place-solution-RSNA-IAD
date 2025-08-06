@@ -84,7 +84,7 @@ class NpzVolumeSliceDataset(Dataset):
         uid = self.uids[idx]
         rowdf = self.train_df[self.train_df["SeriesInstanceUID"] == uid]
         labeldf = self.label_df[self.label_df["SeriesInstanceUID"] == uid]
-        with np.load(f"./src/data/processed/slices/{uid}.npz") as data:
+        with np.load(f"{self.cfg.data_dir}/slices/{uid}.npz") as data:
             volume = data['vol'].astype(np.float32)
 
 

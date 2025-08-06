@@ -3,6 +3,7 @@ from omegaconf import DictConfig, OmegaConf
 import sys
 sys.path.append('./src')
 from src.rsna_datasets.datasets import *
+from src.rsna_datasets.slice_datasets import *
 from src.trainers.effnet_trainer import *
 from hydra.utils import instantiate
 torch.set_float32_matmul_precision('medium')
@@ -18,26 +19,44 @@ def train(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
 
     pl.seed_everything(cfg.seed)
-    datamodule = NpzDataModule(cfg)
+    datamodule = SliceDataModule(cfg)
 
     model = instantiate(cfg.model)
     pl_model = LitTimmClassifier(model, cfg)
 
     ckpt_callback = pl.callbacks.ModelCheckpoint(
-                          monitor="val_loss"
-                        , mode="min"
+                          monitor="val_kaggle_score"
+                        , mode="max"
                         , dirpath="./models"
-                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"fold_id={cfg.fold_id}"
+                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_kaggle_score:.4f}'+f"fold_id={cfg.fold_id}",
+                        save_top_k=3,
                         )
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
 
+    loggers = [pl.loggers.TensorBoardLogger("logs/", name=cfg.experiment)]
+    
+    if cfg.use_wandb:
+        import wandb
+        wandb_logger = pl.loggers.WandbLogger(
+            project=cfg.project_name, 
+            name=cfg.experiment,
+            entity=cfg.wandb.get('entity', None),
+            tags=cfg.wandb.get('tags', []),
+            notes=cfg.wandb.get('notes', '')
+        )
+        loggers.append(wandb_logger)
+
     trainer = pl.Trainer(
         **cfg.trainer,
-        logger=pl.loggers.TensorBoardLogger("logs/", name=cfg.experiment),
+        logger=loggers,
         callbacks=[lr_monitor, ckpt_callback]
     )
     trainer.fit(pl_model, datamodule=datamodule)
+    
+    if cfg.use_wandb:
+        import wandb
+        wandb.finish()
 
 if __name__ == "__main__":
     train()

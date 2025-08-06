@@ -165,10 +165,21 @@ if __name__ == "__main__":
 
     print("\nProcessing complete.")
 
+    uid_to_mapped_z = {}
     for r in results:
         uid, mapped = r["uid"], r["mapped_idx"]
         if mapped:
-            label_df.loc[label_df["SeriesInstanceUID"] == uid, "z"] = mapped
+            uid_to_mapped_z[uid] = mapped
+    
+    # Update the z values in label_df
+    for uid, mapped_indices in uid_to_mapped_z.items():
+        uid_rows = label_df[label_df["SeriesInstanceUID"] == uid].copy()
+        if len(mapped_indices) == len(uid_rows):
+            # Update z values for this UID
+            for i, (idx, row) in enumerate(uid_rows.iterrows()):
+                label_df.at[idx, 'z'] = mapped_indices[i]
+        else:
+            print(f"Warning: Mismatch in number of labels for UID {uid}. Expected {len(uid_rows)}, got {len(mapped_indices)}")
 
     label_df.to_csv(target_dir / "label_df.csv", index=False)
     train_df.to_csv(target_dir / "train_df.csv", index=False)
