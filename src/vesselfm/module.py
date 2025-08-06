@@ -44,6 +44,9 @@ class RSNAModuleFinetune(lightning.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         image, mask = batch
+        print(image.device)
+        print(image.shape, mask.shape)
+        mask = mask.float()
         with torch.no_grad():
             pred_mask = self.sliding_window_inferer(image, self.model)
             loss = self.loss(pred_mask, mask)
