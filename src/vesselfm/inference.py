@@ -40,9 +40,10 @@ def load_model(cfg, device):
 
 
 def get_paths(cfg):
-    image_paths = os.listdir(cfg.image_path)
-    image_paths = list(map(lambda x: os.path.join(cfg.image_path, f'{x}/{x}.nii'), image_paths))
-    return image_paths
+    image_paths_ = os.listdir(cfg.image_path)
+    image_paths = list(map(lambda x: os.path.join(cfg.image_path, f'{x}/{x}.nii'), image_paths_))
+    mask_paths = list(map(lambda x: os.path.join(cfg.image_path, f'{x}/{x}_cowseg.nii'), image_paths_))
+    return image_paths, mask_paths
 
 
 def resample(image, factor=None, target_shape=None):
@@ -82,7 +83,7 @@ def main(cfg):
     output_folder = Path(cfg.output_folder)
     output_folder.mkdir(exist_ok=True)
 
-    image_paths = get_paths(cfg)
+    image_paths, mask_paths = get_paths(cfg)
     logger.info(f"Found {len(image_paths)} images in {cfg.image_path}.")
 
     file_ending = (cfg.image_file_ending if cfg.image_file_ending else image_paths[0].suffix)
@@ -107,7 +108,7 @@ def main(cfg):
             for scale in cfg.tta.scales:
                 # apply pre-processing transforms
                 image = transforms(image_reader_writer.read_images(image_path)[0].astype(np.float32))[None].to(device)
-                # mask = torch.tensor(image_reader_writer.read_images(mask_paths[idx])[0]).bool() if mask_paths else None
+                mask = torch.tensor(image_reader_writer.read_images(mask_paths[idx])[0])!=0
 
                 # apply test time augmentation
                 if cfg.tta.invert:
@@ -137,12 +138,14 @@ def main(cfg):
                     pred_thresh, min_size=cfg.post.small_objects_min_size,
                     connectivity=cfg.post.small_objects_connectivity
                 )
+            pred_thresh = np.logical_or(pred_thresh, mask.numpy())
 
             # save final pred
             save_writer.write_seg(
                 pred_thresh.astype(np.uint8),
                 output_folder / f"{image_name}.{file_ending}"
             )
+            break
     logger.info("Done.")
 
 
