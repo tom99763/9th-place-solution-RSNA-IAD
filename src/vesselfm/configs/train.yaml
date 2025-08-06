@@ -19,8 +19,8 @@ path_to_chkpt: null
 devices: [0]
 
 # logging
-run_name: vesselfm
-wandb_project: vesselfm
+run_name: 'fine-tune-seg'
+wandb_project: 'rsna-intracranial-aneurysm'
 chkpt_folder: /path/where/to/store/chkpts
 offline: False
 

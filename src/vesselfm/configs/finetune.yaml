@@ -6,6 +6,7 @@ defaults:
 
 num_shots: 0
 lr: 0.00001
+fold_idx: 0
 threshold: 0.5
 devices: [0]
 run_name: vesselfm
