@@ -13,10 +13,10 @@ num_classes: 1
 # training
 seed: 404
 lr: 0.0001
-batch_size: 8
+batch_size: 4
 eval_path: /path/to/eval_set_pretrain
 path_to_chkpt: null
-devices: [0]
+devices: [1]
 
 # logging
 run_name: 'fine-tune-seg'

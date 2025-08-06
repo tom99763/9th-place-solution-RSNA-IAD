@@ -7,8 +7,8 @@ defaults:
 num_shots: 0
 lr: 0.00001
 fold_idx: 0
-threshold: 0.5
-devices: [0]
+threshold: 0.1
+devices: [1]
 run_name: vesselfm
 path_to_chkpt: /path/to/pretrained_ckpt
 chkpt_folder:  ./finetune_ckpts
@@ -18,9 +18,9 @@ dataloader:
 
 trainer:
   lightning_trainer:
-    val_check_interval: 200
-    max_steps: 1200
-    max_epochs: 1
+    val_check_interval: 20
+    max_steps: 3000
+    max_epochs: 50
 
   lightning_module:
     _target_: module.RSNAModuleFinetune

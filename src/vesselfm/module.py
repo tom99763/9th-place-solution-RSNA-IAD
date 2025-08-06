@@ -37,6 +37,7 @@ class RSNAModuleFinetune(lightning.LightningModule):
 
     def training_step(self, batch, batch_idx):
         image, mask = batch
+        mask = mask.float()
         pred_mask = self.model(image)
         loss = self.loss(pred_mask, mask)
         self.log(f"train_loss", loss.item(), logger=(self.rank == 0))

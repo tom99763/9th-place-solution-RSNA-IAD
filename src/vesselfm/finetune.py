@@ -108,8 +108,8 @@ def main(cfg):
     # train loop and eval
     wnb_logger.watch(model, log="all", log_freq=20)
     logger.info("Starting training")
-    trainer.validate(lightning_module, val_loader)
-    # trainer.fit(lightning_module, train_loader, val_loader)
+    # trainer.validate(lightning_module, val_loader)
+    trainer.fit(lightning_module, train_loader, val_loader)
 
 if __name__ == "__main__":
     sys.stdout = open(sys.stdout.fileno(), mode="w", buffering=1)
