@@ -1,9 +1,6 @@
 import logging
 import os
-
-import torch
 import lightning
-import numpy as np
 from monai.inferers.inferer import SlidingWindowInfererAdapt
 from utils.metrics import *
 
@@ -17,11 +14,9 @@ class RSNAModuleFinetune(lightning.LightningModule):
             optimizer_factory,
             prediction_threshold: float,
             scheduler_configs=None,
-            evaluator=None,
             dataset_name: str = None,
             input_size: tuple = None,
             batch_size: int = None,
-            num_shots: int = None,
             threshold: float = None,
             *args,
             **kwargs
@@ -33,14 +28,11 @@ class RSNAModuleFinetune(lightning.LightningModule):
         self.scheduler_configs = scheduler_configs
         self.prediction_threshold = prediction_threshold
         self.rank = 0 if "LOCAL_RANK" not in os.environ else os.environ["LOCAL_RANK"]
-        self.evaluator = evaluator
         self.dataset_name = dataset_name
         logger.info(f"Dataset name: {self.dataset_name}")
-        super().__init__(*args, **kwargs)
         self.sliding_window_inferer = SlidingWindowInfererAdapt(
             roi_size=input_size, sw_batch_size=batch_size, overlap=0.5,
         )
-        self.num_shots = num_shots
         self.threshold = threshold
 
     def training_step(self, batch, batch_idx):

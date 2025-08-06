@@ -83,7 +83,8 @@ def main(cfg):
     logger.info(f"Train dataset size mapped to {len(train_dataset)} samples")
 
     val_dataset = RSNASegDataset(val_uids, cfg.data.RSNA, 'val')
-    val_loader = hydra.utils.instantiate(cfg.dataloader)(dataset=val_dataset, batch_size=1)
+    val_loader = hydra.utils.instantiate(cfg.dataloader)(
+        dataset=val_dataset, batch_size=1, persistent_workers=True)
     logger.info(f"Val dataset size: {len(val_dataset)}")
 
     # init model
@@ -97,8 +98,11 @@ def main(cfg):
 
 
     # init lightning module
-    lightning_module = hydra.utils.instantiate(cfg.trainer.lightning_module)(
-        model=model, dataset_name=dataset_name, threshold = cfg.threshold
+    lightning_module = hydra.utils.instantiate(
+        cfg.trainer.lightning_module)(
+        model=model,
+        dataset_name=dataset_name,
+        threshold=cfg.threshold
     )
 
     # train loop and eval
