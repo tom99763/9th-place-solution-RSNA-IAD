@@ -5,6 +5,7 @@ import torch
 import lightning
 import numpy as np
 from monai.inferers.inferer import SlidingWindowInfererAdapt
+from utils.metrics import *
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class RSNAModuleFinetune(lightning.LightningModule):
             input_size: tuple = None,
             batch_size: int = None,
             num_shots: int = None,
+            threshold: float = None,
             *args,
             **kwargs
     ):
@@ -39,6 +41,7 @@ class RSNAModuleFinetune(lightning.LightningModule):
             roi_size=input_size, sw_batch_size=batch_size, overlap=0.5,
         )
         self.num_shots = num_shots
+        self.threshold = threshold
 
     def training_step(self, batch, batch_idx):
         image, mask = batch
@@ -54,31 +57,22 @@ class RSNAModuleFinetune(lightning.LightningModule):
             loss = self.loss(pred_mask, mask)
             self.log(f"{self.dataset_name}_val_loss", loss.item())
 
-            metrics = self.evaluator.estimate_metrics(
-                pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold, fast=True
+            recall, tp, fn = volumetric_recall(
+                pred_mask.sigmoid() > self.threshold,
+                mask > self.threshold
             )
-            for name, value in metrics.items():
-                value = value.item() if isinstance(value, (torch.Tensor, np.ndarray)) else value
-                self.log(f"{self.dataset_name}_val_{name}", value)
+            self.log("val_volumetric_recall", recall.item())
 
-                if name == "dice":
-                    self.log("val_DiceMetric", value)
+            # metrics = self.evaluator.estimate_metrics(
+            #     pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold, fast=True
+            # )
+            # for name, value in metrics.items():
+            #     value = value.item() if isinstance(value, (torch.Tensor, np.ndarray)) else value
+            #     self.log(f"{self.dataset_name}_val_{name}", value)
+            #
+            #     if name == "dice":
+            #         self.log("val_DiceMetric", value)
 
-        return loss
-
-    def test_step(self, batch, batch_idx):
-        image, mask = batch
-        with torch.no_grad():
-            pred_mask = self.sliding_window_inferer(image, self.model)
-            loss = self.loss(pred_mask, mask)
-            self.log(f"{self.dataset_name}_test_loss", loss.item())
-
-            metrics = self.evaluator.estimate_metrics(
-                pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold
-            )
-            for name, value in metrics.items():
-                value = value.item() if isinstance(value, (torch.Tensor, np.ndarray)) else value
-                self.log(f"{self.dataset_name}_test_{name}", value)
         return loss
 
     def configure_optimizers(self):

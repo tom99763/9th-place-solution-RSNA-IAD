@@ -6,6 +6,7 @@ defaults:
 
 num_shots: 0
 lr: 0.00001
+threshold: 0.5
 devices: [0]
 run_name: vesselfm
 path_to_chkpt: /path/to/pretrained_ckpt
