@@ -145,7 +145,6 @@ def main(cfg):
                 pred_thresh.astype(np.uint8),
                 output_folder / f"{image_name}.{file_ending}"
             )
-            break
     logger.info("Done.")
 
 
