@@ -1,10 +1,11 @@
 data_path = './data'
 windows = {
-        'CT': (40, 80),
-        'CTA': (50, 350),
-        'MRA': (600, 1200),
-        'MRI': (40, 80),
-    }
+    'CT': (40, 80),
+    'CTA': (50, 350),
+    'MRA': (600, 1200),
+    'MR': (600, 1200),
+    'MRI': (40, 80),
+}
 
 LABELS_TO_IDX = {
             'Anterior Communicating Artery': 0,

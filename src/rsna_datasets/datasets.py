@@ -52,15 +52,15 @@ class NpzDataModule(pl.LightningDataModule):
                           pin_memory=True, persistent_workers=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=1, num_workers=self.cfg.num_workers, pin_memory=True
+        return DataLoader(self.val_dataset, batch_size=1, shuffle=False, num_workers=self.cfg.num_workers, pin_memory=True
                           , persistent_workers=True)
-
 
 
 class NpzVolumeSliceDataset(Dataset):
     """
     Dataset to load .npz image volumes and serve random 2D slices.
     """
+
     def __init__(self, uids, cfg, transform=None, mode="train"):
 
         self.uids = uids
@@ -71,7 +71,7 @@ class NpzVolumeSliceDataset(Dataset):
         self.train_df = pd.read_csv(data_path / "train_df.csv")
         self.label_df = pd.read_csv(data_path / "label_df.csv")
 
-        self.num_classes = 13
+        self.num_classes = cfg.model.num_classes
         self.transform = transform
 
         self.mode = mode
@@ -84,9 +84,8 @@ class NpzVolumeSliceDataset(Dataset):
         uid = self.uids[idx]
         rowdf = self.train_df[self.train_df["SeriesInstanceUID"] == uid]
         labeldf = self.label_df[self.label_df["SeriesInstanceUID"] == uid]
-        with np.load(f"./src/data/processed/slices/{uid}.npz") as data:
+        with np.load(f"./data/processed/{uid}.npz") as data:
             volume = data['vol'].astype(np.float32)
-
 
         if self.mode == "train":
 
@@ -96,19 +95,30 @@ class NpzVolumeSliceDataset(Dataset):
 
             if int(rowdf["Aneurysm Present"].iloc[0]) == 1:
                 slice_idx = random.choice(labeldf["z"].tolist())
-                class_idxs = [LABELS_TO_IDX[c] for c in  labeldf[labeldf["z"] == slice_idx]["location"]]
+                class_idxs = [LABELS_TO_IDX[c] for c in labeldf[labeldf["z"] == slice_idx]["location"]]
                 slice = volume[slice_idx]
 
                 loc_labels[class_idxs] = 1
                 label = 1
 
             else:
+
+                # items = list(range(volume.shape[0]))
+                # mu = volume.shape[0] / 2
+                # sigma = volume.shape[0] * 0.25
+                #
+                #
+                # weights = np.exp(-((items - mu) ** 2) / (2 * sigma ** 2))
+                # weights /= weights.sum()
+                #
+                # # Sample one item
+                # sample = np.random.choice(items, p=weights)
+                # slice = volume[sample, :, :]
+
                 slice_idx = np.random.randint(0, volume.shape[0])
                 slice = volume[slice_idx, :, :]
 
-
             img = np.stack([slice] * 3, axis=-1)
-
 
             # Apply transforms if any (e.g., normalization, resizing)
             if self.transform:
@@ -117,18 +127,18 @@ class NpzVolumeSliceDataset(Dataset):
             return img, label, loc_labels
 
         else:
-            loc_labels = np.zeros((volume.shape[0] ,self.num_classes))
+            loc_labels = np.zeros((volume.shape[0], self.num_classes))
             label = np.zeros(volume.shape[0])
 
-            volume = np.stack([volume ,volume ,volume] ,axis=1)
+            volume = np.stack([volume, volume, volume], axis=1)
 
             if self.transform:
-                volume = self.transform(vol=volume)["vol"]
+                volume = self.transform(image=volume)["image"]
 
             if int(rowdf["Aneurysm Present"].iloc[0]) == 1:
                 for slice_idx in labeldf["z"]:
-                    class_idxs = [LABELS_TO_IDX[c] for c in  labeldf[labeldf["z"] == slice_idx]["location"]]
-                    loc_labels[slice_idx ,class_idxs] = 1
+                    class_idxs = [LABELS_TO_IDX[c] for c in labeldf[labeldf["z"] == slice_idx]["location"]]
+                    loc_labels[slice_idx, class_idxs] = 1
                     label[slice_idx] = 1
 
             return volume, label, loc_labels

@@ -1,0 +1,87 @@
+sample_prop: 1.0
+fold_idx: 0
+file_format: "nii"
+image_size: ${input_size}
+filter_dataset_IDs: null
+transforms:
+  train:
+    - EnsureChannelFirstd:
+        keys: ["Image", "Mask"]
+        channel_dim: "no_channel"
+    - CenterSpatialCropd:
+        keys: ["Image", "Mask"]
+        roi_size: ${input_size}
+    - ScaleIntensityd:
+        keys: ["Image"]
+        minv: 0
+        maxv: 1
+    - RandZoomd:
+        keys: ["Image", "Mask"]
+        prob: 0.3
+        min_zoom: 1
+        max_zoom: 1.3
+        mode: ["bilinear", "nearest"]
+        padding_mode: "zeros"
+    - SpatialPadd:
+        keys: ["Image", "Mask"]
+        spatial_size: ${input_size}
+        mode: "reflect"
+        method: "symmetric"
+    - RandAffined:
+        keys: ["Image", "Mask"]
+        prob: 0.3
+        shear_range: [0.4, 0.4, 0.4]
+        mode: ["bilinear", "nearest"]
+        padding_mode: "zeros"
+    - RandFlipd:
+        keys: ["Image", "Mask"]
+        prob: 0.3
+        spatial_axis: 0
+    - RandFlipd:
+        keys: ["Image", "Mask"]
+        prob: 0.3
+        spatial_axis: 1
+    - RandGaussianSmoothd:
+        keys: ["Image"]
+        prob: 0.2
+        sigma_x: [0.0, 0.5]
+        sigma_y: [0.0, 0.5]
+        sigma_z: [0.0, 0.5]
+    - RandGaussianNoised:
+        keys: ["Image"]
+        prob: 0.2
+        std: 0.01
+        mean: 0.3
+    - RandHistogramShiftd:
+        keys: ["Image"]
+        prob: 0.3
+        num_control_points: [5, 10]
+    - CenterSpatialCropd:
+        keys: ["Image", "Mask"]
+        roi_size: ${input_size}
+    - ToTensord:
+        keys: ["Image", "Mask"]
+  val:
+    - EnsureChannelFirstd:
+        keys: ["Image", "Mask"]
+        channel_dim: "no_channel"
+    - ScaleIntensityRangePercentilesd:
+        keys: ["Image"]
+        lower: 2
+        upper: 98
+        b_min: 0
+        b_max: 1
+    - ToTensord:
+        keys: [Image, Mask]
+  test:
+    - EnsureChannelFirstd:
+        keys: ["Image", "Mask"]
+        channel_dim: "no_channel"
+    - ScaleIntensityRangePercentilesd:
+        keys: ["Image"]
+        lower: 1
+        upper: 99
+        b_min: 0
+        b_max: 1
+    - ToTensord:
+        keys: [Image, Mask]

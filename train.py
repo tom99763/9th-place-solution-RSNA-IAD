@@ -27,7 +27,9 @@ def train(cfg: DictConfig) -> None:
                           monitor="val_loss"
                         , mode="min"
                         , dirpath="./models"
-                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"fold_id={cfg.fold_id}"
+                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}-{val_loc_auroc:.4f}'
+                                                       '-{val_cls_auroc:.4f}'+\
+                                   f"fold_id={cfg.fold_id}"
                         )
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')

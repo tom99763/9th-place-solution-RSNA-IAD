@@ -1,0 +1,43 @@
+defaults:
+  - train
+  - data: eval_rsna
+  - override data: eval_rsna
+  - _self_
+
+num_shots: 0
+lr: 0.00001
+threshold: 0.5
+devices: [0]
+run_name: vesselfm
+path_to_chkpt: /path/to/pretrained_ckpt
+chkpt_folder:  ./finetune_ckpts
+
+dataloader:
+  shuffle: False
+
+trainer:
+  lightning_trainer:
+    val_check_interval: 200
+    max_steps: 1200
+    max_epochs: 1
+
+  lightning_module:
+    _target_: module.RSNAModuleFinetune
+    _partial_: True
+    prediction_threshold: 0.62
+    batch_size: ${batch_size}
+    input_size: ${input_size}
+
+    scheduler_configs:
+      cosine_annealing_few:
+        interval: step
+        frequency: 10
+        scheduler:
+          _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+          _partial_: True
+          T_max: 1000
+          eta_min: 0.0000001
+          last_epoch: -1
+
+      linear_warmup: null 
+      cosine_annealing: null

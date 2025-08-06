@@ -8,7 +8,7 @@ torch.set_float32_matmul_precision('medium')
 class LitTimmClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
         super().__init__()
-        self.save_hyperparameters()  # Saves args to checkpoint
+        self.save_hyperparameters(ignore=['model'])  # Saves args to checkpoint
 
         self.model = model
         self.cfg = cfg
@@ -20,6 +20,7 @@ class LitTimmClassifier(pl.LightningModule):
 
         self.train_cls_auroc = torchmetrics.AUROC(task="binary")
         self.val_cls_auroc = torchmetrics.AUROC(task="binary")
+        self.automatic_optimization = False
 
     def forward(self, x):
         return self.model(x)
@@ -33,15 +34,22 @@ class LitTimmClassifier(pl.LightningModule):
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
 
-        loss = 2 * cls_loss + loc_loss
+        loss = 3 * cls_loss + loc_loss
 
         self.train_loc_auroc.update(pred_locs, loc_labels.long())
         self.train_cls_auroc.update(pred_cls, cls_labels.long())
 
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
+        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         # Log the metric object. Lightning computes and logs it at epoch end.
         self.log('train_loc_auroc', self.train_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_cls_auroc', self.train_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
+
+        # Manual backward pass
+        opt = self.optimizers()
+        opt.zero_grad()
+        self.manual_backward(loss)
+        opt.step()
+
         return loss
 
     def validation_step(self, sample, batch_idx):
@@ -66,16 +74,27 @@ class LitTimmClassifier(pl.LightningModule):
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
 
-        loss = 2 * cls_loss + loc_loss
+        loss = 3 * cls_loss + loc_loss
 
         self.val_loc_auroc.update(pred_locs, loc_labels.long())
         self.val_cls_auroc.update(pred_cls, cls_labels.long())
 
-        self.log('val_loss', loss, on_step=True, on_epoch=True, logger=False)
+        self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
         # Log the metric object. Lightning computes and logs it at epoch end.
         self.log('val_loc_auroc', self.val_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_cls_auroc', self.val_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
+    def on_train_epoch_end(self):
+        sch = self.lr_schedulers()
+
+        # If the selected scheduler is a ReduceLROnPlateau scheduler.
+        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (
+                self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
+            sch.step(self.trainer.callback_metrics["val_loss"])
+
     def configure_optimizers(self):
-        return instantiate(self.cfg.optimizer, params=self.parameters())
+        optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
+
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2)
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}
