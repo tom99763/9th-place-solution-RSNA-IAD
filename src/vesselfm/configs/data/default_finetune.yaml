@@ -23,10 +23,11 @@ transforms:
         mode: ["bilinear", "nearest"]
         padding_mode: "zeros"
     - SpatialPadd:
-        keys: ["Image", "Mask"]
+        keys: [ "Image", "Mask" ]
         spatial_size: ${input_size}
-        mode: "reflect"
-        method: "symmetric"
+        mode: "constant"            # Use constant padding instead of reflect
+        method: "symmetric"         # Keep as-is (symmetric padding on all sides)
+        # constant_values: 0        # (optional) set this if you want a value other than 0
     - RandAffined:
         keys: ["Image", "Mask"]
         prob: 0.3

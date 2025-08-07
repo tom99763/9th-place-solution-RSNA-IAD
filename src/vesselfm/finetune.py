@@ -87,7 +87,8 @@ def main(cfg):
         dataset=val_dataset, batch_size=1, persistent_workers=True)
     logger.info(f"Val dataset size: {len(val_dataset)}")
 
-    # init model
+
+    # # init model
     hf_hub_download(repo_id='bwittmann/vesselFM', filename='meta.yaml')  # required to track downloads
     ckpt = torch.load(
         hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
