@@ -29,6 +29,8 @@ class RSNASegDataset(Dataset):
         vol = self.reader.read_images(vol_path)[0].astype(np.float32)
         mask = self.reader.read_images(mask_path)[0].astype(bool)
         transformed = self.transforms({'Image': vol, 'Mask': mask})
+        if self.mode == 'train':
+            return transformed
         return transformed['Image'], transformed['Mask'] > 0
 
 

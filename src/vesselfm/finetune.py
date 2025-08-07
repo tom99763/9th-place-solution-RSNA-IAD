@@ -20,6 +20,20 @@ warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 
+def flatten_batch_collate_fn(batch):
+    # batch is a list of items, each can be a dict or list of dicts
+    flat = []
+    for item in batch:
+        if isinstance(item, list):
+            flat.extend(item)
+        else:
+            flat.append(item)
+
+    images = torch.stack([d['Image'] for d in flat], dim=0)
+    masks = torch.stack([d['Mask'] for d in flat], dim=0)
+    return images, masks > 0
+
+
 @hydra.main(config_path="configs", config_name="finetune", version_base="1.3.2")
 def main(cfg):
     #set seed
@@ -79,7 +93,11 @@ def main(cfg):
 
     # init dataloader
     train_dataset = RSNASegDataset(train_uids, cfg.data.RSNA, 'train')
-    train_loader = hydra.utils.instantiate(cfg.dataloader)(dataset=train_dataset, persistent_workers=True)
+    train_loader = hydra.utils.instantiate(cfg.dataloader)(
+        dataset=train_dataset,
+        persistent_workers=True,
+        collate_fn=flatten_batch_collate_fn
+    )
     logger.info(f"Train dataset size mapped to {len(train_dataset)} samples")
 
     val_dataset = RSNASegDataset(val_uids, cfg.data.RSNA, 'val')
