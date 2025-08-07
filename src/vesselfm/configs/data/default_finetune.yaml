@@ -14,7 +14,7 @@ transforms:
         spatial_size: ${input_size}
         pos: 1
         neg: 0
-        num_samples: 1
+        num_samples: 4  # <-- number of crops per sample
         image_key: "Image"
         allow_smaller: True
 #    - CenterSpatialCropd:
@@ -66,8 +66,16 @@ transforms:
         keys: ["Image"]
         prob: 0.3
         num_control_points: [5, 10]
-    - EnsureTyped:
-        keys: ["Image", "Mask"]
+
+    - ConcatItemsd:
+        keys: [ "Image", "Mask" ]
+        name: ["Image", "Mask"]
+        dim: 0
+    - ToTensord:
+        keys: [ "Image", "Mask" ]
+
+#    - EnsureTyped:
+#        keys: ["Image", "Mask"]
 
 #    - CenterSpatialCropd:
 #        keys: ["Image", "Mask"]

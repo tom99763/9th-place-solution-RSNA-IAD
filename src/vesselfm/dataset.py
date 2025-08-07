@@ -28,10 +28,7 @@ class RSNASegDataset(Dataset):
         mask_path = f'{self.data_path}/vessel_segments/{uid}.nii'
         vol = self.reader.read_images(vol_path)[0].astype(np.float32)
         mask = self.reader.read_images(mask_path)[0].astype(bool)
-        if self.mode == 'train':
-            transformed = self.transforms({'Image': vol, 'Mask': mask})[0]
-        else:
-            transformed = self.transforms({'Image': vol, 'Mask': mask})
+        transformed = self.transforms({'Image': vol, 'Mask': mask})
         return transformed['Image'], transformed['Mask'] > 0
 
 
