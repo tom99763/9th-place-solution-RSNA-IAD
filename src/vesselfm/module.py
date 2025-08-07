@@ -53,7 +53,7 @@ class RSNAModuleFinetune(lightning.LightningModule):
 
             recall, tp, fn = volumetric_recall(
                 pred_mask.sigmoid() > self.threshold,
-                mask > self.threshold
+                mask
             )
             self.log("val_volumetric_recall", recall.item(), prog_bar=True)
 

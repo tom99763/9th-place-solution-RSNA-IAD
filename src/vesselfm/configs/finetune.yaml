@@ -30,9 +30,11 @@ trainer:
     input_size: ${input_size}
 
     optimizer_factory:
-      _target_: torch.optim.Adam
+      _target_: torch.optim.AdamW
       _partial_: True
-      lr: 0.0001
+      lr: ${lr}
+      weight_decay: 0.1
+      betas: [ 0.9, 0.999 ]
 
     scheduler_configs:
       cosine_annealing_few:

@@ -61,12 +61,12 @@ def main(cfg):
         monitor=monitor_metric,
         save_top_k=1,
         mode="max",
-        filename=f"{run_name}_" + "{step}_{" + monitor_metric + ":.2f}",
-        auto_insert_metric_name=True,
+        filename = f"{run_name}-{{val_volumetric_recall:.4f}}",
+        #auto_insert_metric_name=True,
         save_last=True
     )
-    checkpoint_callback.CHECKPOINT_EQUALS_CHAR = ":"
-    checkpoint_callback.CHECKPOINT_NAME_LAST = run_name + "_last"
+    # checkpoint_callback.CHECKPOINT_EQUALS_CHAR = ":"
+    # checkpoint_callback.CHECKPOINT_NAME_LAST = run_name + "_last"
 
     # init trainer
     trainer = hydra.utils.instantiate(cfg.trainer.lightning_trainer)
@@ -109,7 +109,7 @@ def main(cfg):
     # train loop and eval
     wnb_logger.watch(model, log="all", log_freq=20)
     logger.info("Starting training")
-    # trainer.validate(lightning_module, val_loader)
+    #trainer.validate(lightning_module, val_loader)
     trainer.fit(lightning_module, train_loader, val_loader)
 
 if __name__ == "__main__":

@@ -57,9 +57,18 @@ transforms:
         keys: ["Image"]
         prob: 0.3
         num_control_points: [5, 10]
-    - CenterSpatialCropd:
+    - RandCropByPosNegLabeld:
         keys: ["Image", "Mask"]
-        roi_size: ${input_size}
+        label_key: "Mask"
+        spatial_size: ${input_size}
+        pos: 1
+        neg: 0
+        num_samples: 4
+        image_key: "Image"
+        allow_smaller: True
+#    - CenterSpatialCropd:
+#        keys: ["Image", "Mask"]
+#        roi_size: ${input_size}
     - ToTensord:
         keys: ["Image", "Mask"]
   val:
