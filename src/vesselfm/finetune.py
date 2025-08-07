@@ -79,7 +79,7 @@ def main(cfg):
 
     # init dataloader
     train_dataset = RSNASegDataset(train_uids, cfg.data.RSNA, 'train')
-    train_loader = hydra.utils.instantiate(cfg.dataloader)(dataset=train_dataset)
+    train_loader = hydra.utils.instantiate(cfg.dataloader)(dataset=train_dataset, persistent_workers=True)
     logger.info(f"Train dataset size mapped to {len(train_dataset)} samples")
 
     val_dataset = RSNASegDataset(val_uids, cfg.data.RSNA, 'val')

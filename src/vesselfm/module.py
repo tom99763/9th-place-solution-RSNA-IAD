@@ -49,13 +49,13 @@ class RSNAModuleFinetune(lightning.LightningModule):
         with torch.no_grad():
             pred_mask = self.sliding_window_inferer(image, self.model)
             loss = self.loss(pred_mask, mask)
-            self.log(f"{self.dataset_name}_val_loss", loss.item())
+            self.log(f"{self.dataset_name}_val_loss", loss.item(), prog_bar=True)
 
             recall, tp, fn = volumetric_recall(
                 pred_mask.sigmoid() > self.threshold,
                 mask > self.threshold
             )
-            self.log("val_volumetric_recall", recall.item())
+            self.log("val_volumetric_recall", recall.item(), prog_bar=True)
 
             # metrics = self.evaluator.estimate_metrics(
             #     pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold, fast=True
