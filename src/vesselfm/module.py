@@ -22,6 +22,7 @@ class RSNAModuleFinetune(lightning.LightningModule):
             **kwargs
     ):
         super().__init__()
+        print('threshold:', threshold)
         self.model = model
         self.loss = loss
         self.optimizer_factory = optimizer_factory

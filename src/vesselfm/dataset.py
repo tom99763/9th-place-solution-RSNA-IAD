@@ -17,6 +17,7 @@ class RSNASegDataset(Dataset):
         self.uids = uids
         self.reader = determine_reader_writer(dataset_config.file_format)()
         self.transforms = generate_transforms(dataset_config.transforms[mode])
+        self.mode = mode
 
     def __len__(self):
         return len(self.uids)
@@ -27,8 +28,10 @@ class RSNASegDataset(Dataset):
         mask_path = f'{self.data_path}/{uid}/{uid}_cowseg.nii'
         vol = self.reader.read_images(vol_path)[0].astype(np.float32)
         mask = self.reader.read_images(mask_path)[0].astype(int)
-        transformed = self.transforms({'Image': vol, 'Mask': mask})
-        print(type)
+        if self.mode == 'train':
+            transformed = self.transforms({'Image': vol, 'Mask': mask})[0]
+        else:
+            transformed = self.transforms({'Image': vol, 'Mask': mask})
         return transformed['Image'], transformed['Mask'] > 0
 
 
