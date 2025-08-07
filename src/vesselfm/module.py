@@ -40,7 +40,7 @@ class RSNAModuleFinetune(lightning.LightningModule):
         mask = mask.float()
         pred_mask = self.model(image)
         loss = self.loss(pred_mask, mask)
-        self.log(f"train_loss", loss.item(), logger=(self.rank == 0))
+        self.log(f"train_loss", loss.item(), logger=(self.rank == 0), prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):

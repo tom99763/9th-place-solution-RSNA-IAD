@@ -1,5 +1,6 @@
 lightning_trainer:
   _target_: lightning.pytorch.trainer.trainer.Trainer
+  default_root_dir: "./finetune_ckpts"
   _partial_: True
   val_check_interval: 1000
   max_time: "00:12:00:00"
