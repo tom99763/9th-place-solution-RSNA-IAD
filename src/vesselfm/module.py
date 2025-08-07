@@ -35,6 +35,9 @@ class RSNAModuleFinetune(lightning.LightningModule):
             roi_size=input_size, sw_batch_size=batch_size, overlap=0.5,
         )
         self.threshold = threshold
+        for i in range(len(self.model.upsamples)):
+            for param in self.model.upsamples[i].parameters():
+                param.requires_grad = False
 
     def training_step(self, batch, batch_idx):
         image, mask = batch

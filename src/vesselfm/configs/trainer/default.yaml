@@ -16,19 +16,19 @@ lightning_module:
   _partial_: True
   prediction_threshold: 0.5
 
-#  loss:
-#    _target_: monai.losses.DiceCELoss
-#    sigmoid: True
-#    reduction: "sum"
-#    squared_pred: True
-#    lambda_ce: 0.1
-#    lambda_dice: 0.9
   loss:
-    _target_: monai.losses.TverskyLoss
-    sigmoid: true
-    alpha: 0.3
-    beta: 0.7
-    reduction: mean
+    _target_: monai.losses.DiceCELoss
+    sigmoid: True
+    reduction: "mean"
+    squared_pred: True
+    lambda_ce: 0.1
+    lambda_dice: 0.9
+#  loss:
+#    _target_: monai.losses.TverskyLoss
+#    sigmoid: true
+#    alpha: 0.3
+#    beta: 0.7
+#    reduction: mean
 
   optimizer_factory:
     _target_: torch.optim.AdamW
