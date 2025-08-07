@@ -1,4 +1,3 @@
-
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from sklearn.metrics import roc_auc_score
@@ -7,31 +6,40 @@ import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 from pathlib import Path
-from configs import data_config
 from hydra.utils import instantiate
 from tqdm import tqdm
 
-import torch.cuda.amp as amp
-
 torch.set_float32_matmul_precision('medium')
 
-val_transforms = A.Compose([ A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)) ])
+mean = np.array([0.485, 0.485, 0.485], dtype=np.float32).reshape((1,3,1,1))
+std = np.array([0.229, 0.229, 0.229], dtype=np.float32).reshape((1,3,1,1))
 
+def create_rgb_slices(volume):
+
+    D, H, W = volume.shape
+    rgb_slices = []
+
+    for i in range(0, D):
+        rgb = np.stack([volume[max(0, i - 1)], volume[i], volume[min(i + 1, D - 1)]], axis=0)
+        rgb_slices.append(rgb)
+
+    return np.stack(rgb_slices, axis=0)
 
 @torch.no_grad()
 def eval_one_series(volume, model):
 
-    volume = np.stack([volume,volume,volume],axis=1)
-    volume = val_transforms(image=volume)["image"]
+    volume = create_rgb_slices(volume)
+    volume = (volume / 255 - mean) / std
     volume = torch.from_numpy(volume).cuda()
   
     pred_cls = []
     pred_locs = []
 
-    for batch_idx in range(0,volume.shape[0], 64):
-        pc,pl = model(volume[batch_idx:batch_idx+64])
-        pred_cls.append(pc)
-        pred_locs.append(pl)
+    with torch.cuda.amp.autocast():
+        for batch_idx in range(0,volume.shape[0], 64):
+            pc,pl = model(volume[batch_idx:batch_idx+64])
+            pred_cls.append(pc)
+            pred_locs.append(pl)
 
     pred_cls = torch.vstack(pred_cls)
     pred_locs = torch.vstack(pred_locs)
@@ -62,7 +70,7 @@ def validation(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
 
     model = instantiate(cfg.model, pretrained=False)
-    model_ckpt_name="efficient_b2_gaussian_sample-epoch=47-val_loss=0.4765_fold_id=0"
+    model_ckpt_name="efficient_b2_depth_slices-epoch=41-val_loss=0.6973_fold_id=0"
     # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
     # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
     # return
@@ -92,7 +100,7 @@ def validation(cfg: DictConfig) -> None:
         cls_labels.append(rowdf["Aneurysm Present"].iloc[0])
         loc_labels.append(loc_label)
 
-        with np.load(f"./data/processed/{uid}.npz") as data:
+        with np.load(f"./data/processed/slices/{uid}.npz") as data:
             volume = data['vol'].astype(np.float32)
             cls_prob, loc_probs =  eval_one_series(volume, model)
 
