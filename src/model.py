@@ -5,13 +5,13 @@ import torch.nn.functional as F
 
 
 class MultiBackboneModel(nn.Module):
-    """Flexible model that can use different backbones"""
 
     def __init__(self, model_name, in_chans, img_size, num_classes=13, pretrained=True,
-                 drop_rate=0.3, drop_path_rate=0.2):
+                 drop_rate=0.3, drop_path_rate=0.2, use_fpn=False, use_spatial_features=False,
+                 use_scale_attention: bool = False):
         super().__init__()
-
         self.model_name = model_name
+        self.img_size = img_size
 
         self.backbone = timm.create_model(
             model_name,
@@ -73,22 +73,17 @@ class MultiBackboneModel(nn.Module):
         )
 
     def forward(self, image):
-        # Extract image features
         img_features = self.backbone(image)
 
         # Apply appropriate pooling based on model type
         if hasattr(self, 'needs_pool') and self.needs_pool:
-            # Conv features - apply global pooling
             img_features = self.global_pool(img_features)
             img_features = img_features.flatten(1)
         elif hasattr(self, 'needs_seq_pool') and self.needs_seq_pool:
-            # Transformer features - average across sequence dimension
             img_features = img_features.mean(dim=1)
         elif len(img_features.shape) == 4:
-            # Fallback for any 4D output
             img_features = F.adaptive_avg_pool2d(img_features, 1).flatten(1)
         elif len(img_features.shape) == 3:
-            # Fallback for any 3D output
             img_features = img_features.mean(dim=1)
 
         # Classification
@@ -96,3 +91,4 @@ class MultiBackboneModel(nn.Module):
         cls_logit = self.aneurysm_classifier(img_features)
 
         return cls_logit, loc_output
+

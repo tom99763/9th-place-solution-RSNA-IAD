@@ -23,8 +23,8 @@ LABELS_TO_IDX = {
             'Right Supraclinoid Internal Carotid Artery': 12
 }
 
-IMG_SIZE = 640
-FACTOR = 3
+IMG_SIZE = 512
+FACTOR = 1
 SEED = 42
 N_FOLDS = 5
 CORES = 4

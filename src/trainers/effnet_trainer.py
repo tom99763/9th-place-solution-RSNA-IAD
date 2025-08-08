@@ -9,6 +9,7 @@ class LitTimmClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
         super().__init__()
         self.save_hyperparameters(ignore=['model']) 
+        self.automatic_optimization = False
         
         self.model = model
         self.cfg = cfg
@@ -40,7 +41,7 @@ class LitTimmClassifier(pl.LightningModule):
         loss = 3*cls_loss + loc_loss
 
         if self.global_step %10 == 0:
-            self.train_loc_auroc.update(pred_locs.detach(), loc_labels.int())
+            self.train_loc_auroc.update(torch.sigmoid(pred_locs.detach()), loc_labels.int())
             self.train_cls_auroc.update(torch.sigmoid(pred_cls.detach()), cls_labels.int())
 
         self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
@@ -68,7 +69,7 @@ class LitTimmClassifier(pl.LightningModule):
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels_float)
         loss = 3*cls_loss + loc_loss 
 
-        self.val_loc_auroc.update(pred_locs.detach(), loc_labels.int())
+        self.val_loc_auroc.update(torch.sigmoid(pred_locs.detach()), loc_labels.int())
         self.val_cls_auroc.update(torch.sigmoid(pred_cls.detach()), cls_labels.int())
 
         self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
@@ -167,17 +168,34 @@ class LitTimmClassifier(pl.LightningModule):
         except Exception as e:
             print(f"Error calculating series-level metrics: {e}")
         
+        # Step LR scheduler (ReduceLROnPlateau) after validation, when val metrics are available
+        try:
+            sch = self.lr_schedulers()
+            if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                val_loss = self.trainer.callback_metrics.get("val_loss")
+                if val_loss is not None:
+                    sch.step(val_loss)
+        except Exception as _:
+            pass
+
         # Clear validation outputs
         self.validation_outputs.clear()
 
     def on_train_epoch_end(self):
-        sch = self.lr_schedulers()
-
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
-            sch.step(self.trainer.callback_metrics["val_loss"])
+        pass
     
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
         
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2)
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "val_loss",
+                "interval": "epoch",
+                "frequency": 1,
+                "reduce_on_plateau": True,
+                "strict": False,
+            },
+        }

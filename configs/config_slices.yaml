@@ -9,22 +9,19 @@ use_small_dataset: false  # null = train on all folds except fold_id, or specify
 batch_size: 8  # training batch size
 val_batch_size: 64  # validation batch size
 num_workers: 2  
-experiment: slice_based_efficientnet_v2_baseline_25d_v1
-
+experiment: slice_based_efficientnet_v2_baseline_25d_dropout_95
 # Image mode configuration
 image_mode: "2.5D"  # Options: "2D" or "2.5D"
 
 # 2.5D specific configuration (only used when image_mode = "2.5D")
 num_adjacent_slices: 2  # Number of slices on each side. 1 = 3 total slices (prev, current, next)
                         # 2 = 5 total slices (current-2, current-1, current, current+1, current+2)
-reduce_channels_to_rgb: false  # If true, reduces channels to 3 for model compatibility
-                              # If false, uses all channels (requires model that supports variable input channels)
 
 
 
 # Balanced sampling configuration
 use_balanced_sampling: true  # Set to true to enable balanced pos/neg sampling
-pos_ratio: 0.5 # 0.75
+pos_ratio: 0.95 # 0.75
 
 use_wandb: true
 
@@ -32,7 +29,7 @@ use_wandb: true
 wandb:
   entity: null
   tags: ["tf_efficientnetv2_b0.in1k", "slice_based", "fold_${fold_id}"]
-  notes: "tf_efficientnetv2_b0.in1k 2.5D slices pos_ratio=0.5 num_adjacent_slices=3"
+  notes: "tf_efficientnetv2_b0.in1k 2.5D slices pos_ratio=0.5 num_adjacent_slices=2"
 
 # The 'defaults' list tells Hydra which configs to load by default.
 defaults:

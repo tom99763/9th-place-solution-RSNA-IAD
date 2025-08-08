@@ -4,8 +4,8 @@ _target_: src.model.MultiBackboneModel
 model_name: "tf_efficientnetv2_b0.in1k"
 
 in_chans: 5
-img_size: 640
+img_size: 512
 num_classes: 13
-drop_path_rate: 0.0
-drop_rate: 0.0
+drop_path_rate: 0.1
+drop_rate: 0.1
 pretrained: True
