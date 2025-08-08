@@ -8,6 +8,7 @@ import pytorch_lightning as pl
 from pathlib import Path
 from hydra.utils import instantiate
 from tqdm import tqdm
+import cv2
 
 torch.set_float32_matmul_precision('medium')
 
@@ -50,16 +51,20 @@ def eval_one_series(volume, model):
 
     pred_cls = pred_cls.squeeze()
 
+    # Use max aggregation across slices (same as inference)
     return pred_cls.max().sigmoid().item(), pred_locs.max(dim=0).values.sigmoid().cpu().numpy()
 
 
 class LitTimmClassifier(pl.LightningModule):
-    def __init__(self, model, cfg):
+    def __init__(self, model=None, cfg=None):
         super().__init__()
-        self.save_hyperparameters() # Saves args to checkpoint
         
-        self.model = model
-        self.cfg = cfg
+        # If loading from checkpoint, model and cfg will be None initially
+        if model is not None:
+            self.model = model
+        if cfg is not None:
+            self.cfg = cfg
+            self.save_hyperparameters()  # Saves args to checkpoint
 
     def forward(self, x):
         return self.model(x)
@@ -72,6 +77,7 @@ def validation(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
 
     pl.seed_everything(cfg.seed)
+
 
     model = instantiate(cfg.model, pretrained=False)
     model_ckpt_name="efficient_b2_mip-epoch=26-val_loss=0.3833_fold_id=0"
@@ -88,28 +94,39 @@ def validation(cfg: DictConfig) -> None:
     
     val_uids = list(df[df["fold_id"] == cfg.fold_id]["SeriesInstanceUID"])
    
+
     cls_labels = []
     loc_labels = []
     pred_cls_probs = []
     pred_loc_probs = []
 
-    for uid in tqdm(val_uids):
-        rowdf = df[df["SeriesInstanceUID"] == uid]
+    for uid in tqdm(val_series_uids, desc="Validating series"):
+        # Get series-level labels from train_df
+        series_row = train_df[train_df["SeriesInstanceUID"] == uid]
+        if series_row.empty:
+            print(f"Warning: No labels found for series {uid}")
+            continue
+            
+        series_row = series_row.iloc[0]
 
+        # Get location labels
         loc_label = np.zeros(13)
-
         for idx, label in enumerate(LABELS):
-            loc_label[idx] = int(rowdf[label].iloc[0])
+            loc_label[idx] = int(series_row[label])
 
-        cls_labels.append(rowdf["Aneurysm Present"].iloc[0])
+        cls_labels.append(series_row["Aneurysm Present"])
         loc_labels.append(loc_label)
 
         with np.load(f"./data/processed/slices/{uid}.npz") as data:
             volume = data['vol'].astype(np.float32)
             cls_prob, loc_probs =  eval_one_series(volume, model)
 
-            pred_cls_probs.append(cls_prob)
-            pred_loc_probs.append(loc_probs)
+
+        # Evaluate using slice-based approach
+        cls_prob, loc_probs = eval_one_series(slice_files, pl_model, data_path)
+
+        pred_cls_probs.append(cls_prob)
+        pred_loc_probs.append(loc_probs)
 
     cls_labels = np.array(cls_labels)
     pred_cls_probs = np.array(pred_cls_probs)
