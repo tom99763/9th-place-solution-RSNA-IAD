@@ -6,5 +6,5 @@ in_chans: 3
 img_size: 512
 num_classes: 13
 drop_path_rate: 0.2
-drop_rate: 0.4
+drop_rate: 0.3
 pretrained: True

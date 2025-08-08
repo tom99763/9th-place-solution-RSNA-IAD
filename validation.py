@@ -11,25 +11,29 @@ from tqdm import tqdm
 
 torch.set_float32_matmul_precision('medium')
 
-mean = np.array([0.485, 0.485, 0.485], dtype=np.float32).reshape((1,3,1,1))
-std = np.array([0.229, 0.229, 0.229], dtype=np.float32).reshape((1,3,1,1))
+mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape((1,3,1,1))
+std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape((1,3,1,1))
 
 def create_rgb_slices(volume):
 
-    D, H, W = volume.shape
-    rgb_slices = []
+    middle_slice = volume[volume.shape[0] // 2]
+    mip = np.max(volume, axis=0)
+    std_proj = np.std(volume, axis=0).astype(np.float32)
 
-    for i in range(0, D):
-        rgb = np.stack([volume[max(0, i - 1)], volume[i], volume[min(i + 1, D - 1)]], axis=0)
-        rgb_slices.append(rgb)
+    # Normalize std projection
+    if std_proj.max() > std_proj.min():
+        std_proj = ((std_proj - std_proj.min()) / (std_proj.max() - std_proj.min()) * 255).astype(np.uint8)
+    else:
+        std_proj = np.zeros_like(std_proj, dtype=np.uint8)
 
-    return np.stack(rgb_slices, axis=0)
+    image = np.stack([middle_slice, mip, std_proj], axis=0)
+    image = (image / 255 - mean) / std
+    return image
 
 @torch.no_grad()
 def eval_one_series(volume, model):
 
     volume = create_rgb_slices(volume)
-    volume = (volume / 255 - mean) / std
     volume = torch.from_numpy(volume).cuda()
   
     pred_cls = []
@@ -70,7 +74,7 @@ def validation(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
 
     model = instantiate(cfg.model, pretrained=False)
-    model_ckpt_name="efficient_b2_depth_slices-epoch=41-val_loss=0.6973_fold_id=0"
+    model_ckpt_name="efficient_b2_mip-epoch=26-val_loss=0.3833_fold_id=0"
     # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
     # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
     # return

@@ -37,7 +37,7 @@ class LitTimmClassifier(pl.LightningModule):
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
 
-        loss = 3*cls_loss + loc_loss
+        loss = (cls_loss + loc_loss) / 2
 
         self.train_loc_auroc.update(pred_locs, loc_labels.long())
         self.train_cls_auroc.update(pred_cls, cls_labels.long())
@@ -58,27 +58,16 @@ class LitTimmClassifier(pl.LightningModule):
 
     def validation_step(self, sample, batch_idx):
         x,cls_labels, loc_labels = sample
-        x.squeeze_()
-        cls_labels.squeeze_()
-        loc_labels.squeeze_()
 
-        pred_cls = []
-        pred_locs = []
-
-        for batch_idx in range(0,x.shape[0], 64):
-            pc,pl = self(x[batch_idx:batch_idx+64])
-            pred_cls.append(pc)
-            pred_locs.append(pl)
-
-        pred_cls = torch.vstack(pred_cls)
-        pred_locs = torch.vstack(pred_locs)
+        pred_cls, pred_locs =self(x)
+        pred_cls = pred_cls.squeeze()
 
         pred_cls = pred_cls.squeeze()
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
+        cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
 
-        loss = 3*cls_loss + loc_loss
+        loss = (cls_loss + loc_loss) / 2
 
         self.val_loc_auroc.update(pred_locs, loc_labels.long())
         self.val_cls_auroc.update(pred_cls, cls_labels.long())
@@ -99,5 +88,5 @@ class LitTimmClassifier(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
         
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=4)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
