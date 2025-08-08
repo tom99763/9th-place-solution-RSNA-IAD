@@ -8,8 +8,11 @@ import pydicom
 import cv2
 import multiprocessing
 from tqdm import tqdm
+
 import sys
-from typing import Tuple
+sys.path.append("..")
+
+from rsna.configs.data_config import *
 
 # Add the parent directory to the path to find configs module
 current_dir = Path(__file__).parent
@@ -28,30 +31,65 @@ def initializer(label_df, target_dir):
     label_df_global = label_df
     target_dir_global = target_dir
 
-def apply_dicom_windowing(img: np.ndarray, window_center: float, window_width: float, preserve_contrast=True) -> np.ndarray:
-    img_min = window_center - window_width / 2
-    img_max = window_center + window_width / 2
-    img_clipped = np.clip(img, img_min, img_max)
-    img_normalized = (img_clipped - img_min) / (img_max - img_min + 1e-7)
-    img_processed = (img_normalized * 255).astype(np.uint8)
-    if preserve_contrast:
-        img_processed = cv2.equalizeHist(img_processed)
-    return img_processed
+def preprocess_dcm_slice(image, dcm, output_size=(IMG_SIZE, IMG_SIZE), window_level=150, window_width=350):
+    """
+    Reads and preprocesses a single DICOM slice from a CTA or MRA scan.
 
-def get_windowing_params(modality: str) -> Tuple[float, float]:
-    return windows.get(modality, (40, 80))
+    For CTA scans, it applies a specific vascular window to highlight arteries.
+    For other modalities like MRA, it performs standard min-max normalization.
+    The final image is resized and returned as an 8-bit grayscale numpy array.
 
-def process_slice(img, ds):
-    modality = getattr(ds, 'Modality', 'CT')
-    if hasattr(ds, 'RescaleSlope') and hasattr(ds, 'RescaleIntercept'):
-        img = img * ds.RescaleSlope + ds.RescaleIntercept
-    #window_center, window_width = get_windowing_params(modality)
-    #img = apply_dicom_windowing(img, window_center, window_width)
-    img_normalized = (img - img.min()) / (img.max() - img.min() + 1e-7)
-    img = (img_normalized * 255).astype(np.uint8)
-    img = cv2.equalizeHist(img)
-    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-    return img
+    Args:
+        dcm_path (str): The full path to the .dcm file.
+        output_size (tuple): The target dimensions for the output image (width, height).
+        window_level (int): The window level (center) for CTA windowing in HU.
+        window_width (int): The window width for CTA windowing in HU.
+
+    Returns:
+        numpy.ndarray: The preprocessed 8-bit grayscale image, or None if an error occurs.
+    """
+    try:
+
+        # Get the pixel data from the DICOM file
+        image = image.astype(np.float64)
+
+        # 2. Check if the modality is 'CT' to decide on the processing method
+        # The DICOM tag (0008,0060) specifies the modality
+        is_ct_scan = 'CT' in dcm.get('Modality', '').upper()
+
+        if is_ct_scan:
+            # For CT scans, convert pixel data to Hounsfield Units (HU)
+            # using the Rescale Slope and Intercept values from DICOM metadata
+            if 'RescaleSlope' in dcm and 'RescaleIntercept' in dcm:
+                image = image * dcm.RescaleSlope + dcm.RescaleIntercept
+
+            # Apply the vascular windowing
+            lower_bound = window_level - (window_width / 2)
+            upper_bound = window_level + (window_width / 2)
+            
+            # Clip the image to the window range
+            image = np.clip(image, lower_bound, upper_bound)
+            
+            # Normalize the windowed image to a 0-255 scale
+            image = ((image - lower_bound) / window_width) * 255.0
+
+        else:
+            # 3. For non-CT scans (like MRA), perform standard min-max normalization
+            if np.max(image) != np.min(image):
+                image = ((image - np.min(image)) / (np.max(image) - np.min(image))) * 255.0
+
+        # Convert the final processed image to an 8-bit unsigned integer format
+        image = image.astype(np.uint8)
+
+        # 4. Resize the image to the desired output size
+        processed_image = cv2.resize(image, output_size, interpolation=cv2.INTER_LINEAR)
+
+        return processed_image
+
+    except Exception as e:
+        print(f"Error processing the file {dcm_path}: {e}")
+        return None
+
 
 def process_dicom_series(uid: str):
     global label_df_global
@@ -84,7 +122,7 @@ def process_dicom_series(uid: str):
             if hasattr(ds, "InstanceNumber"):
                 instance_numbers.append(ds.InstanceNumber)
             z_val = getattr(ds, "ImagePositionPatient", [0])[-1] if hasattr(ds, "ImagePositionPatient") else int(getattr(ds, "InstanceNumber", 0))
-            slices.append((z_val, process_slice(img, ds)))
+            slices.append((z_val, preprocess_dcm_slice(img, ds)))
 
     instance_numbers = sorted(instance_numbers)
     start_instance_number = instance_numbers[0] - 1 if instance_numbers else 0

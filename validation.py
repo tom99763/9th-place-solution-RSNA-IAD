@@ -6,67 +6,45 @@ import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 from pathlib import Path
-from configs import data_config
 from hydra.utils import instantiate
 from tqdm import tqdm
 import cv2
 
 torch.set_float32_matmul_precision('medium')
 
-def preprocess_slice(slice_img):
-    """
-    Apply the same preprocessing as training pipeline.
-    The slice is already processed by prepare_data_slices.py, so we just need to:
-    1. Create 3-channel image (matches slice_datasets.py)
-    2. Convert to tensor format (matches validation transforms)
-    """
-    # Create 3-channel image (required for most models) - matches slice_datasets.py line 115
-    img = np.stack([slice_img] * 3, axis=-1)
-    
-    # Convert to tensor if no transforms (matches slice_datasets.py line 140)
-    img = torch.from_numpy(img.transpose(2, 0, 1))  # HWC to CHW
-    
-    return img
+mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape((1,3,1,1))
+std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape((1,3,1,1))
+
+def create_rgb_slices(volume):
+
+    middle_slice = volume[volume.shape[0] // 2]
+    mip = np.max(volume, axis=0)
+    std_proj = np.std(volume, axis=0).astype(np.float32)
+
+    # Normalize std projection
+    if std_proj.max() > std_proj.min():
+        std_proj = ((std_proj - std_proj.min()) / (std_proj.max() - std_proj.min()) * 255).astype(np.uint8)
+    else:
+        std_proj = np.zeros_like(std_proj, dtype=np.uint8)
+
+    image = np.stack([middle_slice, mip, std_proj], axis=0)
+    image = (image / 255 - mean) / std
+    return image
 
 @torch.no_grad()
-def eval_one_series(slice_files, model, data_path):
-    """
-    Evaluate individual slices for a series using slice-based approach.
-    Loads and preprocesses individual slice files like the training pipeline.
-    """
-    slices = []
-    
-    # Load and preprocess individual slices
-    for slice_filename in slice_files:
-        slice_path = data_path / "individual_slices" / slice_filename
-        
-        with np.load(slice_path) as data:
-            slice_img = data['slice'].astype(np.float32)
-        
-        # Apply same preprocessing as training (CRITICAL for accurate validation)
-        processed_slice = preprocess_slice(slice_img)
-        slices.append(processed_slice)
-    
-    if not slices:
-        # Return default predictions if no slices
-        return 0.1, np.array([0.1] * 13)
-    
-    # Stack slices into batch
-    volume = torch.stack(slices).cuda()
-    
-    # Debug: Print tensor info for first batch
-    if len(slices) > 0:
-        print(f"Volume shape: {volume.shape}, dtype: {volume.dtype}, device: {volume.device}")
+def eval_one_series(volume, model):
 
+    volume = create_rgb_slices(volume)
+    volume = torch.from_numpy(volume).cuda()
+  
     pred_cls = []
     pred_locs = []
 
-    # Process slices in batches
-    for batch_idx in range(0, volume.shape[0], 64):
-        batch_slices = volume[batch_idx:batch_idx+64]
-        pc, pl = model(batch_slices)
-        pred_cls.append(pc)
-        pred_locs.append(pl)
+    with torch.cuda.amp.autocast():
+        for batch_idx in range(0,volume.shape[0], 64):
+            pc,pl = model(volume[batch_idx:batch_idx+64])
+            pred_cls.append(pc)
+            pred_locs.append(pl)
 
     pred_cls = torch.vstack(pred_cls)
     pred_locs = torch.vstack(pred_locs)
@@ -100,39 +78,22 @@ def validation(cfg: DictConfig) -> None:
 
     pl.seed_everything(cfg.seed)
 
-    # Load slice-based model - alternative approach to avoid checkpoint loading issues
-    try:
-        pl_model = LitTimmClassifier.load_from_checkpoint(
-            "/home/sersasj/RSNA-IAD-Codebase/models/slice_based_efficientnet_v2_cls-epoch=39-val_loss=1.2832fold_id=0 copy.ckpt"
-        )
-    except Exception as e:
-        print(f"Failed to load from checkpoint: {e}")
-        print("Using alternative loading method...")
-        
-        # Alternative: manually instantiate model and load state dict
-        from hydra.utils import instantiate
-        model = instantiate(cfg.model, pretrained=False)
-        pl_model = LitTimmClassifier(model, cfg)
-        
-        # Load only the state dict
-        checkpoint = torch.load("/home/sersasj/RSNA-IAD-Codebase/models/slice_based_efficientnet_v2_cls-epoch=39-val_loss=1.2832fold_id=0 copy.ckpt")
-        pl_model.load_state_dict(checkpoint['state_dict'])
-    
-    # CRITICAL: Move model to GPU to match input tensors
-    pl_model = pl_model.cuda()
-    pl_model.eval()
+
+    model = instantiate(cfg.model, pretrained=False)
+    model_ckpt_name="efficient_b2_mip-epoch=26-val_loss=0.3833_fold_id=0"
+    # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
+    # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
+    # return
+
+   
+    model.load_state_dict(torch.load(f"{model_ckpt_name}.pth"))
+    model.cuda().eval()
 
     data_path = Path(cfg.data_dir)
+    df = pd.read_csv(data_path / "train_df.csv")
     
-    # Load slice-based data instead of volume-based data
-    slice_df = pd.read_csv(data_path / "slice_df.csv")
-    train_df = pd.read_csv(data_path / "train_df_slices.csv")  # For series-level labels
-
-    # Get validation series UIDs
-    val_slice_df = slice_df[slice_df["fold_id"] == cfg.fold_id]
-    val_series_uids = val_slice_df["series_uid"].unique()
-
-    print(f"Validating on {len(val_series_uids)} series with {len(val_slice_df)} individual slices")
+    val_uids = list(df[df["fold_id"] == cfg.fold_id]["SeriesInstanceUID"])
+   
 
     cls_labels = []
     loc_labels = []
@@ -156,16 +117,10 @@ def validation(cfg: DictConfig) -> None:
         cls_labels.append(series_row["Aneurysm Present"])
         loc_labels.append(loc_label)
 
-        # Get all slice files for this series
-        series_slices = val_slice_df[val_slice_df["series_uid"] == uid]
-        slice_files = series_slices["slice_filename"].tolist()
-        
-        if not slice_files:
-            print(f"Warning: No slices found for series {uid}")
-            # Use default predictions
-            pred_cls_probs.append(0.1)
-            pred_loc_probs.append(np.array([0.1] * 13))
-            continue
+        with np.load(f"./data/processed/slices/{uid}.npz") as data:
+            volume = data['vol'].astype(np.float32)
+            cls_prob, loc_probs =  eval_one_series(volume, model)
+
 
         # Evaluate using slice-based approach
         cls_prob, loc_probs = eval_one_series(slice_files, pl_model, data_path)
@@ -179,14 +134,15 @@ def validation(cfg: DictConfig) -> None:
     loc_labels = np.stack(loc_labels)
     pred_loc_probs = np.stack(pred_loc_probs)
 
-    # Calculate metrics
+    np.savez("labels.npz", cls_probs=pred_cls_probs, loc_probs=pred_loc_probs)
+
+    pred_loc_probs = np.nan_to_num(pred_loc_probs, nan=0.1)
+    pred_cls_probs = np.nan_to_num(pred_cls_probs, nan=0.1)
+
     loc_auc_macro = roc_auc_score(loc_labels, pred_loc_probs, average="micro")
     cls_auc = roc_auc_score(cls_labels, pred_cls_probs)
 
-    print(f"Fold: {cfg.fold_id}, cls_auc: {cls_auc}, loc_auc_macro: {loc_auc_macro}")
-    print(f"Total validation samples: {len(cls_labels)}")
-    print(f"Positive samples: {np.sum(cls_labels)}")
-    print(f"Negative samples: {len(cls_labels) - np.sum(cls_labels)}")
+    print(f"Fold: {cfg.fold_id}, cls_auc: {cls_auc}, loc_auc_macro: {loc_auc_macro}, cv: {(cls_auc + loc_auc_macro) / 2}")
 
         
 

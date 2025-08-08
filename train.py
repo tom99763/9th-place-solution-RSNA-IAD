@@ -1,13 +1,15 @@
+import torch
 import hydra
 from omegaconf import DictConfig, OmegaConf
-import sys
-sys.path.append('./src')
+
 from src.rsna_datasets.datasets import *
 from src.rsna_datasets.slice_datasets import *
 from src.trainers.effnet_trainer import *
 from hydra.utils import instantiate
-torch.set_float32_matmul_precision('medium')
 
+import pytorch_lightning as pl
+
+torch.set_float32_matmul_precision('medium')
 
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
 def train(cfg: DictConfig) -> None:
@@ -28,9 +30,10 @@ def train(cfg: DictConfig) -> None:
                           monitor="val_kaggle_score"
                         , mode="max"
                         , dirpath="./models"
+
                         , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_kaggle_score:.4f}'+f"fold_id={cfg.fold_id}",
                         save_top_k=3,
-                        )
+
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
 
@@ -52,6 +55,17 @@ def train(cfg: DictConfig) -> None:
         logger=loggers,
         callbacks=[lr_monitor, ckpt_callback]
     )
+    
+    # tuner = Tuner(trainer)
+    # # 3. Call lr_find on the Tuner instance
+    # lr_find_results = tuner.lr_find(pl_model, datamodule=datamodule)
+    #
+    # # 4. Get the suggested learning rate and plot
+    # suggested_lr = lr_find_results.suggestion()
+    # print(f"Suggested LR: {suggested_lr}")
+    # fig = lr_find_results.plot(suggest=True)
+    # fig.show()
+
     trainer.fit(pl_model, datamodule=datamodule)
     
     if cfg.use_wandb:
@@ -60,4 +74,3 @@ def train(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     train()
-    

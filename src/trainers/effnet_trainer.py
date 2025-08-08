@@ -8,8 +8,9 @@ torch.set_float32_matmul_precision('medium')
 class LitTimmClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
         super().__init__()
-        self.save_hyperparameters(ignore=['model']) 
+        self.save_hyperparameters(ignore=['model']) # Saves args to checkpoint
         self.automatic_optimization = False
+
         
         self.model = model
         self.cfg = cfg
@@ -23,8 +24,10 @@ class LitTimmClassifier(pl.LightningModule):
 
         self.train_cls_auroc = torchmetrics.AUROC(task="binary")
         self.val_cls_auroc = torchmetrics.AUROC(task="binary")
+
        
         self.validation_outputs = []
+
 
     def forward(self, x):
         return self.model(x)
@@ -187,6 +190,7 @@ class LitTimmClassifier(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
         
+
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2)
         return {
             "optimizer": optimizer,
