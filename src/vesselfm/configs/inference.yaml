@@ -18,7 +18,7 @@ ckpt_path: /path/to/ckpt.pt
 
 # sliding window inferer
 batch_size: 1
-patch_size: [64, 64, 64]
+patch_size: [128, 128, 128]
 overlap: 0.5
 mode: "constant"
 sigma_scale: 0.125
