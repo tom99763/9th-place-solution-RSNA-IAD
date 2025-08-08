@@ -6,7 +6,7 @@ defaults:
 # i/o
 image_path: ../rsna_data/segmentations
 image_file_ending: nii
-output_folder: ../rsna_data/vessel_segments
+output_folder: ../rsna_data/vessel_segments_finetune
 file_app: ""
 
 mask_path: null
@@ -14,7 +14,7 @@ round_to: 2
 
 # model & ckpt
 device: cuda:0
-ckpt_path: /path/to/ckpt.pt
+ckpt_path: ./rsna-iad-vesselfm-finetuned/finetune_rsna_vesselfm-val_volumetric_recall0.7549.ckpt
 
 # sliding window inferer
 batch_size: 1

@@ -25,14 +25,18 @@ logger = logging.getLogger(__name__)
 def load_model(cfg, device):
     try:
         logger.info(f"Loading model from {cfg.ckpt_path}.")
-        ckpt = torch.load(Path(cfg.ckpt_path), map_location=device, weights_only=True)
-    except:
+        ckpt = torch.load(Path(cfg.ckpt_path), map_location=device, weights_only=False)['state_dict']
+        ckpt = {k.replace("model.", ""): v for k, v in ckpt.items()}
+        print('load local ckpt')
+    except Exception as e:
+        print(f'Error:{e}')
         logger.info(f"Loading model from Hugging Face.")
         hf_hub_download(repo_id='bwittmann/vesselFM', filename='meta.yaml')  # required to track downloads
         ckpt = torch.load(
             hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
             map_location=device, weights_only=True
         )
+        print('load hugging face ckpt')
 
     model = hydra.utils.instantiate(cfg.model)
     model.load_state_dict(ckpt)
@@ -138,7 +142,7 @@ def main(cfg):
                     pred_thresh, min_size=cfg.post.small_objects_min_size,
                     connectivity=cfg.post.small_objects_connectivity
                 )
-            pred_thresh = np.logical_or(pred_thresh, mask.numpy())
+            #pred_thresh = np.logical_or(pred_thresh, mask.numpy())
 
             # save final pred
             save_writer.write_seg(
