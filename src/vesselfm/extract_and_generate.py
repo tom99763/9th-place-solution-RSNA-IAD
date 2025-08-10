@@ -44,11 +44,59 @@ def load_model(cfg, device):
     model.load_state_dict(ckpt)
     return model
 
-def load_series2vol(series_path):
+
+def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resample=False, default_thickness=1.0):
     reader = sitk.ImageSeriesReader()
-    dicom_names = reader.GetGDCMSeriesFileNames(series_path)
-    reader.SetFileNames(dicom_names)
+
+    # Get all series IDs
+    series_ids = reader.GetGDCMSeriesIDs(series_path)
+    if not series_ids:
+        raise RuntimeError(f"No DICOM series found in {series_path}")
+
+    # Pick first if not specified
+    if series_id is None:
+        series_id = series_ids[0]
+    else:
+        series_id = str(series_id)
+
+    # Get file names
+    all_files = reader.GetGDCMSeriesFileNames(series_path, series_id)
+
+    # --- Filter files by consistent size ---
+    file_sizes = {}
+    for f in all_files:
+        img = sitk.ReadImage(f)
+        file_sizes.setdefault(img.GetSize(), []).append(f)
+
+    # Pick the most common size
+    target_size = max(file_sizes, key=lambda k: len(file_sizes[k]))
+    files = file_sizes[target_size]
+
+    reader.SetFileNames(files)
     image = reader.Execute()
+
+    # --- Fix zero thickness ---
+    spacing = list(image.GetSpacing())
+    if spacing[2] == 0:
+        spacing[2] = default_thickness
+        image.SetSpacing(spacing)
+
+    # --- Optional resample ---
+    if resample and abs(spacing[2] - spacing[0]) > spacing_tolerance:
+        new_spacing = [spacing[0], spacing[1], spacing[0]]
+        new_size = [
+            int(round(image.GetSize()[0] * spacing[0] / new_spacing[0])),
+            int(round(image.GetSize()[1] * spacing[1] / new_spacing[1])),
+            int(round(image.GetSize()[2] * spacing[2] / new_spacing[2]))
+        ]
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetOutputSpacing(new_spacing)
+        resampler.SetSize(new_size)
+        resampler.SetOutputDirection(image.GetDirection())
+        resampler.SetOutputOrigin(image.GetOrigin())
+        resampler.SetInterpolator(sitk.sitkLinear)
+        image = resampler.Execute(image)
+
     volume = sitk.GetArrayFromImage(image)
     return volume
 
