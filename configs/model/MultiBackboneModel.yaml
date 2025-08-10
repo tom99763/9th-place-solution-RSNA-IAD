@@ -1,4 +1,3 @@
-
 _target_: src.model.MultiBackboneModel
 model_name: "efficientnet_b2"
 

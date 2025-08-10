@@ -9,6 +9,9 @@ batch_size: 12
 num_workers: 8
 experiment: naive_efficientnet_cls
 
+modality:
+  - CTA
+
 
 # The 'defaults' list tells Hydra which configs to load by default.
 # It will look for 'lightgbm.yaml' inside the 'model' sub-directory.

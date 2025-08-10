@@ -11,10 +11,10 @@ from tqdm import tqdm
 
 torch.set_float32_matmul_precision('medium')
 
-mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape((1,3,1,1))
-std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape((1,3,1,1))
 
-def create_rgb_slices(volume):
+def create_mip(volume):
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape((1,3,1,1))
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape((1,3,1,1))
 
     middle_slice = volume[volume.shape[0] // 2]
     mip = np.max(volume, axis=0)
@@ -30,10 +30,32 @@ def create_rgb_slices(volume):
     image = (image / 255 - mean) / std
     return image
 
-@torch.no_grad()
-def eval_one_series(volume, model):
+def create_rgb_slices(volume):
 
-    volume = create_rgb_slices(volume)
+    mean = np.array([0.485, 0.485, 0.485], dtype=np.float32).reshape((1,3,1,1))
+    std = np.array([0.229, 0.229, 0.229], dtype=np.float32).reshape((1,3,1,1))
+
+    D, H, W = volume.shape
+
+    rgb_slices = []
+
+    for i in range(0, D):
+        rgb = np.stack([volume[max(0, i - 1)], volume[i], volume[min(i + 1, D - 1)]], axis=0)
+        rgb_slices.append(rgb)
+
+    volume = np.stack(rgb_slices, axis=0)
+    volume = (volume / 255 - mean) / std
+
+    return volume
+
+
+@torch.no_grad()
+def eval_one_series(volume, model, modality):
+
+    if "MR" in modality:
+        volume = create_mip(volume)
+    else:
+        volume = create_rgb_slices(volume)
     volume = torch.from_numpy(volume).cuda()
   
     pred_cls = []
@@ -73,20 +95,29 @@ def validation(cfg: DictConfig) -> None:
 
     pl.seed_everything(cfg.seed)
 
-    model = instantiate(cfg.model, pretrained=False)
-    model_ckpt_name="efficient_b2_mip-epoch=26-val_loss=0.3833_fold_id=0"
+    model_cta = instantiate(cfg.model, pretrained=False)
+    model_ckpt_name="efficient_b2_depth_slice_cta-epoch=19-val_loss=0.1551_fold_id=0"
     # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
     # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
     # return
 
    
-    model.load_state_dict(torch.load(f"{model_ckpt_name}.pth"))
-    model.cuda().eval()
+    model_cta.load_state_dict(torch.load(f"{model_ckpt_name}.pth"))
+    model_cta.cuda().eval()
+
+    model_mr = instantiate(cfg.model, pretrained=False)
+    model_ckpt_name="efficient_b2_mip_MR_modality-epoch=17-val_loss=0.3458_fold_id=0"
+    # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
+    # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
+    # return
+
+    model_mr.load_state_dict(torch.load(f"{model_ckpt_name}.pth"))
+    model_mr.cuda().eval()
 
     data_path = Path(cfg.data_dir)
     df = pd.read_csv(data_path / "train_df.csv")
     
-    val_uids = list(df[df["fold_id"] == cfg.fold_id]["SeriesInstanceUID"])
+    val_uids = list(df[(df["fold_id"] == cfg.fold_id) & (df["Modality"].isin(cfg.modality))]["SeriesInstanceUID"])
    
     cls_labels = []
     loc_labels = []
@@ -106,7 +137,10 @@ def validation(cfg: DictConfig) -> None:
 
         with np.load(f"./data/processed/slices/{uid}.npz") as data:
             volume = data['vol'].astype(np.float32)
-            cls_prob, loc_probs =  eval_one_series(volume, model)
+
+            modality = rowdf["Modality"].iloc[0]
+            model = model_mr if "MR" in modality else model_cta
+            cls_prob, loc_probs =  eval_one_series(volume, model, modality)
 
             pred_cls_probs.append(cls_prob)
             pred_loc_probs.append(loc_probs)

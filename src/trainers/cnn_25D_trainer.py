@@ -57,57 +57,31 @@ class LitTimmClassifier(pl.LightningModule):
         return loss
 
     def validation_step(self, sample, batch_idx):
-        return self.depth_slice_validation_step(sample, batch_idx)
-
-    def mip_validation_step(self, sample, batch_idx):
         x,cls_labels, loc_labels = sample
 
-        pred_cls, pred_locs =self(x)
-        pred_cls = pred_cls.squeeze()
+        x = x.squeeze(dim=0)
 
-        pred_cls = pred_cls.squeeze()
+        preds_cls = []
+        preds_loc = []
+        for i in range(0, x.shape[0], 32):
+            pred_cls, pred_loc =self(x[i:i+32])
+            preds_cls.append(pred_cls)
+            preds_loc.append(pred_loc)
 
-        loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
+        preds_cls = torch.vstack(preds_cls)
+        preds_loc = torch.vstack(preds_loc)
 
+        final_cls_prob = preds_cls.max(dim=0).values
+        final_loc_prob = preds_loc.max(dim=0, keepdim=True).values
+       
+        loc_loss = self.loc_loss_fn(final_loc_prob, loc_labels)
+        cls_loss = self.cls_loss_fn(final_cls_prob, cls_labels.float())
+  
         loss = (cls_loss + loc_loss) / 2
-
-        self.val_loc_auroc.update(pred_locs, loc_labels.long())
-        self.val_cls_auroc.update(pred_cls, cls_labels.long())
-
-        self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
-        # Log the metric object. Lightning computes and logs it at epoch end.
-        self.log('val_loc_auroc', self.val_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_cls_auroc', self.val_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
-        return loss
-
-    def depth_slice_validation_step(self, sample, batch_idx):
-        x,cls_labels, loc_labels = sample
-        x.squeeze_()
-        cls_labels.squeeze_()
-        loc_labels.squeeze_()
-
-        pred_cls = []
-        pred_locs = []
-
-        for batch_idx in range(0,x.shape[0], 64):
-            pc,pl = self(x[batch_idx:batch_idx+64])
-            pred_cls.append(pc)
-            pred_locs.append(pl)
-
-        pred_cls = torch.vstack(pred_cls)
-        pred_locs = torch.vstack(pred_locs)
-
-        pred_cls = pred_cls.squeeze()
-
-        loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
-
-        loss = (cls_loss + loc_loss) / 2
-
-        self.val_loc_auroc.update(pred_locs, loc_labels.long())
-        self.val_cls_auroc.update(pred_cls, cls_labels.long())
-
+       
+        self.val_loc_auroc.update(final_loc_prob, loc_labels.long())
+        self.val_cls_auroc.update(final_cls_prob, cls_labels.long())
+      
         self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
         # Log the metric object. Lightning computes and logs it at epoch end.
         self.log('val_loc_auroc', self.val_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
