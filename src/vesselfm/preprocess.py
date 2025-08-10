@@ -1,6 +1,9 @@
+import os.path
+
 import torch
 from torch_cluster import knn_graph
 import numpy as np
+import gc
 
 
 def sample_positive_points(segmentation, N):
@@ -167,11 +170,20 @@ def extract_and_save(uid, save_path, vol, segmap, model,
     edge_index_k15 = knn_graph(points[0], k=15, loop=False)
     edge_index_k20 = knn_graph(points[0], k=20, loop=False)
 
-    np.save(f'{save_path}/{uid}/{uid}_points.npy', points[0])
-    np.save(f'{save_path}/{uid}/{uid}_point_feats.npy', point_feats[0])
+    if not os.path.exists(f'{save_path}/{uid}'):
+        os.makedirs(f'{save_path}/{uid}')
+
+    np.save(f'{save_path}/{uid}/{uid}_points.npy', points[0].cpu())
+    np.save(f'{save_path}/{uid}/{uid}_point_feats.npy', point_feats[0].cpu())
     np.save(f'{save_path}/{uid}/{uid}_edge_index_k5.npy', edge_index_k5)
     np.save(f'{save_path}/{uid}/{uid}_edge_index_k10.npy', edge_index_k10)
     np.save(f'{save_path}/{uid}/{uid}_edge_index_k15.npy', edge_index_k15)
     np.save(f'{save_path}/{uid}/{uid}_edge_index_k20.npy', edge_index_k20)
+
+    del points
+    del point_feats
+    del mask
+    del segmap
+    gc.collect()
 
 
