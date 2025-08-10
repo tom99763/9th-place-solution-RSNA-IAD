@@ -108,9 +108,7 @@ def main(cfg):
             preds = []  # average over test time augmentations
             for scale in cfg.tta.scales:
                 image = load_series2vol(image_path)
-                # apply pre-processing transforms
                 image = transforms(image.astype(np.float32))[None].to(device)
-                #mask = torch.tensor(image_reader_writer.read_images(mask_paths[idx])[0])!=0
 
                 # apply test time augmentation
                 if cfg.tta.invert:
