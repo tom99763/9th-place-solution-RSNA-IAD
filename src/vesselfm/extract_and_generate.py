@@ -89,8 +89,8 @@ def main(cfg):
     output_folder = Path(cfg.output_folder)
     output_folder.mkdir(exist_ok=True)
 
-    series_path = cfg.series_path
-    logger.info(f"Found {len(series_path)} series in {cfg.series_path}.")
+    series_paths = cfg.series_path
+    logger.info(f"Found {len(os.listdir(series_paths))} series in {cfg.series_path}.")
 
     # init sliding window inferer
     logger.debug(f"Sliding window patch size: {cfg.patch_size}")
@@ -101,11 +101,10 @@ def main(cfg):
         mode=cfg.mode, sigma_scale=cfg.sigma_scale, padding_mode=cfg.padding_mode
     )
 
-    # loop over images
     with torch.no_grad():
-        for idx, image_path in tqdm(enumerate(series_path), total=len(series_path), desc="Processing images."):
-            uid = image_path.split('/')[-1][:-4]
-            preds = []  # average over test time augmentations
+        for idx, uid in tqdm(enumerate(sorted(os.listdir(cfg.series_path))), total=len(os.listdir(series_paths)), desc="Processing series."):
+            image_path = os.path.join(cfg.series_path, uid)
+            preds = []
             for scale in cfg.tta.scales:
                 image = load_series2vol(image_path)
                 image = transforms(image.astype(np.float32))[None].to(device)

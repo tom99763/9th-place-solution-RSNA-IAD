@@ -14,7 +14,7 @@ round_to: 2
 
 # model & ckpt
 device: cuda:0
-ckpt_path: ./rsna-iad-vesselfm-finetuned/finetune_rsna_vesselfm-val_volumetric_recall0.7549.ckpt
+ckpt_path: ./finetune_ckpts/rsna-intracranial-aneurysm/finetune_rsna_vesselfm/finetune_rsna_vesselfm-val_volumetric_recall=0.7549.ckpt
 
 # sliding window inferer
 batch_size: 1

@@ -9,7 +9,7 @@ lr: 0.00001
 fold_idx: 0
 threshold: 0.1
 devices: [1]
-run_name: vesselfm
+run_name: vesselfm_center_crop
 path_to_chkpt: /path/to/pretrained_ckpt
 chkpt_folder:  ./finetune_ckpts
 
