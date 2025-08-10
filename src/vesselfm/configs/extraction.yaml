@@ -1,0 +1,66 @@
+defaults:
+  - hydra: default
+  - model: dyn_unet_base
+  - _self_
+
+# i/o
+image_path: ../rsna_data/segmentations
+series_path: ../rsna_data/series
+image_file_ending: nii
+output_folder: ../rsna_data/series_extraction
+file_app: ""
+
+#extraction
+num_sampling_points: 10000
+threshold: 0.1
+target_layer: downsamples.2
+
+mask_path: null
+round_to: 2
+
+# model & ckpt
+device: cuda:0
+ckpt_path: ./rsna-iad-vesselfm-finetuned/finetune_rsna_vesselfm-val_volumetric_recall0.7549.ckpt
+
+# sliding window inferer
+batch_size: 1
+patch_size: [128, 128, 128]
+overlap: 0.5
+mode: "constant"
+sigma_scale: 0.125
+padding_mode: "constant"
+
+# eval & reproducibility
+seed: 404
+
+# standard pre-processing transforms
+transforms_config:
+  - EnsureChannelFirst:
+      channel_dim: "no_channel"
+  - ScaleIntensityRangePercentiles:
+      lower: 1
+      upper: 99
+      b_min: 0
+      b_max: 1
+      clip: true
+  - ToTensor:
+      device: null
+
+# test time augmentation
+tta:
+  scales: [1]
+  invert: true
+  invert_mean_thresh: 0.5
+  equalize_hist: true
+  hist_bins: 100
+
+# post-processing
+post:
+  apply: false
+  small_objects_min_size: 500
+  small_objects_connectivity: 3
+
+# merging
+merging:
+  threshold: 0.1
+  max: false

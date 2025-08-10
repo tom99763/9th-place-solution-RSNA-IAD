@@ -1,4 +1,6 @@
 import torch
+from torch_cluster import knn_graph
+import numpy as np
 
 
 def sample_positive_points(segmentation, N):
@@ -152,5 +154,24 @@ def assign_point_features_with_sliding(model, image, points, stop_at="downsample
 
     point_feats = point_feats_sum / point_counts.clamp_min(1).unsqueeze(-1)
     return point_feats
+
+
+def extract_and_save(uid, save_path, vol, segmap, model,
+                         target_layer = 'downsamples.2',
+                         N = 10000, threshold = 0.1):
+    mask = segmap>threshold
+    points = sample_positive_points(mask[None, None], N)
+    point_feats = assign_point_features_with_sliding(model, vol, points, stop_at=target_layer)
+    edge_index_k5 = knn_graph(points[0], k=5, loop=False)
+    edge_index_k10 = knn_graph(points[0], k=10, loop=False)
+    edge_index_k15 = knn_graph(points[0], k=15, loop=False)
+    edge_index_k20 = knn_graph(points[0], k=20, loop=False)
+
+    np.save(f'{save_path}/{uid}/{uid}_points.npy', points[0])
+    np.save(f'{save_path}/{uid}/{uid}_point_feats.npy', point_feats[0])
+    np.save(f'{save_path}/{uid}/{uid}_edge_index_k5.npy', edge_index_k5)
+    np.save(f'{save_path}/{uid}/{uid}_edge_index_k10.npy', edge_index_k10)
+    np.save(f'{save_path}/{uid}/{uid}_edge_index_k15.npy', edge_index_k15)
+    np.save(f'{save_path}/{uid}/{uid}_edge_index_k20.npy', edge_index_k20)
 
 
