@@ -18,6 +18,9 @@ from utils.io import determine_reader_writer
 from preprocess import *
 import os
 import SimpleITK as sitk
+import pydicom
+from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
 
 
 warnings.filterwarnings("ignore")
@@ -45,7 +48,7 @@ def load_model(cfg, device):
     return model
 
 
-def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resample=False, default_thickness=1.0):
+def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resample=False, default_thickness=1.0, max_workers=20):
     reader = sitk.ImageSeriesReader()
 
     # Get all series IDs
@@ -54,24 +57,24 @@ def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resampl
         raise RuntimeError(f"No DICOM series found in {series_path}")
 
     # Pick first if not specified
-    if series_id is None:
-        series_id = series_ids[0]
-    else:
-        series_id = str(series_id)
+    series_id = str(series_ids[0] if series_id is None else series_id)
 
-    # Get file names
+    # Get file names for the series
     all_files = reader.GetGDCMSeriesFileNames(series_path, series_id)
 
-    # --- Filter files by consistent size ---
-    file_sizes = {}
-    for f in all_files:
-        img = sitk.ReadImage(f)
-        file_sizes.setdefault(img.GetSize(), []).append(f)
+    # --- Parallel metadata read (fast size check) ---
+    def get_size(f):
+        ds = pydicom.dcmread(f, stop_before_pixels=True)
+        return (int(ds.Rows), int(ds.Columns)), f
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        sizes = list(ex.map(get_size, all_files))
 
     # Pick the most common size
-    target_size = max(file_sizes, key=lambda k: len(file_sizes[k]))
-    files = file_sizes[target_size]
+    most_common_size = Counter(s[0] for s in sizes).most_common(1)[0][0]
+    files = [f for (sz, f) in sizes if sz == most_common_size]
 
+    # --- Now read the actual image series ---
     reader.SetFileNames(files)
     image = reader.Execute()
 
@@ -97,6 +100,7 @@ def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resampl
         resampler.SetInterpolator(sitk.sitkLinear)
         image = resampler.Execute(image)
 
+    # Convert to numpy array
     volume = sitk.GetArrayFromImage(image)
     return volume
 
@@ -158,16 +162,6 @@ def main(cfg):
             for scale in cfg.tta.scales:
                 image = load_series2vol(image_path)
                 image = transforms(image.astype(np.float32))[None].to(device)
-                #give up slices
-                if image.shape[2]>=cfg.num_slices*2:
-                    d = image.shape[2]
-                    mid = d // 2
-                    half_span_raw = (cfg.num_slices * cfg.step //2) // 2
-                    start = mid - half_span_raw
-                    end = mid + half_span_raw
-                    start = max(0, start)
-                    end = min(d, end)
-                    image = image[:, :, start:end:cfg.step]
 
                 # apply test time augmentation
                 if cfg.tta.invert:

@@ -6,15 +6,13 @@ defaults:
 # i/o
 series_path: ../rsna_data/series
 image_file_ending: nii
-output_folder: ../rsna_data/series_extraction_small
+output_folder: ../rsna_data/series_extraction
 file_app: ""
 
 #extraction
-num_sampling_points: 5000
+num_sampling_points: 10000
 threshold: 0.1
 target_layer: downsamples.2
-step: 2
-num_slices: 35
 mask_path: null
 round_to: 2
 
