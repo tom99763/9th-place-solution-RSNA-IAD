@@ -151,6 +151,8 @@ def main(cfg):
 
     with torch.no_grad():
         for idx, uid in tqdm(enumerate(sorted(os.listdir(cfg.series_path))), total=len(os.listdir(series_paths)), desc="Processing series."):
+            if os.path.exists(f'{cfg.output_folder}/{uid}'):
+                continue
             image_path = os.path.join(cfg.series_path, uid)
             preds = []
             for scale in cfg.tta.scales:
