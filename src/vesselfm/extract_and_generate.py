@@ -116,6 +116,64 @@ def resample(image, factor=None, target_shape=None):
     return F.interpolate(image, size=(new_d, new_h, new_w), mode="trilinear", align_corners=False)
 
 
+def read_dicom_info(path):
+    """Read DICOM metadata needed for sorting and decoding."""
+    ds = pydicom.dcmread(path, stop_before_pixels=True)
+    try:
+        z = float(ds.ImagePositionPatient[2])  # Preferred
+    except AttributeError:
+        z = float(ds.InstanceNumber)           # Fallback
+    return path, z, ds
+
+def read_pixel_data(path, rescale_slope, rescale_intercept):
+    """Read pixel data and apply rescale."""
+    ds = pydicom.dcmread(path)  # full read with pixels
+    arr = ds.pixel_array.astype(np.float32)
+    if rescale_slope is not None and rescale_intercept is not None:
+        arr = arr * rescale_slope + rescale_intercept
+    return arr
+
+def load_volume_fast(directory, max_workers=20):
+    dcm_files = [os.path.join(directory, f) for f in os.listdir(directory) if f.lower().endswith('.dcm')]
+    if not dcm_files:
+        raise RuntimeError(f"No DICOM files found in {directory}")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        meta_info = list(executor.map(read_dicom_info, dcm_files))
+
+    meta_info.sort(key=lambda x: x[1])
+    sorted_paths = [m[0] for m in meta_info]
+    first_ds = meta_info[0][2]
+    rescale_slope = getattr(first_ds, "RescaleSlope", None)
+    rescale_intercept = getattr(first_ds, "RescaleIntercept", None)
+
+    test_arr = pydicom.dcmread(sorted_paths[0]).pixel_array
+    depth = len(sorted_paths)
+
+    if test_arr.ndim == 2:
+        height, width = test_arr.shape
+        if depth == 1:
+            volume = np.zeros((1, height, width), dtype=np.float32)
+            volume[0] = read_pixel_data(sorted_paths[0], rescale_slope, rescale_intercept)
+            return volume
+    elif test_arr.ndim == 3:
+        num_frames, height, width = test_arr.shape
+        if depth == 1:
+            # Already a multi-frame DICOM → just convert
+            return test_arr.astype(np.float32) * (rescale_slope or 1.0) + (rescale_intercept or 0.0)
+    else:
+        raise ValueError(f"Unsupported DICOM pixel array shape: {test_arr.shape}")
+
+    volume = np.zeros((depth, height, width), dtype=np.float32)
+    def load_into_array(idx_path):
+        idx, path = idx_path
+        volume[idx] = read_pixel_data(path, rescale_slope, rescale_intercept)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(load_into_array, enumerate(sorted_paths)))
+
+    return volume
+
 @hydra.main(config_path="configs", config_name="extraction", version_base="1.3.2")
 def main(cfg):
     # seed libraries
@@ -160,7 +218,7 @@ def main(cfg):
             image_path = os.path.join(cfg.series_path, uid)
             preds = []
             for scale in cfg.tta.scales:
-                image = load_series2vol(image_path)
+                image = load_volume_fast(image_path)
                 image = transforms(image.astype(np.float32))[None].to(device)
 
                 # apply test time augmentation
