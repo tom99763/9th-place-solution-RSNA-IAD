@@ -138,37 +138,35 @@ def load_volume_fast(directory, max_workers=20):
     if not dcm_files:
         raise RuntimeError(f"No DICOM files found in {directory}")
 
+    # Step 1: Read metadata in parallel (stop_before_pixels=True)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         meta_info = list(executor.map(read_dicom_info, dcm_files))
 
-    meta_info.sort(key=lambda x: x[1])
-    sorted_paths = [m[0] for m in meta_info]
-    first_ds = meta_info[0][2]
+    # Step 2: Pick most common size
+    sizes = [(int(ds.Rows), int(ds.Columns)) for _, _, ds in meta_info]
+    most_common_size = Counter(sizes).most_common(1)[0][0]
+
+    # Step 3: Keep only files with the most common size
+    filtered_info = [(p, z, ds) for (p, z, ds) in meta_info if (int(ds.Rows), int(ds.Columns)) == most_common_size]
+
+    # Step 4: Sort by slice position
+    filtered_info.sort(key=lambda x: x[1])
+    sorted_paths = [m[0] for m in filtered_info]
+    first_ds = filtered_info[0][2]
     rescale_slope = getattr(first_ds, "RescaleSlope", None)
     rescale_intercept = getattr(first_ds, "RescaleIntercept", None)
 
-    test_arr = pydicom.dcmread(sorted_paths[0]).pixel_array
+    # Step 5: Get slice shape
+    height, width = most_common_size
     depth = len(sorted_paths)
 
-    if test_arr.ndim == 2:
-        height, width = test_arr.shape
-        if depth == 1:
-            volume = np.zeros((1, height, width), dtype=np.float32)
-            volume[0] = read_pixel_data(sorted_paths[0], rescale_slope, rescale_intercept)
-            return volume
-    elif test_arr.ndim == 3:
-        num_frames, height, width = test_arr.shape
-        if depth == 1:
-            # Already a multi-frame DICOM → just convert
-            return test_arr.astype(np.float32) * (rescale_slope or 1.0) + (rescale_intercept or 0.0)
-    else:
-        raise ValueError(f"Unsupported DICOM pixel array shape: {test_arr.shape}")
-
     volume = np.zeros((depth, height, width), dtype=np.float32)
+
     def load_into_array(idx_path):
         idx, path = idx_path
         volume[idx] = read_pixel_data(path, rescale_slope, rescale_intercept)
 
+    # Step 6: Load pixels in parallel
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(load_into_array, enumerate(sorted_paths)))
 
