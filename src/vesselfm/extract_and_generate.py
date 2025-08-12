@@ -133,42 +133,54 @@ def read_pixel_data(path, rescale_slope, rescale_intercept):
         arr = arr * rescale_slope + rescale_intercept
     return arr
 
-def load_volume_fast(directory, max_workers=20):
-    dcm_files = [os.path.join(directory, f) for f in os.listdir(directory) if f.lower().endswith('.dcm')]
+def load_volume_fast(directory, max_workers=8):
+    # Step 1: List all .dcm files
+    dcm_files = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.dcm')]
     if not dcm_files:
         raise RuntimeError(f"No DICOM files found in {directory}")
 
-    # Step 1: Read metadata in parallel (stop_before_pixels=True)
+    # Step 2: Read metadata in parallel
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         meta_info = list(executor.map(read_dicom_info, dcm_files))
 
-    # Step 2: Pick most common size
-    sizes = [(int(ds.Rows), int(ds.Columns)) for _, _, ds in meta_info]
-    most_common_size = Counter(sizes).most_common(1)[0][0]
+    # Step 3: Sort by slice position
+    meta_info.sort(key=lambda x: x[1])
+    sorted_paths = [m[0] for m in meta_info]
+    first_ds = meta_info[0][2]
 
-    # Step 3: Keep only files with the most common size
-    filtered_info = [(p, z, ds) for (p, z, ds) in meta_info if (int(ds.Rows), int(ds.Columns)) == most_common_size]
-
-    # Step 4: Sort by slice position
-    filtered_info.sort(key=lambda x: x[1])
-    sorted_paths = [m[0] for m in filtered_info]
-    first_ds = filtered_info[0][2]
+    # Extract rescale params once
     rescale_slope = getattr(first_ds, "RescaleSlope", None)
     rescale_intercept = getattr(first_ds, "RescaleIntercept", None)
 
-    # Step 5: Get slice shape
-    height, width = most_common_size
-    depth = len(sorted_paths)
+    # Step 4: Read one slice to get shape and dimension
+    test_arr = pydicom.dcmread(sorted_paths[0]).pixel_array
+    if test_arr.ndim == 2:
+        depth = len(sorted_paths)
+        height, width = test_arr.shape
+        volume = np.zeros((depth, height, width), dtype=np.float32)
+    elif test_arr.ndim == 3:
+        # multi-frame DICOM case
+        depth = test_arr.shape[0]
+        height, width = test_arr.shape[1], test_arr.shape[2]
+        if len(sorted_paths) > 1:
+            raise ValueError("Multiple multi-frame DICOM files not supported yet")
+        volume = np.zeros((depth, height, width), dtype=np.float32)
+    else:
+        raise ValueError(f"Unexpected pixel array shape: {test_arr.shape}")
 
-    volume = np.zeros((depth, height, width), dtype=np.float32)
-
+    # Step 5: Load pixel data in parallel directly into volume
     def load_into_array(idx_path):
         idx, path = idx_path
-        volume[idx] = read_pixel_data(path, rescale_slope, rescale_intercept)
+        arr = read_pixel_data(path, rescale_slope, rescale_intercept)
+        if arr.ndim == 3 and volume.shape[0] == arr.shape[0]:
+            volume[:] = arr  # entire volume from single file
+        elif arr.ndim == 2:
+            volume[idx] = arr
+        else:
+            raise ValueError(f"Shape mismatch loading {path}, arr shape: {arr.shape}, volume shape: {volume.shape}")
 
-    # Step 6: Load pixels in parallel
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        list(executor.map(load_into_array, enumerate(sorted_paths)))
+        executor.map(load_into_array, enumerate(sorted_paths))
 
     return volume
 
