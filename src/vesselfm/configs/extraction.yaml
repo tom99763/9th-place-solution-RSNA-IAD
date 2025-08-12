@@ -4,10 +4,15 @@ defaults:
   - _self_
 
 # i/o
-image_path: ../rsna_data/segmentations
+series_path: ../rsna_data/series
 image_file_ending: nii
-output_folder: ../rsna_data/vessel_segments_finetune
+output_folder: ../rsna_data/series_extraction
 file_app: ""
+
+#extraction
+num_sampling_points: 10000
+threshold: 0.1
+target_layer: downsamples.2
 
 mask_path: null
 round_to: 2

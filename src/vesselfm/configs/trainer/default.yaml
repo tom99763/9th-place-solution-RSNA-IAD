@@ -1,5 +1,6 @@
 lightning_trainer:
   _target_: lightning.pytorch.trainer.trainer.Trainer
+  default_root_dir: "./finetune_ckpts"
   _partial_: True
   val_check_interval: 1000
   max_time: "00:12:00:00"
@@ -22,6 +23,12 @@ lightning_module:
     squared_pred: True
     lambda_ce: 0.1
     lambda_dice: 0.9
+#  loss:
+#    _target_: monai.losses.TverskyLoss
+#    sigmoid: true
+#    alpha: 0.3
+#    beta: 0.7
+#    reduction: mean
 
   optimizer_factory:
     _target_: torch.optim.AdamW

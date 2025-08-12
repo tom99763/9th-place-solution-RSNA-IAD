@@ -1,9 +1,6 @@
 import logging
 import os
-
-import torch
 import lightning
-import numpy as np
 from monai.inferers.inferer import SlidingWindowInfererAdapt
 from utils.metrics import *
 
@@ -17,51 +14,49 @@ class RSNAModuleFinetune(lightning.LightningModule):
             optimizer_factory,
             prediction_threshold: float,
             scheduler_configs=None,
-            evaluator=None,
             dataset_name: str = None,
             input_size: tuple = None,
             batch_size: int = None,
-            num_shots: int = None,
             threshold: float = None,
             *args,
             **kwargs
     ):
         super().__init__()
+        print('threshold:', threshold)
         self.model = model
         self.loss = loss
         self.optimizer_factory = optimizer_factory
         self.scheduler_configs = scheduler_configs
         self.prediction_threshold = prediction_threshold
         self.rank = 0 if "LOCAL_RANK" not in os.environ else os.environ["LOCAL_RANK"]
-        self.evaluator = evaluator
         self.dataset_name = dataset_name
         logger.info(f"Dataset name: {self.dataset_name}")
-        super().__init__(*args, **kwargs)
         self.sliding_window_inferer = SlidingWindowInfererAdapt(
             roi_size=input_size, sw_batch_size=batch_size, overlap=0.5,
         )
-        self.num_shots = num_shots
         self.threshold = threshold
 
     def training_step(self, batch, batch_idx):
         image, mask = batch
+        mask = mask.float()
         pred_mask = self.model(image)
         loss = self.loss(pred_mask, mask)
-        self.log(f"train_loss", loss.item(), logger=(self.rank == 0))
+        self.log(f"train_loss", loss.item(), logger=(self.rank == 0), prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         image, mask = batch
+        mask = mask.float()
         with torch.no_grad():
             pred_mask = self.sliding_window_inferer(image, self.model)
             loss = self.loss(pred_mask, mask)
-            self.log(f"{self.dataset_name}_val_loss", loss.item())
+            self.log(f"{self.dataset_name}_val_loss", loss.item(), prog_bar=True)
 
             recall, tp, fn = volumetric_recall(
                 pred_mask.sigmoid() > self.threshold,
-                mask > self.threshold
+                mask
             )
-            self.log("val_volumetric_recall", recall.item())
+            self.log("val_volumetric_recall", recall.item(), prog_bar=True)
 
             # metrics = self.evaluator.estimate_metrics(
             #     pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold, fast=True

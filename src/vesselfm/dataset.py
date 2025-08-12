@@ -17,17 +17,20 @@ class RSNASegDataset(Dataset):
         self.uids = uids
         self.reader = determine_reader_writer(dataset_config.file_format)()
         self.transforms = generate_transforms(dataset_config.transforms[mode])
+        self.mode = mode
 
     def __len__(self):
         return len(self.uids)
 
     def __getitem__(self, idx: int):
         uid = self.uids[idx]
-        vol_path = f'{self.data_path}/{uid}/{uid}.nii'
-        mask_path = f'{self.data_path}/{uid}/{uid}_cowseg.nii'
+        vol_path = f'{self.data_path}/segmentations/{uid}/{uid}.nii'
+        mask_path = f'{self.data_path}/vessel_segments/{uid}.nii'
         vol = self.reader.read_images(vol_path)[0].astype(np.float32)
-        mask = self.reader.read_images(mask_path)[0].astype(int)
+        mask = self.reader.read_images(mask_path)[0].astype(bool)
         transformed = self.transforms({'Image': vol, 'Mask': mask})
+        if self.mode == 'train':
+            return transformed
         return transformed['Image'], transformed['Mask'] > 0
 
 

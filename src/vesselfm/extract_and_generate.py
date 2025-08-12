@@ -15,7 +15,9 @@ from skimage.morphology import remove_small_objects
 from skimage.exposure import equalize_hist
 from utils.data import generate_transforms
 from utils.io import determine_reader_writer
+from preprocess import *
 import os
+import SimpleITK as sitk
 
 
 warnings.filterwarnings("ignore")
@@ -43,12 +45,60 @@ def load_model(cfg, device):
     return model
 
 
-def get_paths(cfg):
-    image_paths_ = os.listdir(cfg.image_path)
-    image_paths = list(map(lambda x: os.path.join(cfg.image_path, f'{x}/{x}.nii'), image_paths_))
-    mask_paths = list(map(lambda x: os.path.join(cfg.image_path, f'{x}/{x}_cowseg.nii'), image_paths_))
-    return image_paths, mask_paths
+def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resample=False, default_thickness=1.0):
+    reader = sitk.ImageSeriesReader()
 
+    # Get all series IDs
+    series_ids = reader.GetGDCMSeriesIDs(series_path)
+    if not series_ids:
+        raise RuntimeError(f"No DICOM series found in {series_path}")
+
+    # Pick first if not specified
+    if series_id is None:
+        series_id = series_ids[0]
+    else:
+        series_id = str(series_id)
+
+    # Get file names
+    all_files = reader.GetGDCMSeriesFileNames(series_path, series_id)
+
+    # --- Filter files by consistent size ---
+    file_sizes = {}
+    for f in all_files:
+        img = sitk.ReadImage(f)
+        file_sizes.setdefault(img.GetSize(), []).append(f)
+
+    # Pick the most common size
+    target_size = max(file_sizes, key=lambda k: len(file_sizes[k]))
+    files = file_sizes[target_size]
+
+    reader.SetFileNames(files)
+    image = reader.Execute()
+
+    # --- Fix zero thickness ---
+    spacing = list(image.GetSpacing())
+    if spacing[2] == 0:
+        spacing[2] = default_thickness
+        image.SetSpacing(spacing)
+
+    # --- Optional resample ---
+    if resample and abs(spacing[2] - spacing[0]) > spacing_tolerance:
+        new_spacing = [spacing[0], spacing[1], spacing[0]]
+        new_size = [
+            int(round(image.GetSize()[0] * spacing[0] / new_spacing[0])),
+            int(round(image.GetSize()[1] * spacing[1] / new_spacing[1])),
+            int(round(image.GetSize()[2] * spacing[2] / new_spacing[2]))
+        ]
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetOutputSpacing(new_spacing)
+        resampler.SetSize(new_size)
+        resampler.SetOutputDirection(image.GetDirection())
+        resampler.SetOutputOrigin(image.GetOrigin())
+        resampler.SetInterpolator(sitk.sitkLinear)
+        image = resampler.Execute(image)
+
+    volume = sitk.GetArrayFromImage(image)
+    return volume
 
 def resample(image, factor=None, target_shape=None):
     if factor == 1:
@@ -62,7 +112,7 @@ def resample(image, factor=None, target_shape=None):
     return F.interpolate(image, size=(new_d, new_h, new_w), mode="trilinear", align_corners=False)
 
 
-@hydra.main(config_path="configs", config_name="inference", version_base="1.3.2")
+@hydra.main(config_path="configs", config_name="extraction", version_base="1.3.2")
 def main(cfg):
     # seed libraries
     np.random.seed(cfg.seed)
@@ -87,12 +137,8 @@ def main(cfg):
     output_folder = Path(cfg.output_folder)
     output_folder.mkdir(exist_ok=True)
 
-    image_paths, mask_paths = get_paths(cfg)
-    logger.info(f"Found {len(image_paths)} images in {cfg.image_path}.")
-
-    file_ending = (cfg.image_file_ending if cfg.image_file_ending else image_paths[0].suffix)
-    image_reader_writer = determine_reader_writer(file_ending)()
-    save_writer = determine_reader_writer(file_ending)()
+    series_paths = cfg.series_path
+    logger.info(f"Found {len(os.listdir(series_paths))} series in {cfg.series_path}.")
 
     # init sliding window inferer
     logger.debug(f"Sliding window patch size: {cfg.patch_size}")
@@ -103,16 +149,13 @@ def main(cfg):
         mode=cfg.mode, sigma_scale=cfg.sigma_scale, padding_mode=cfg.padding_mode
     )
 
-    # loop over images
-    metrics_dict = {}
     with torch.no_grad():
-        for idx, image_path in tqdm(enumerate(image_paths), total=len(image_paths), desc="Processing images."):
-            image_name = image_path.split('/')[-1][:-4]
-            preds = []  # average over test time augmentations
+        for idx, uid in tqdm(enumerate(sorted(os.listdir(cfg.series_path))), total=len(os.listdir(series_paths)), desc="Processing series."):
+            image_path = os.path.join(cfg.series_path, uid)
+            preds = []
             for scale in cfg.tta.scales:
-                # apply pre-processing transforms
-                image = transforms(image_reader_writer.read_images(image_path)[0].astype(np.float32))[None].to(device)
-                mask = torch.tensor(image_reader_writer.read_images(mask_paths[idx])[0])!=0
+                image = load_series2vol(image_path)
+                image = transforms(image.astype(np.float32))[None].to(device)
 
                 # apply test time augmentation
                 if cfg.tta.invert:
@@ -134,21 +177,10 @@ def main(cfg):
                 pred = torch.stack(preds).max(dim=0)[0].sigmoid()
             else:
                 pred = torch.stack(preds).mean(dim=0).sigmoid()
-            pred_thresh = (pred > cfg.merging.threshold).numpy()
 
-            # post-processing
-            if cfg.post.apply:
-                pred_thresh = remove_small_objects(
-                    pred_thresh, min_size=cfg.post.small_objects_min_size,
-                    connectivity=cfg.post.small_objects_connectivity
-                )
-            #pred_thresh = np.logical_or(pred_thresh, mask.numpy())
-
-            # save final pred
-            save_writer.write_seg(
-                pred_thresh.astype(np.uint8),
-                output_folder / f"{image_name}.{file_ending}"
-            )
+            extract_and_save(uid, cfg.output_folder, image, pred, model,
+                         target_layer = cfg.target_layer,
+                         N = cfg.num_sampling_points, threshold = cfg.threshold)
     logger.info("Done.")
 
 
