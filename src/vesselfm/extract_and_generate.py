@@ -158,6 +158,16 @@ def main(cfg):
             for scale in cfg.tta.scales:
                 image = load_series2vol(image_path)
                 image = transforms(image.astype(np.float32))[None].to(device)
+                #give up slices
+                if image.shape[2]>cfg.num_slices:
+                    d = image.shape[2]
+                    mid = d // 2
+                    half_span_raw = (cfg.num_slices * cfg.step) // 2
+                    start = mid - half_span_raw
+                    end = mid + half_span_raw
+                    start = max(0, start)
+                    end = min(d, end)
+                    image = image[:, :, start:end:cfg.step]
 
                 # apply test time augmentation
                 if cfg.tta.invert:
