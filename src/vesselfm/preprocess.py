@@ -5,7 +5,6 @@ from torch_cluster import knn_graph
 import numpy as np
 import gc
 
-'''
 def sample_positive_points(segmentation, N, z_scale=1., std_scale=0.5, seed=42, xy_ratio = 2.5, z_ratio=2):
     if seed is not None:
         torch.manual_seed(seed)   # Fix the PyTorch RNG seed
@@ -84,40 +83,40 @@ def sample_positive_points(segmentation, N, z_scale=1., std_scale=0.5, seed=42, 
 
     points = torch.stack(points_list, dim=0)  # (B, N, 3)
     return points
-'''
 
-def sample_positive_points(segmentation, N):
-    B, _, Z, Y, X = segmentation.shape
-    points_list = []
 
-    for b in range(B):
-        pos_idx = torch.nonzero(segmentation[b, 0], as_tuple=False)  # (num_pos, 3)
-
-        if len(pos_idx) == 0:
-            rand_idx = torch.stack([
-                torch.randint(0, Z, (N,)),
-                torch.randint(0, Y, (N,)),
-                torch.randint(0, X, (N,))
-            ], dim=1)
-            points_list.append(rand_idx)
-            continue
-
-        if len(pos_idx) >= N:
-            # Uniformly spaced indices in the sorted list
-            choice = torch.linspace(0, len(pos_idx) - 1, steps=N).long()
-            choice = torch.clamp(choice, max=len(pos_idx) - 1)
-            sampled = pos_idx[choice]
-        else:
-            # Repeat points if not enough
-            repeats = (N + len(pos_idx) - 1) // len(pos_idx)
-            repeated = pos_idx.repeat((repeats, 1))
-            choice = torch.linspace(0, len(repeated) - 1, steps=N).long()
-            sampled = repeated[choice]
-
-        points_list.append(sampled)
-
-    points = torch.stack(points_list, dim=0)  # (B, N, 3)
-    return points
+# def sample_positive_points(segmentation, N):
+#     B, _, Z, Y, X = segmentation.shape
+#     points_list = []
+#
+#     for b in range(B):
+#         pos_idx = torch.nonzero(segmentation[b, 0], as_tuple=False)  # (num_pos, 3)
+#
+#         if len(pos_idx) == 0:
+#             rand_idx = torch.stack([
+#                 torch.randint(0, Z, (N,)),
+#                 torch.randint(0, Y, (N,)),
+#                 torch.randint(0, X, (N,))
+#             ], dim=1)
+#             points_list.append(rand_idx)
+#             continue
+#
+#         if len(pos_idx) >= N:
+#             # Uniformly spaced indices in the sorted list
+#             choice = torch.linspace(0, len(pos_idx) - 1, steps=N).long()
+#             choice = torch.clamp(choice, max=len(pos_idx) - 1)
+#             sampled = pos_idx[choice]
+#         else:
+#             # Repeat points if not enough
+#             repeats = (N + len(pos_idx) - 1) // len(pos_idx)
+#             repeated = pos_idx.repeat((repeats, 1))
+#             choice = torch.linspace(0, len(repeated) - 1, steps=N).long()
+#             sampled = repeated[choice]
+#
+#         points_list.append(sampled)
+#
+#     points = torch.stack(points_list, dim=0)  # (B, N, 3)
+#     return points
 
 
 class StopForward(Exception): pass
