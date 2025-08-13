@@ -2,6 +2,44 @@ import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.nn.models import GraphSAGE, GAT
+from torch_geometric.nn import LayerNorm
+from torch_geometric.nn import global_max_pool, global_mean_pool
+
+class GraphModel(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.gnn = GraphSAGE(
+            256 + cfg.walk_length if cfg.use_pe else 256,
+            num_layers=cfg.num_layers,
+            hidden_channels=cfg.hidden_channels,
+            out_channels=cfg.hidden_channels,  # not final class count yet
+            jk=cfg.jk,
+            dropout=cfg.dropout,
+            norm=LayerNorm(cfg.hidden_channels),
+        )
+        # Final classification head
+        self.fc = nn.Linear(cfg.hidden_channels, 14)  # 14 graph classes
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        # Move to CUDA
+        x = x.cuda()
+        edge_index = edge_index.cuda() if edge_index.numel() > 0 else torch.tensor([[0, 0]]).T.cuda()
+        batch = batch.cuda()
+
+        # Get node embeddings
+        node_embeddings = self.gnn(x, edge_index, batch=batch)
+
+        # Pool to graph embeddings
+        graph_embeddings = global_max_pool(node_embeddings, batch)
+        # or: global_mean_pool(node_embeddings, batch)
+
+        # Classify graphs
+        logits = self.fc(graph_embeddings)
+        return logits[:, :1], logits[:, 1:]
+
 
 
 class MultiBackboneModel(nn.Module):
