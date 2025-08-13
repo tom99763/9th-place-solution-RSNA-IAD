@@ -6,7 +6,7 @@ defaults:
 # i/o
 series_path: ../rsna_data/series
 image_file_ending: nii
-output_folder: ../rsna_data/series_extraction
+output_folder: ../rsna_data/series_extraction_dense
 file_app: ""
 
 #extraction
@@ -45,6 +45,9 @@ transforms_config:
       b_min: 0
       b_max: 1
       clip: true
+  - Resize:
+      spatial_size: (None, 512, 512)
+      mode: "bilinear"
   - ToTensor:
       device: null
 
