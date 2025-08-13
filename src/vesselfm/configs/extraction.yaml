@@ -46,8 +46,8 @@ transforms_config:
       b_max: 1
       clip: true
   - Resize:
-      spatial_size: (None, 512, 512)
-      mode: "bilinear"
+      spatial_size: [null, 512, 512]
+      mode: bilinear
   - ToTensor:
       device: null
 
