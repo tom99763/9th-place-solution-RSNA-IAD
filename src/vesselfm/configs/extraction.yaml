@@ -15,6 +15,10 @@ threshold: 0.1
 target_layer: downsamples.2
 mask_path: null
 round_to: 2
+xy_ratio: 2.5
+z_ratio: 2
+z_scale: 1.
+std_scale: 0.5
 
 # model & ckpt
 device: cuda:0

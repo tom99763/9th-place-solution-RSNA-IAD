@@ -5,6 +5,86 @@ from torch_cluster import knn_graph
 import numpy as np
 import gc
 
+'''
+def sample_positive_points(segmentation, N, z_scale=1., std_scale=0.5, seed=42, xy_ratio = 2.5, z_ratio=2):
+    if seed is not None:
+        torch.manual_seed(seed)   # Fix the PyTorch RNG seed
+    
+    B, _, Z, Y, X = segmentation.shape
+    points_list = []
+
+    center_z, center_y, center_x = Z / 2.0, Y / 2.0, X / 2.0
+    radius_z = (Z / z_ratio) * z_scale
+    radius_xy = min(Y, X) / xy_ratio  # circle radius in XY plane
+
+    device = segmentation.device
+
+    # Create ellipsoid mask
+    zz, yy, xx = torch.meshgrid(
+        torch.arange(Z, dtype=torch.float32, device=device),
+        torch.arange(Y, dtype=torch.float32, device=device),
+        torch.arange(X, dtype=torch.float32, device=device),
+        indexing='ij'
+    )
+    ellipsoid_mask = (
+        ((zz - center_z) / radius_z) ** 2 +
+        ((yy - center_y) ** 2 + (xx - center_x) ** 2) / radius_xy ** 2
+    ) <= 1
+
+    for b in range(B):
+        seg_masked = segmentation[b, 0] * ellipsoid_mask
+
+        pos_idx = torch.nonzero(seg_masked, as_tuple=False)
+
+        num_candidates = max(N * 10, 1000)
+
+        std_z = radius_z * std_scale
+        std_xy = radius_xy * std_scale
+
+        gaussian_samples = torch.empty((num_candidates, 3), device=device).normal_(0, 1)
+        gaussian_samples[:, 0] *= std_z
+        gaussian_samples[:, 1] *= std_xy
+        gaussian_samples[:, 2] *= std_xy
+        gaussian_samples += torch.tensor([center_z, center_y, center_x], device=device)
+
+        gaussian_samples = gaussian_samples.round().long()
+        gaussian_samples[:, 0] = gaussian_samples[:, 0].clamp(0, Z - 1)
+        gaussian_samples[:, 1] = gaussian_samples[:, 1].clamp(0, Y - 1)
+        gaussian_samples[:, 2] = gaussian_samples[:, 2].clamp(0, X - 1)
+
+        gaussian_samples = torch.unique(gaussian_samples, dim=0)
+
+        mask_vals = ellipsoid_mask[
+            gaussian_samples[:, 0], gaussian_samples[:, 1], gaussian_samples[:, 2]
+        ]
+        valid_gaussian_points = gaussian_samples[mask_vals]
+
+        seg_vals = segmentation[b, 0][
+            valid_gaussian_points[:, 0], valid_gaussian_points[:, 1], valid_gaussian_points[:, 2]
+        ]
+        valid_pos_gaussian_points = valid_gaussian_points[seg_vals > 0]
+
+        if len(valid_pos_gaussian_points) >= N:
+            choice = torch.randperm(len(valid_pos_gaussian_points), device=device)[:N]
+            sampled = valid_pos_gaussian_points[choice]
+        elif len(pos_idx) >= N:
+            choice = torch.randperm(len(pos_idx), device=device)[:N]
+            sampled = pos_idx[choice]
+        elif len(pos_idx) > 0:
+            repeats = (N + len(pos_idx) - 1) // len(pos_idx)
+            repeated = pos_idx.repeat((repeats, 1))
+            choice = torch.randperm(len(repeated), device=device)[:N]
+            sampled = repeated[choice]
+        else:
+            valid_idx = torch.nonzero(ellipsoid_mask, as_tuple=False)
+            choice = torch.randperm(len(valid_idx), device=device)[:N]
+            sampled = valid_idx[choice]
+
+        points_list.append(sampled)
+
+    points = torch.stack(points_list, dim=0)  # (B, N, 3)
+    return points
+'''
 
 def sample_positive_points(segmentation, N):
     B, _, Z, Y, X = segmentation.shape
