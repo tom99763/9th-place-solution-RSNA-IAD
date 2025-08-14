@@ -2,12 +2,13 @@
 # These are some base parameters for the experiment
 project_name: "rsna-intracranial-aneurysm-detection"
 
-data_dir: ./src/data/processed
+data_dir: ./src/rsna_data/series_extraction_dense
+num_neighbs: 15
 seed: 42
 fold_id: 0
 batch_size: 8
 num_workers: 8
-experiment: vesselfm-graphsage
+experiment: vesselfm-graphsage-k15
 
 modality:
   - CTA
