@@ -17,7 +17,7 @@ class GNNClassifier(pl.LightningModule):
         self.loc_loss_fn = nn.BCEWithLogitsLoss()
         self.cls_loss_fn = nn.BCEWithLogitsLoss()
 
-        self.num_classes = 14
+        self.num_classes = 13
 
         self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
         self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
