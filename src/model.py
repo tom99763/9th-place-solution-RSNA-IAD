@@ -18,8 +18,15 @@ class GraphModel(nn.Module):
             dropout=cfg.dropout,
             norm=LayerNorm(cfg.hidden_channels),
         )
-        # Final classification head
-        self.fc = nn.Linear(cfg.hidden_channels, 14)  # 14 graph classes
+        self.cls = nn.Sequential(
+            nn.Linear(cfg.hidden_channels, 256),
+            nn.ReLU(),
+            nn.Dropout(cfg.dropout),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(cfg.dropout),
+            nn.Linear(128, 14)
+        )
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
@@ -37,7 +44,7 @@ class GraphModel(nn.Module):
         # or: global_mean_pool(node_embeddings, batch)
 
         # Classify graphs
-        logits = self.fc(graph_embeddings)
+        logits = self.cls(graph_embeddings)
         return logits[:, :1], logits[:, 1:]
 
 
