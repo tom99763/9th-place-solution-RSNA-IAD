@@ -33,7 +33,7 @@ class GNNClassifier(pl.LightningModule):
         pred_cls = pred_cls.squeeze()
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
+        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
 
         loss = (cls_loss + loc_loss) / 2
 
@@ -59,7 +59,7 @@ class GNNClassifier(pl.LightningModule):
             pred_cls, pred_locs = self.model(data)
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
+        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
 
         loss = (cls_loss + loc_loss) / 2
 
