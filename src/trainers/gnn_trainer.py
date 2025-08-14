@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import pytorch_lightning as pl
 import torchmetrics
 from hydra.utils import instantiate
@@ -13,10 +14,10 @@ class GNNClassifier(pl.LightningModule):
 
         self.model = model
         self.cfg = cfg
-        self.loc_loss_fn = torch.nn.BCEWithLogitsLoss()
-        self.cls_loss_fn = torch.nn.BCEWithLogitsLoss()
+        self.loc_loss_fn = nn.BCEWithLogitsLoss()
+        self.cls_loss_fn = nn.BCEWithLogitsLoss()
 
-        self.num_classes = self.cfg.model.num_classes
+        self.num_classes = 14
 
         self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
         self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
@@ -53,9 +54,9 @@ class GNNClassifier(pl.LightningModule):
         return loss
 
     def validation_step(self, data, batch_idx):
-        cls_labels, loc_labels = data.cls_labels, data.loc_labels
-
-        pred_cls, pred_locs = self.model(data)
+        cls_labels, loc_labels = data.cls_labels, data.loc_label
+        with torch.no_grad():
+            pred_cls, pred_locs = self.model(data)
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())

@@ -6,8 +6,8 @@ import random
 from torch_geometric.data import Dataset, Data
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
-import albumentations as A
-from albumentations.pytorch.transforms import ToTensorV2
+# import albumentations as A
+# from albumentations.pytorch.transforms import ToTensorV2
 from pathlib import Path
 from configs.data_config import *
 from torch_geometric.transforms import AddRandomWalkPE
@@ -39,12 +39,17 @@ class GraphDataset(Dataset):
         rowdf = self.train_df[self.train_df["SeriesInstanceUID"] == uid]
 
         #process
-        loc_labels = np.zeros(self.num_classes)
         data_path = os.path.join(self.cfg.data_path, uid)
         feat_path = os.path.join(data_path, 'point_feats.npy')
         edge_path = os.path.join(data_path, f'edge_index_k{self.cfg.num_neighbs}.npy')
         feat = torch.from_numpy(np.load(feat_path).astype('float32'))
         edge_index = torch.from_numpy(np.load(edge_path))
+
+        #labels
+        cls_labels = torch.tensor(rowdf['Aneurysm Present'].values, dtype=torch.float32)
+        loc_labels = torch.tensor(rowdf[list(LABELS_TO_IDX.keys())].values[0], dtype=torch.float32)
+
+        #build data
         data = Data(x=feat, edge_index=edge_index, cls_labels=cls_labels, loc_labels=loc_labels)
         if self.cfg.use_pe:
             data = self.peTransform(data)
