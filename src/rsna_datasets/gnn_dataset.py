@@ -39,7 +39,7 @@ class GraphDataset(Dataset):
         rowdf = self.train_df[self.train_df["SeriesInstanceUID"] == uid]
 
         #process
-        data_path = os.path.join(self.cfg.data_path, uid)
+        data_path = os.path.join(self.cfg.data_dir, uid)
         feat_path = os.path.join(data_path, 'point_feats.npy')
         edge_path = os.path.join(data_path, f'edge_index_k{self.cfg.num_neighbs}.npy')
         feat = torch.from_numpy(np.load(feat_path).astype('float32'))
