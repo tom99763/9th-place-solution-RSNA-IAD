@@ -3,7 +3,9 @@ from omegaconf import DictConfig, OmegaConf
 import sys
 sys.path.append('./src')
 from src.rsna_datasets.datasets import *
+from src.rsna_datasets.gnn_dataset import *
 from src.trainers.effnet_trainer import *
+from src.trainers.gnn_trainer import *
 from hydra.utils import instantiate
 torch.set_float32_matmul_precision('medium')
 
@@ -18,19 +20,21 @@ def train(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
 
     pl.seed_everything(cfg.seed)
-    datamodule = NpzDataModule(cfg)
+    datamodule = GraphDataModule(cfg)
 
     model = instantiate(cfg.model)
-    pl_model = LitTimmClassifier(model, cfg)
+    pl_model = GNNClassifier(model, cfg) #LitTimmClassifier(model, cfg)
 
     ckpt_callback = pl.callbacks.ModelCheckpoint(
-                          monitor="val_loss"
-                        , mode="min"
-                        , dirpath="./models"
-                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}-{val_loc_auroc:.4f}'
-                                                       '-{val_cls_auroc:.4f}'+\
-                                   f"fold_id={cfg.fold_id}"
-                        )
+        monitor="val_loss"
+        , mode="min"
+        , dirpath="./models"
+        , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_loss:.4f}-{val_loc_auroc:.4f}'
+                                         '-{val_cls_auroc:.4f}' + \
+                   f"fold_id={cfg.fold_id}"
+        , save_top_k = 2
+        , save_last = True
+    )
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
 

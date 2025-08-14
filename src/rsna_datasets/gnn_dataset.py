@@ -56,7 +56,7 @@ class GraphDataset(Dataset):
         return data
 
 
-class NpzDataModule(pl.LightningDataModule):
+class GraphDataModule(pl.LightningDataModule):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
