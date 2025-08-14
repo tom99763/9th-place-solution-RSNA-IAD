@@ -26,7 +26,7 @@ class GraphDataset(Dataset):
 
         self.train_df = pd.read_csv(self.data_path / "train_df.csv")
 
-        self.num_classes_ = 14
+        self.num_classes_ = 13
         self.transform = transform
         self.peTransform = AddRandomWalkPE(walk_length=cfg.walk_length, attr_name=None)
 
