@@ -7,6 +7,9 @@ from src.rsna_datasets.gnn_dataset import *
 from src.trainers.effnet_trainer import *
 from src.trainers.gnn_trainer import *
 from hydra.utils import instantiate
+from lightning.pytorch.loggers import WandbLogger
+import warnings
+warnings.filterwarnings("ignore")
 torch.set_float32_matmul_precision('medium')
 
 
@@ -25,6 +28,13 @@ def train(cfg: DictConfig) -> None:
     model = instantiate(cfg.model)
     pl_model = GNNClassifier(model, cfg) #LitTimmClassifier(model, cfg)
 
+    wnb_logger = WandbLogger(
+        project=cfg.project_name,
+        name=cfg.experiment,
+        config=OmegaConf.to_container(cfg),
+        offline=cfg.offline,
+    )
+
     ckpt_callback = pl.callbacks.ModelCheckpoint(
         monitor="val_loss"
         , mode="min"
@@ -40,9 +50,10 @@ def train(cfg: DictConfig) -> None:
 
     trainer = pl.Trainer(
         **cfg.trainer,
-        logger=pl.loggers.TensorBoardLogger("logs/", name=cfg.experiment),
+        logger= wnb_logger,   #pl.loggers.TensorBoardLogger("logs/", name=cfg.experiment),
         callbacks=[lr_monitor, ckpt_callback]
     )
+    wnb_logger.watch(model, log="all", log_freq=20)
     trainer.fit(pl_model, datamodule=datamodule)
 
 if __name__ == "__main__":

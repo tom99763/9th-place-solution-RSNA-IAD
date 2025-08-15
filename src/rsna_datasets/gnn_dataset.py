@@ -5,7 +5,8 @@ import pandas as pd
 import random
 from torch_geometric.data import Dataset, Data
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
+#from torch.utils.data import DataLoader
+from torch_geometric.loader import DataLoader
 # import albumentations as A
 # from albumentations.pytorch.transforms import ToTensorV2
 from pathlib import Path
@@ -22,7 +23,7 @@ class GraphDataset(Dataset):
         self.uids = uids
         self.cfg = cfg
 
-        self.data_path = Path(self.cfg.data_dir)
+        self.data_path = Path(self.cfg.meta_dir)
 
         self.train_df = pd.read_csv(self.data_path / "train_df.csv")
 
@@ -40,8 +41,8 @@ class GraphDataset(Dataset):
 
         #process
         data_path = os.path.join(self.cfg.data_dir, uid)
-        feat_path = os.path.join(data_path, 'point_feats.npy')
-        edge_path = os.path.join(data_path, f'edge_index_k{self.cfg.num_neighbs}.npy')
+        feat_path = f'{data_path}/{uid}_point_feats.npy'
+        edge_path = f'{data_path}/{uid}_edge_index_k{self.cfg.num_neighbs}.npy'
         feat = torch.from_numpy(np.load(feat_path).astype('float32'))
         edge_index = torch.from_numpy(np.load(edge_path))
 
@@ -62,7 +63,7 @@ class GraphDataModule(pl.LightningDataModule):
         self.cfg = cfg
 
     def setup(self, stage: str = None):
-        data_path = Path(self.cfg.data_dir)
+        data_path = Path(self.cfg.meta_dir)
         df = pd.read_csv(data_path / "train_df.csv")
         df = df[df["Modality"].isin(self.cfg.modality)]
         train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"]
@@ -73,7 +74,7 @@ class GraphDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.cfg.batch_size, shuffle=True,
-                          num_workers=self.cfg.num_workers, pin_memory=True)
+                          num_workers=self.cfg.num_workers, pin_memory=True, persistent_workers=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=1, num_workers=1, pin_memory=True)
+        return DataLoader(self.val_dataset, batch_size=1, num_workers=1, pin_memory=True, persistent_workers=True)

@@ -32,6 +32,9 @@ class GNNClassifier(pl.LightningModule):
 
         pred_cls, pred_locs = self.model(data)
 
+        cls_labels = cls_labels.view(pred_cls.shape)
+        loc_labels = loc_labels.view(pred_locs.shape)
+
         # Compute losses
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
@@ -42,9 +45,9 @@ class GNNClassifier(pl.LightningModule):
         self.train_loc_auroc.update(pred_locs, loc_labels.long())
         self.train_cls_auroc.update(pred_cls, cls_labels.long())
 
-        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train_loc_auroc', self.train_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train_cls_auroc', self.train_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('train_loss', loss, on_step=False, logger=(self.rank == 0), on_epoch=True, prog_bar=True)
+        self.log('train_loc_auroc', self.train_loc_auroc, on_step=False, logger=(self.rank == 0), on_epoch=True, prog_bar=True)
+        self.log('train_cls_auroc', self.train_cls_auroc, on_step=False, logger=(self.rank == 0), on_epoch=True, prog_bar=True)
 
         # Manual optimization
         opt = self.optimizers()
@@ -60,6 +63,9 @@ class GNNClassifier(pl.LightningModule):
 
         with torch.no_grad():
             pred_cls, pred_locs = self.model(data)
+
+        cls_labels = cls_labels.view(pred_cls.shape)
+        loc_labels = loc_labels.view(pred_locs.shape)
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
