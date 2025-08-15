@@ -8,11 +8,12 @@ offline: False
 num_neighbs: 15
 seed: 42
 fold_id: 0
-batch_size: 2
-num_workers: 8
+batch_size: 4
+num_nodes: 2000
+num_workers: 16
 use_pe: True
-walk_length: 8
-experiment: vesselfm-graphsage-k15-pe8
+walk_length: 4
+experiment: vesselfm-graphsage-k15-w4
 
 modality:
   - CTA
