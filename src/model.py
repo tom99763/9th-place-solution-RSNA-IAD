@@ -6,6 +6,7 @@ from torch_geometric.nn.models import GraphSAGE, GAT
 from torch_geometric.nn import LayerNorm
 from torch_geometric.nn import global_max_pool, global_mean_pool
 
+
 class GraphModel(nn.Module):
     def __init__(self, use_pe,
                  walk_length,
@@ -14,15 +15,19 @@ class GraphModel(nn.Module):
                  jk,
                  dropout):
         super().__init__()
+
+        in_channels = 256 + walk_length if use_pe else 256
+
         self.gnn = GraphSAGE(
-            256 + walk_length if use_pe else 256,
+            in_channels,
             num_layers=num_layers,
             hidden_channels=hidden_channels,
-            out_channels=hidden_channels,  # not final class count yet
+            out_channels=hidden_channels,
             jk=jk,
             dropout=dropout,
-            norm=LayerNorm(hidden_channels),
+            #norm=LayerNorm(hidden_channels),
         )
+
         self.cls = nn.Sequential(
             nn.Linear(hidden_channels, 256),
             nn.ReLU(),
