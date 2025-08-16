@@ -94,6 +94,14 @@ class LitTimmClassifier(pl.LightningModule):
         # If the selected scheduler is a ReduceLROnPlateau scheduler.
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
             sch.step(self.trainer.callback_metrics["val_loss"])
+
+    def on_train_epoch_start(self):
+        self.train_loc_auroc.reset()
+        self.train_cls_auroc.reset()
+
+    def on_validation_epoch_start(self):
+        self.val_loc_auroc.reset()
+        self.val_cls_auroc.reset()
     
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())

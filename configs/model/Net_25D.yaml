@@ -1,5 +1,4 @@
 _target_: src.model25D.Net
-
 arch: resnet18d
 pretrained: True
 drop_rate: 0.3

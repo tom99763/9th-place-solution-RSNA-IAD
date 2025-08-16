@@ -3,9 +3,9 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from src.rsna_datasets.datasets import *
-from src.trainers.effnet_trainer import *
+#from src.trainers.effnet_trainer import *
+from src.trainers.cnn_25D_trainer import *
 from hydra.utils import instantiate
-
 import pytorch_lightning as pl
 
 torch.set_float32_matmul_precision('medium')
