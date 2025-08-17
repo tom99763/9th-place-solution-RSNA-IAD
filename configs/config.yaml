@@ -1,6 +1,6 @@
 # conf/config.yaml
 # These are some base parameters for the experiment
-project_name: "rsna-intracranial-aneurysm-detection"
+project_name: "rsna-iad-node-level"
 
 data_dir: ./src/rsna_data/series_extraction_dense
 meta_dir: ./src/rsna_data
@@ -9,12 +9,12 @@ num_neighbs: 15
 seed: 42
 fold_id: 0
 batch_size: 4
-radius: 10
+radius: 15
 num_nodes: 2000
 num_workers: 16
-use_pe: True
+use_pe: False
 walk_length: 4
-experiment: vesselfm-graphsage-k15-w4
+experiment: vesselfm-graphsage-k15
 
 modality:
   - CTA
