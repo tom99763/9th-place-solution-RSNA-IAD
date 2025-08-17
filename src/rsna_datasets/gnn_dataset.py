@@ -29,7 +29,7 @@ def add_dcm_idx(df_loc, cfg):
             f.replace(".dcm", ""): idx for idx, f in enumerate(files)
         }
     mapping = [
-        {"SeriesInstanceUID": series_uid, "SOPInstanceUID": sop_uid, "dcm_idx": int(idx)}
+        {"SeriesInstanceUID": series_uid, "SOPInstanceUID": sop_uid, "dcm_idx": float(idx)}
         for series_uid, uid_map in series_maps.items()
         for sop_uid, idx in uid_map.items()
     ]
@@ -38,13 +38,19 @@ def add_dcm_idx(df_loc, cfg):
     return df_loc
 
 
-def generate_labels(points, locdf, radius):
-    #within redius->assign label
-    #out of raidus->assign zeros label
-    #points: (N, 3); (z, y, x)
-    #loc: (k, 2); (y, x)
-    loc = locdf[['y', 'x']].values
-    labels = 0
+def assign_labels(points, locdf, radius):
+    num_nodes = points.shape[0]
+    labels = torch.zeros((num_nodes, 13), dtype=torch.float32)
+    if locdf.shape[0] == 0:
+        return labels
+    slice_loc = locdf[['dcm_idx', 'y', 'x']].values  # (k, 3)
+    loc_labels = locdf['label'].values               # (k,)
+    slice_loc = torch.tensor(slice_loc, dtype=torch.float32)
+    loc_labels = torch.tensor(loc_labels, dtype=torch.long)
+    dists = torch.cdist(points.float(), slice_loc.float(), p=2)
+    within = dists <= radius
+    for j in range(slice_loc.shape[0]):  # loop over targets
+        labels[within[:, j], loc_labels[j]] = 1.0
     return labels
 
 
@@ -61,6 +67,7 @@ class GraphDataset(Dataset):
         self.loc_df = pd.read_csv(self.data_path / "train_localizers.csv")
         self.loc_df['x'] = self.loc_df['coordinates'].map(lambda x: ast.literal_eval(x)['x'])
         self.loc_df['y'] = self.loc_df['coordinates'].map(lambda x: ast.literal_eval(x)['y'])
+        self.loc_df['label'] = self.loc_df['location'].map(LABELS_TO_IDX)
         self.loc_df = add_dcm_idx(self.loc_df, self.cfg)
 
         self.num_classes_ = 13
@@ -87,7 +94,7 @@ class GraphDataset(Dataset):
         # labels
         cls_labels = torch.tensor(rowdf['Aneurysm Present'].values, dtype=torch.float32)
         loc_labels = torch.tensor(rowdf[list(LABELS_TO_IDX.keys())].values[0], dtype=torch.float32)
-        labels = generate_labels(points, locdf, self.cfg.radius)
+        labels = assign_labels(points, locdf, self.cfg.radius)
 
         # build data
         data = Data(x=feat, edge_index=edge_index, y=labels,
@@ -109,7 +116,7 @@ class GraphDataModule(pl.LightningDataModule):
         df = pd.read_csv(data_path / "train_df.csv")
         df = df[df["Modality"].isin(self.cfg.modality)]
         dfloc = pd.read_csv(data_path / "train_localizers.csv")
-        df = df[df["SeriesInstanceUID"].isin(dfloc["SeriesInstanceUID"])]
+        #df = df[df["SeriesInstanceUID"].isin(dfloc["SeriesInstanceUID"])]
         train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"]
         val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"]
 
