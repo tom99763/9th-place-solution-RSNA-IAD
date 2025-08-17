@@ -43,7 +43,7 @@ def assign_labels(points, locdf, radius):
     labels = torch.zeros((num_nodes, 13), dtype=torch.float32)
     if locdf.shape[0] == 0:
         return labels
-    slice_loc = locdf[['dcm_idx', 'y', 'x']].values  # (k, 3)
+    slice_loc = locdf[['dcm_idx', 'x', 'y']].values  # (k, 3)
     loc_labels = locdf['label'].values               # (k,)
     slice_loc = torch.tensor(slice_loc, dtype=torch.float32)
     loc_labels = torch.tensor(loc_labels, dtype=torch.long)

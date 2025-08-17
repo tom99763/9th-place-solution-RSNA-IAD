@@ -16,7 +16,8 @@ class GNNClassifier(pl.LightningModule):
         self.cfg = cfg
         self.loc_loss_fn = nn.BCEWithLogitsLoss()
         self.cls_loss_fn = nn.BCEWithLogitsLoss()
-        self.node_loss_fn = nn.BCEWithLogitsLoss()
+        pos_weight = torch.ones([13]) * 16
+        self.node_loss_fn  = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
         self.num_classes = 13
 
@@ -77,13 +78,13 @@ class GNNClassifier(pl.LightningModule):
 
         return loss
 
-    def on_train_epoch_end(self):
-        sch = self.lr_schedulers()
-
-        # If the selected scheduler is a ReduceLROnPlateau scheduler.
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (
-                self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
-            sch.step(self.trainer.callback_metrics["val_loss"])
+    # def on_train_epoch_end(self):
+    #     sch = self.lr_schedulers()
+    #
+    #     # If the selected scheduler is a ReduceLROnPlateau scheduler.
+    #     if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (
+    #             self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
+    #         sch.step(self.trainer.callback_metrics["val_loss"])
 
     def on_train_epoch_start(self):
         self.train_loc_auroc.reset()
@@ -95,6 +96,5 @@ class GNNClassifier(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
-
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=4)
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=4)
+        return {"optimizer": optimizer}
