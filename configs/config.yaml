@@ -9,6 +9,7 @@ num_neighbs: 15
 seed: 42
 fold_id: 0
 batch_size: 4
+radius: 10
 num_nodes: 2000
 num_workers: 16
 use_pe: True
