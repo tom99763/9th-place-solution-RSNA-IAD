@@ -44,8 +44,8 @@ def generate_labels(points, locdf, radius):
     #points: (N, 3); (z, y, x)
     #loc: (k, 2); (y, x)
     loc = locdf[['y', 'x']].values
-
-    pass
+    labels = 0
+    return labels
 
 
 class GraphDataset(Dataset):
