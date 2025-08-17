@@ -16,6 +16,7 @@ class GNNClassifier(pl.LightningModule):
         self.cfg = cfg
         self.loc_loss_fn = nn.BCEWithLogitsLoss()
         self.cls_loss_fn = nn.BCEWithLogitsLoss()
+        self.node_loss_fn = nn.BCEWithLogitsLoss()
 
         self.num_classes = 13
 
@@ -27,19 +28,17 @@ class GNNClassifier(pl.LightningModule):
         self.automatic_optimization = False
 
     def training_step(self, data, _):
+        node_labels = data.y
         cls_labels = data.cls_labels
         loc_labels = data.loc_labels
 
-        pred_cls, pred_locs = self.model(data)
+        node_logits, pred_cls, pred_locs = self.model(data)
 
         cls_labels = cls_labels.view(pred_cls.shape)
         loc_labels = loc_labels.view(pred_locs.shape)
 
         # Compute losses
-        loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
-
-        loss = 0.5 * (cls_loss + loc_loss)
+        loss = self.node_loss_fn(node_logits, node_labels)
 
         # Update metrics
         self.train_loc_auroc.update(pred_locs, loc_labels.long())
@@ -57,19 +56,17 @@ class GNNClassifier(pl.LightningModule):
         return loss
 
     def validation_step(self, data, batch_idx):
+        node_labels = data.y
         cls_labels = data.cls_labels
         loc_labels = data.loc_labels
 
         with torch.no_grad():
-            pred_cls, pred_locs = self.model(data)
+            node_logits, pred_cls, pred_locs = self.model(data)
 
         cls_labels = cls_labels.view(pred_cls.shape)
         loc_labels = loc_labels.view(pred_locs.shape)
 
-        loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
-
-        loss = 0.5 * (cls_loss + loc_loss)
+        loss = self.node_loss_fn(node_logits, node_labels)
 
         self.val_loc_auroc.update(pred_locs, loc_labels.long())
         self.val_cls_auroc.update(pred_cls, cls_labels.long())
