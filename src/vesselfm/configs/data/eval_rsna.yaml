@@ -1,0 +1,7 @@
+defaults:
+  - default_finetune@RSNA
+  - _self_
+
+RSNA:
+  sample_prop: 1
+  path: ../rsna_data

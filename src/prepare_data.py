@@ -31,66 +31,6 @@ def initializer(label_df, target_dir):
     label_df_global = label_df
     target_dir_global = target_dir
 
-def preprocess_dcm_slice(image, dcm, output_size=(IMG_SIZE, IMG_SIZE), window_level=150, window_width=350):
-    """
-    Reads and preprocesses a single DICOM slice from a CTA or MRA scan.
-
-    For CTA scans, it applies a specific vascular window to highlight arteries.
-    For other modalities like MRA, it performs standard min-max normalization.
-    The final image is resized and returned as an 8-bit grayscale numpy array.
-
-    Args:
-        dcm_path (str): The full path to the .dcm file.
-        output_size (tuple): The target dimensions for the output image (width, height).
-        window_level (int): The window level (center) for CTA windowing in HU.
-        window_width (int): The window width for CTA windowing in HU.
-
-    Returns:
-        numpy.ndarray: The preprocessed 8-bit grayscale image, or None if an error occurs.
-    """
-    try:
-
-        # Get the pixel data from the DICOM file
-        image = image.astype(np.float64)
-
-        # 2. Check if the modality is 'CT' to decide on the processing method
-        # The DICOM tag (0008,0060) specifies the modality
-        is_ct_scan = 'CT' in dcm.get('Modality', '').upper()
-
-        if is_ct_scan:
-            # For CT scans, convert pixel data to Hounsfield Units (HU)
-            # using the Rescale Slope and Intercept values from DICOM metadata
-            if 'RescaleSlope' in dcm and 'RescaleIntercept' in dcm:
-                image = image * dcm.RescaleSlope + dcm.RescaleIntercept
-
-            # Apply the vascular windowing
-            lower_bound = window_level - (window_width / 2)
-            upper_bound = window_level + (window_width / 2)
-            
-            # Clip the image to the window range
-            image = np.clip(image, lower_bound, upper_bound)
-            
-            # Normalize the windowed image to a 0-255 scale
-            image = ((image - lower_bound) / window_width) * 255.0
-
-        else:
-            # 3. For non-CT scans (like MRA), perform standard min-max normalization
-            if np.max(image) != np.min(image):
-                image = ((image - np.min(image)) / (np.max(image) - np.min(image))) * 255.0
-
-        # Convert the final processed image to an 8-bit unsigned integer format
-        image = image.astype(np.uint8)
-
-        # 4. Resize the image to the desired output size
-        processed_image = cv2.resize(image, output_size, interpolation=cv2.INTER_LINEAR)
-
-        return processed_image
-
-    except Exception as e:
-        print(f"Error processing the file {dcm_path}: {e}")
-        return None
-
-
 def process_dicom_series(uid: str):
     global label_df_global
     series_path = Path(f"{data_path}/series/{uid}")

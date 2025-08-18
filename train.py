@@ -37,10 +37,6 @@ def train(cfg: DictConfig) -> None:
                           monitor="val_kaggle_score"
                         , mode="max"
                         , dirpath="./models"
-                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_kaggle_score:.4f}'+f"fold_id={cfg.fold_id}",
-                        save_top_k=3,
-    )
-
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
 
