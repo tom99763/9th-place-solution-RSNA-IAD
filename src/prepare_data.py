@@ -8,10 +8,17 @@ import pydicom
 import cv2
 import multiprocessing
 from tqdm import tqdm
-import sys
-from typing import Tuple
 
-sys.path.append('../')
+import sys
+sys.path.append("..")
+
+from rsna.configs.data_config import *
+
+# Add the parent directory to the path to find configs module
+current_dir = Path(__file__).parent
+parent_dir = current_dir.parent
+sys.path.insert(0, str(parent_dir))
+
 from configs.data_config import *
 
 # Globals used by multiprocessing workers
@@ -23,28 +30,6 @@ def initializer(label_df, target_dir):
     global target_dir_global
     label_df_global = label_df
     target_dir_global = target_dir
-
-def apply_dicom_windowing(img: np.ndarray, window_center: float, window_width: float, preserve_contrast=True) -> np.ndarray:
-    img_min = window_center - window_width / 2
-    img_max = window_center + window_width / 2
-    img_clipped = np.clip(img, img_min, img_max)
-    img_normalized = (img_clipped - img_min) / (img_max - img_min + 1e-7)
-    img_processed = (img_normalized * 255).astype(np.uint8)
-    if preserve_contrast:
-        img_processed = cv2.equalizeHist(img_processed)
-    return img_processed
-
-def get_windowing_params(modality: str) -> Tuple[float, float]:
-    return windows.get(modality, (40, 80))
-
-def process_slice(img, ds):
-    modality = getattr(ds, 'Modality', 'CT')
-    if hasattr(ds, 'RescaleSlope') and hasattr(ds, 'RescaleIntercept'):
-        img = img * ds.RescaleSlope + ds.RescaleIntercept
-    window_center, window_width = get_windowing_params(modality)
-    img = apply_dicom_windowing(img, window_center, window_width)
-    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-    return img
 
 def process_dicom_series(uid: str):
     global label_df_global
@@ -77,7 +62,7 @@ def process_dicom_series(uid: str):
             if hasattr(ds, "InstanceNumber"):
                 instance_numbers.append(ds.InstanceNumber)
             z_val = getattr(ds, "ImagePositionPatient", [0])[-1] if hasattr(ds, "ImagePositionPatient") else int(getattr(ds, "InstanceNumber", 0))
-            slices.append((z_val, process_slice(img, ds)))
+            slices.append((z_val, preprocess_dcm_slice(img, ds)))
 
     instance_numbers = sorted(instance_numbers)
     start_instance_number = instance_numbers[0] - 1 if instance_numbers else 0
@@ -150,7 +135,7 @@ if __name__ == "__main__":
     print(f"Starting processing for {len(uids_to_process)} UIDs...")
 
     with multiprocessing.Pool(
-        processes=CORES,
+        processes=4,
         initializer=initializer,
         initargs=(label_df, target_dir)
     ) as pool:
@@ -158,10 +143,21 @@ if __name__ == "__main__":
 
     print("\nProcessing complete.")
 
+    uid_to_mapped_z = {}
     for r in results:
         uid, mapped = r["uid"], r["mapped_idx"]
         if mapped:
-            label_df.loc[label_df["SeriesInstanceUID"] == uid, "z"] = mapped
+            uid_to_mapped_z[uid] = mapped
+    
+    # Update the z values in label_df
+    for uid, mapped_indices in uid_to_mapped_z.items():
+        uid_rows = label_df[label_df["SeriesInstanceUID"] == uid].copy()
+        if len(mapped_indices) == len(uid_rows):
+            # Update z values for this UID
+            for i, (idx, row) in enumerate(uid_rows.iterrows()):
+                label_df.at[idx, 'z'] = mapped_indices[i]
+        else:
+            print(f"Warning: Mismatch in number of labels for UID {uid}. Expected {len(uid_rows)}, got {len(mapped_indices)}")
 
     label_df.to_csv(target_dir / "label_df.csv", index=False)
     train_df.to_csv(target_dir / "train_df.csv", index=False)

@@ -1,7 +1,7 @@
-
+max_epochs: 200
 accelerator: gpu
 devices: 1
 precision: 16-mixed
-check_val_every_n_epoch: 2
+check_val_every_n_epoch: 10
 strategy: auto
 deterministic: true

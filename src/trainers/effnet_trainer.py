@@ -2,47 +2,57 @@ import torch
 import pytorch_lightning as pl
 import torchmetrics
 from hydra.utils import instantiate
-torch.set_float32_matmul_precision('medium')
 
+torch.set_float32_matmul_precision('medium')
 
 class LitTimmClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
         super().__init__()
-        self.save_hyperparameters(ignore=['model'])  # Saves args to checkpoint
-
         self.model = model
         self.cfg = cfg
         self.loc_loss_fn = torch.nn.BCEWithLogitsLoss()
+        smoothing = float(getattr(self.cfg, 'label_smoothing', 0.0))
+        # For binary classification we can emulate label smoothing by blending targets
         self.cls_loss_fn = torch.nn.BCEWithLogitsLoss()
+        self._label_smoothing = smoothing
 
-        self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=13)
-        self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=13)
+        self.num_classes = self.cfg.model.num_classes
+
+        self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
+        self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
 
         self.train_cls_auroc = torchmetrics.AUROC(task="binary")
         self.val_cls_auroc = torchmetrics.AUROC(task="binary")
         self.automatic_optimization = False
 
+       
+        self.validation_outputs = []
+        self._did_unfreeze = False
+
+
     def forward(self, x):
         return self.model(x)
 
-    def training_step(self, batch, _):
-        x, cls_labels, loc_labels = batch
+    def training_step(self, batch, batch_idx):
 
-        pred_cls, pred_locs = self(x)
-        pred_cls = pred_cls.squeeze()
+        x, cls_labels, loc_labels, series_uids = batch
+
+        pred_cls, pred_locs = self.model(x)
+        pred_cls = pred_cls.squeeze(-1)  
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
+        if self._label_smoothing and self._label_smoothing > 0:
+            cls_targets = cls_labels.float() * (1 - self._label_smoothing) + 0.5 * self._label_smoothing
+        else:
+            cls_targets = cls_labels.float()
+        cls_loss = self.cls_loss_fn(pred_cls, cls_targets)
 
-        loss = 3 * cls_loss + loc_loss
 
-        self.train_loc_auroc.update(pred_locs, loc_labels.long())
-        self.train_cls_auroc.update(pred_cls, cls_labels.long())
+        if self.global_step %10 == 0:
+            self.train_loc_auroc.update(torch.sigmoid(pred_locs.detach()), loc_labels.int())
+            self.train_cls_auroc.update(torch.sigmoid(pred_cls.detach()), cls_labels.int())
 
         self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        # Log the metric object. Lightning computes and logs it at epoch end.
-        self.log('train_loc_auroc', self.train_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train_cls_auroc', self.train_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
 
         # Manual backward pass
         opt = self.optimizers()
@@ -61,40 +71,18 @@ class LitTimmClassifier(pl.LightningModule):
         pred_cls = []
         pred_locs = []
 
-        for batch_idx in range(0, x.shape[0], 64):
-            pc, pl = self(x[batch_idx:batch_idx + 64])
-            pred_cls.append(pc)
-            pred_locs.append(pl)
+        
+        opt = self.optimizers()
+        opt.zero_grad()
+        self.manual_backward(loss)
+        # Manual gradient clipping because we're in manual optimization mode
+        try:
+            max_norm = getattr(self.cfg.trainer, 'gradient_clip_val', 1.0)
+        except Exception:
+            max_norm = 0.0
+        if max_norm and max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm)
+        opt.step()
 
-        pred_cls = torch.vstack(pred_cls)
-        pred_locs = torch.vstack(pred_locs)
 
-        pred_cls = pred_cls.squeeze()
-
-        loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
-
-        loss = 3 * cls_loss + loc_loss
-
-        self.val_loc_auroc.update(pred_locs, loc_labels.long())
-        self.val_cls_auroc.update(pred_cls, cls_labels.long())
-
-        self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
-        # Log the metric object. Lightning computes and logs it at epoch end.
-        self.log('val_loc_auroc', self.val_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_cls_auroc', self.val_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
         return loss
-
-    def on_train_epoch_end(self):
-        sch = self.lr_schedulers()
-
-        # If the selected scheduler is a ReduceLROnPlateau scheduler.
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (
-                self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
-            sch.step(self.trainer.callback_metrics["val_loss"])
-
-    def configure_optimizers(self):
-        optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
-
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2)
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
