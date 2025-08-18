@@ -7,6 +7,14 @@ import pytorch_lightning as pl
 from configs.data_config import LABELS_TO_IDX
 import random
 
+# Albumentations for 2D spatial + intensity augs applied slice-wise consistently (depth treated as channels)
+try:
+    import albumentations as A
+    from albumentations.pytorch.transforms import ToTensorV2
+except Exception:
+    A = None
+    ToTensorV2 = None
+
 class Volume3DDataset(Dataset):
     """Load preprocessed 3D volumes (D,H,W) from NPZ and return as (C,H,W) where C=depth.
     """
@@ -58,9 +66,13 @@ class Volume3DDataset(Dataset):
         # Clip first, then scale to [0,1]
         vol = np.clip(vol, raw_min, raw_max)
         img = (vol - raw_min) / max(raw_max - raw_min, 1e-6)
-        # Shape remains (D,H,W); depth acts as channels after torch.from_numpy
-
-        tensor = torch.from_numpy(img)  # (C,H,W)
+        # Shape (D,H,W); we'll treat depth as channel dim for 2D augs: transpose -> (H,W,D)
+        if self.transform is not None and A is not None:
+            hwc = np.transpose(img, (1, 2, 0))  # (H,W,C=depth)
+            aug = self.transform(image=hwc)
+            tensor = aug["image"]  # (C,H,W) torch tensor from ToTensorV2
+        else:
+            tensor = torch.from_numpy(img)  # (C,H,W)
         loc_vec = self.series_to_loc_vec.get(series_uid, np.zeros(self.num_loc_classes, dtype=np.float32))
         binary_label = int(row['series_has_aneurysm'])
         return tensor, binary_label, torch.from_numpy(loc_vec), series_uid
@@ -71,14 +83,31 @@ class Volume3DDataModule(pl.LightningDataModule):
         self.cfg = cfg
         self.train_df = None
         self.val_df = None
+        self.train_transforms = A.Compose([
+
+            #A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.2),
+            #A.GaussianBlur(blur_limit=(3, 5), p=0.05),
+            #A.Normalize(mean=train_mean, std=train_std),
+            ToTensorV2(),
+        ])
+
+        self.val_transforms = A.Compose([
+            #A.Normalize(mean=train_mean, std=train_std),
+            ToTensorV2(),
+        ])
+
 
     def setup(self, stage=None):
         data_path = Path(self.cfg.data_dir)
         vol_df = pd.read_csv(data_path / 'volume_df.csv')
         self.train_df = vol_df[vol_df['fold_id'] != self.cfg.fold_id]
         self.val_df = vol_df[vol_df['fold_id'] == self.cfg.fold_id]
-        self.train_dataset = Volume3DDataset(self.train_df, cfg=self.cfg, mode='train')
-        self.val_dataset = Volume3DDataset(self.val_df, cfg=self.cfg, mode='val')
+        self.train_dataset = Volume3DDataset(
+            self.train_df, cfg=self.cfg, mode='train', transform=self.train_transforms
+        )
+        self.val_dataset = Volume3DDataset(
+            self.val_df, cfg=self.cfg, mode='val', transform=self.val_transforms
+        )
 
     def train_dataloader(self):
         # drop_last avoids BatchNorm errors on final small batch (size=1) during training
