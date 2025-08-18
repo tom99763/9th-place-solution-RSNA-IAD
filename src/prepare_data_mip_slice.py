@@ -73,29 +73,26 @@ def load_series_slices(series_dir: str) -> Tuple[List[np.ndarray], pydicom.datas
 
 
 def compute_axial_mip(slices: List[np.ndarray]) -> np.ndarray:
-    """Compute Maximum Intensity Projection from list of slices"""
+    """Compute Maximum Intensity Projection from list of slices.
+    """
     if not slices:
         return None
-    
-    # Ensure all slices have the same shape
+
     target_shape = slices[0].shape
     processed_slices = []
-    
-    for slice_data in slices[2:len(slices)-2]:
+    for slice_data in slices:
         if slice_data.shape != target_shape:
-            # Resize to match target shape
-            slice_resized = cv2.resize(slice_data.astype(np.float32), 
-                                     (target_shape[1], target_shape[0]), 
-                                     interpolation=cv2.INTER_LINEAR)
+            slice_resized = cv2.resize(
+                slice_data.astype(np.float32),
+                (target_shape[1], target_shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            )
             processed_slices.append(slice_resized.astype(np.float64))
         else:
             processed_slices.append(slice_data)
-    
-    # Compute MIP
+
     stack = np.stack(processed_slices, axis=0)
-    mip = np.max(stack, axis=0)
-    
-    return mip
+    return np.max(stack, axis=0)
 
 
 def process_series_to_mip(uid: str, root_path: Path, mip_dir: Path) -> dict:
@@ -115,20 +112,16 @@ def process_series_to_mip(uid: str, root_path: Path, mip_dir: Path) -> dict:
         mip = compute_axial_mip(slices)
         if mip is None:
             return {"uid": uid, "mip_filename": None}
-            # Apply percentile 0.5-99.5 windowing
-        low_val = np.percentile(mip, 0.5)
-        high_val = np.percentile(mip, 99.5)
-        
-        window_center = (low_val + high_val) / 2
-        window_width = high_val - low_val
 
-        mip = apply_ct_window(mip, window_center, window_width)
-        image_uint8 = np.clip(mip, 0, 255).astype(np.uint8)
-        resized = cv2.resize(image_uint8, (512, 512), interpolation=cv2.INTER_LINEAR)
-        
+        # Store RAW HU (clipped) as float32 to allow windowing augmentation later.
+        # Typical vascular/brain relevant range fits well inside [-1200, 4000].
+        mip = np.clip(mip, -1200, 4000).astype(np.float32)
+        resized = cv2.resize(mip, (512, 512), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+
         mip_filename = f"{uid}_mip.npz"
         mip_path = mip_dir / mip_filename
-        np.savez_compressed(mip_path, mip=resized)
+        # Store min/max used for clipping for potential future reference.
+        np.savez_compressed(mip_path, mip=resized, meta=np.array([[-1200.0, 4000.0]], dtype=np.float32))
 
         return {"uid": uid, "mip_filename": mip_filename}
     except Exception as e:

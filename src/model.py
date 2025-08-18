@@ -7,21 +7,32 @@ import torch.nn.functional as F
 class MultiBackboneModel(nn.Module):
 
     def __init__(self, model_name, in_chans, img_size, num_classes=13, pretrained=True,
-                 drop_rate=0.3, drop_path_rate=0.2, use_fpn=False, use_spatial_features=False,
-                 use_scale_attention: bool = False):
+                 drop_rate=0.3, drop_path_rate=0.2,
+                 global_pool_override: str | None = None,
+                 **kwargs):
         super().__init__()
         self.model_name = model_name
         self.img_size = img_size
+        self.original_in_chans = in_chans
 
-        self.backbone = timm.create_model(
-            model_name,
+        # Build kwargs for backbone construction
+        backbone_kwargs = dict(
             pretrained=pretrained,
             in_chans=in_chans,
             drop_rate=drop_rate,
             drop_path_rate=drop_path_rate,
-            num_classes=0,  # Remove classifier head
-            global_pool=''  # Remove global pooling
+            num_classes=0,
+            img_size=img_size,
         )
+        # Some models (e.g., DeiT) assert a specific global_pool ('token'), so pass override only when specified
+        if global_pool_override is not None:
+            backbone_kwargs["global_pool"] = global_pool_override
+
+        try:
+            self.backbone = timm.create_model(model_name, **backbone_kwargs)
+        except TypeError:
+            backbone_kwargs.pop("img_size", None)
+            self.backbone = timm.create_model(model_name, **backbone_kwargs)
 
         with torch.no_grad():
             dummy_input = torch.zeros(1, in_chans, img_size, img_size)
@@ -48,7 +59,9 @@ class MultiBackboneModel(nn.Module):
         if self.needs_pool:
             self.global_pool = nn.AdaptiveAvgPool2d(1)
 
-        # Combined classifier with batch norm for stability
+     
+
+        # Combined classifier with batch norm for stability (location)
         self.loc_classifier = nn.Sequential(
             nn.Linear(num_features, 512),
             nn.BatchNorm1d(512),
@@ -60,6 +73,8 @@ class MultiBackboneModel(nn.Module):
             nn.Dropout(drop_rate),
             nn.Linear(256, num_classes)
         )
+
+
         self.aneurysm_classifier = nn.Sequential(
             nn.Linear(num_features, 256),
             nn.BatchNorm1d(256),
@@ -73,6 +88,7 @@ class MultiBackboneModel(nn.Module):
         )
 
     def forward(self, image):
+
         img_features = self.backbone(image)
 
         # Apply appropriate pooling based on model type
@@ -86,7 +102,7 @@ class MultiBackboneModel(nn.Module):
         elif len(img_features.shape) == 3:
             img_features = img_features.mean(dim=1)
 
-        # Classification
+        # Classification heads
         loc_output = self.loc_classifier(img_features)
         cls_logit = self.aneurysm_classifier(img_features)
 

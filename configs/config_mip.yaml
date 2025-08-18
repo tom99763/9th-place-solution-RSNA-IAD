@@ -1,0 +1,43 @@
+project_name: "rsna-intracranial-aneurysm-detection-mip-v2"
+
+data_dir: ./data/processed
+seed: 42
+fold_id: 0
+use_small_dataset: false
+batch_size: 8
+val_batch_size: 16
+num_workers: 2
+experiment: mip_baselines
+
+# Select MIP pipeline
+data_mode: mip
+
+# Balanced sampling (optional at series-level)
+use_balanced_sampling: false
+pos_ratio: 0.5
+
+use_wandb: true
+
+wandb:
+  entity: null
+  tags: ["new dataset", "no type cardinality", "ALL AUGS", "jitter=10", "fold_${fold_id}"]
+  notes: "Axial MIP per series"
+  offline: false  # set true to run W&B in offline mode (can sync later)
+
+defaults:
+  - model: MultiBackboneModel
+  - optimizer: AdamW
+  - trainer: default
+  - _self_
+
+# Optional label smoothing for classification head
+label_smoothing: 0.0
+
+# Multi-window & modality settings
+num_window_channels: 5
+use_window_aug: true
+window_jitter_hu: 10.0
+raw_min_hu: -1200.0
+raw_max_hu: 4000.0
+modality_column: Modality
+

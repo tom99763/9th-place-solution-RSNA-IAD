@@ -15,7 +15,10 @@ class LitTimmClassifier(pl.LightningModule):
         self.model = model
         self.cfg = cfg
         self.loc_loss_fn = torch.nn.BCEWithLogitsLoss()
+        smoothing = float(getattr(self.cfg, 'label_smoothing', 0.0))
+        # For binary classification we can emulate label smoothing by blending targets
         self.cls_loss_fn = torch.nn.BCEWithLogitsLoss()
+        self._label_smoothing = smoothing
 
         self.num_classes = self.cfg.model.num_classes
 
@@ -27,19 +30,25 @@ class LitTimmClassifier(pl.LightningModule):
 
        
         self.validation_outputs = []
+        self._did_unfreeze = False
 
 
     def forward(self, x):
         return self.model(x)
 
-    def training_step(self, batch, _):
+    def training_step(self, batch, batch_idx):
+
         x, cls_labels, loc_labels, series_uids = batch
 
-        pred_cls, pred_locs =self(x)
+        pred_cls, pred_locs = self.model(x)
         pred_cls = pred_cls.squeeze(-1)  
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
+        if self._label_smoothing and self._label_smoothing > 0:
+            cls_targets = cls_labels.float() * (1 - self._label_smoothing) + 0.5 * self._label_smoothing
+        else:
+            cls_targets = cls_labels.float()
+        cls_loss = self.cls_loss_fn(pred_cls, cls_targets)
 
         loss = 3*cls_loss + loc_loss
 
@@ -55,21 +64,35 @@ class LitTimmClassifier(pl.LightningModule):
         opt = self.optimizers()
         opt.zero_grad()
         self.manual_backward(loss)
+        # Manual gradient clipping because we're in manual optimization mode
+        try:
+            max_norm = getattr(self.cfg.trainer, 'gradient_clip_val', 1.0)
+        except Exception:
+            max_norm = 0.0
+        if max_norm and max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm)
         opt.step()
+
+
+
 
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx):    
         x, cls_labels, loc_labels, series_uids = batch
-        
-        pred_cls, pred_locs = self(x)
+
+        pred_cls, pred_locs = self.model(x)
         pred_cls = pred_cls.squeeze(-1)
 
         cls_labels_float = cls_labels.float()
         loc_labels_float = loc_labels.float()
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels_float)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels_float)
+        if self._label_smoothing and self._label_smoothing > 0:
+            cls_targets = cls_labels_float * (1 - self._label_smoothing) + 0.5 * self._label_smoothing
+        else:
+            cls_targets = cls_labels_float
+        cls_loss = self.cls_loss_fn(pred_cls, cls_targets)
         loss = 3*cls_loss + loc_loss 
 
         self.val_loc_auroc.update(torch.sigmoid(pred_locs.detach()), loc_labels.int())
@@ -138,38 +161,49 @@ class LitTimmClassifier(pl.LightningModule):
         import numpy as np
         
         try:
-            # Classification AUC
+            # Classification AUC (series-level)
             cls_labels_series = series_agg['cls_label'].values
             cls_preds_series = series_agg['pred_cls'].values
-            
-            cls_auc_series = 0.0
-            if len(np.unique(cls_labels_series)) > 1:
+
+            cls_auc_series = 0.5
+            if len(np.unique(cls_labels_series)) > 1 and not (np.isnan(cls_preds_series).any()):
                 cls_auc_series = roc_auc_score(cls_labels_series, cls_preds_series)
-                self.log('val_cls_auroc_series', cls_auc_series, on_epoch=True, prog_bar=True)
-            
-            # Location AUC - more efficient array construction
+            self.log('val_cls_auroc_series', cls_auc_series, on_epoch=True, prog_bar=True)
+
+            # Location AUCs per label (series-level, columnwise)
             loc_labels_series = series_agg[[f'loc_label_{i}' for i in range(self.num_classes)]].values
             loc_preds_series = series_agg[[f'pred_loc_{i}' for i in range(self.num_classes)]].values
-            
-            loc_auc_series = 0.0
-            if np.any(loc_labels_series.sum(axis=0) > 0):
-                loc_auc_series = roc_auc_score(loc_labels_series, loc_preds_series, average="micro")
-                self.log('val_loc_auroc_series', loc_auc_series, on_epoch=True, prog_bar=True)
-            
-            kaggle_score = (cls_auc_series * 13 + loc_auc_series * 1) / 14 # kaggle_score = (cls_auc_series * 13 + loc_auc_series * 1) / 14
-            self.log('val_kaggle_score', kaggle_score, on_epoch=True, prog_bar=True)
-                
-            if self.trainer.is_global_zero: 
-                print(f"\nSeries-level validation | Count: {len(series_agg)} | "
-                    f"Positive: {cls_labels_series.sum()}")
-                if len(np.unique(cls_labels_series)) > 1:
-                    print(f"Classification AUC (series): {cls_auc_series:.4f}")
-                if np.any(loc_labels_series.sum(axis=0) > 0):
-                    print(f"Location AUC (series): {loc_auc_series:.4f}")
-                print(f"Kaggle score: {kaggle_score:.4f}")
-                    
+
+            loc_aucs = []
+            for i in range(self.num_classes):
+                y_true_i = loc_labels_series[:, i]
+                y_pred_i = loc_preds_series[:, i]
+                if len(np.unique(y_true_i)) > 1 and not np.isnan(y_pred_i).any():
+                    try:
+                        auc_i = roc_auc_score(y_true_i, y_pred_i)
+                    except ValueError:
+                        auc_i = 0.5
+                else:
+                    auc_i = 0.5
+                loc_aucs.append(auc_i)
+
+            mean_loc_auc_series = float(np.mean(loc_aucs)) if len(loc_aucs) > 0 else 0.5
+            self.log('val_loc_auroc_series', mean_loc_auc_series, on_epoch=True, prog_bar=True)
+
+            # Kaggle score: simple average
+            kaggle_score = 0.5 * (cls_auc_series + mean_loc_auc_series)
         except Exception as e:
             print(f"Error calculating series-level metrics: {e}")
+            kaggle_score = 0.0
+            cls_auc_series = 0.5
+            mean_loc_auc_series = 0.5
+        # Always log, even on failure, so early stopping has a metric
+        self.log('val_kaggle_score', kaggle_score, on_epoch=True, prog_bar=True)
+        if self.trainer.is_global_zero:
+            print(f"\nSeries-level validation | Count: {len(series_agg)}")
+            print(f"Classification AUC (series): {cls_auc_series:.4f}")
+            print(f"Location AUC (series mean): {mean_loc_auc_series:.4f}")
+            print(f"Kaggle score: {kaggle_score:.4f}")
         
         # Step LR scheduler (ReduceLROnPlateau) after validation, when val metrics are available
         try:
@@ -184,22 +218,26 @@ class LitTimmClassifier(pl.LightningModule):
         # Clear validation outputs
         self.validation_outputs.clear()
 
-    def on_train_epoch_end(self):
-        pass
-    
+    #def on_train_epoch_end(self):
+    #    sch = self.lr_schedulers()
+#
+    #    # If the selected scheduler is a ReduceLROnPlateau scheduler.
+    #    if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
+    #        sch.step(self.trainer.callback_metrics["val_loss"])
+    #    
+#
+    #
+    #def configure_optimizers(self):
+    #    optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
+    #    
+    #    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=40)
+    #    return {"optimizer": optimizer, "lr_scheduler": scheduler}
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
-        
+        scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2)
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "monitor": "val_loss",
-                "interval": "epoch",
-                "frequency": 1,
-                "reduce_on_plateau": True,
-                "strict": False,
-            },
-        }
+    def on_train_epoch_end(self):
+        sch = self.lr_schedulers()
+        if sch is not None:
+            sch.step() 

@@ -3,7 +3,8 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from src.rsna_datasets.datasets import *
-from src.rsna_datasets.slice_datasets import *
+from src.rsna_datasets.mip_dataset import MipDataModule
+from src.rsna_datasets.volume3d_dataset import Volume3DDataModule
 from src.trainers.effnet_trainer import *
 from hydra.utils import instantiate
 
@@ -21,28 +22,40 @@ def train(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
 
     pl.seed_everything(cfg.seed)
-    datamodule = SliceDataModule(cfg)
+    data_mode = getattr(cfg, 'data_mode', 'slices')
+    if data_mode == 'mip':
+        datamodule = MipDataModule(cfg)
+    elif data_mode == 'volume3d':
+        datamodule = Volume3DDataModule(cfg)
 
+    print(cfg.model)
     model = instantiate(cfg.model)
     pl_model = LitTimmClassifier(model, cfg)
+
 
     ckpt_callback = pl.callbacks.ModelCheckpoint(
                           monitor="val_kaggle_score"
                         , mode="max"
                         , dirpath="./models"
-
                         , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_kaggle_score:.4f}'+f"fold_id={cfg.fold_id}",
                         save_top_k=3,
+    )
 
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
 
     loggers = [pl.loggers.TensorBoardLogger("logs/", name=cfg.experiment)]
-    
+    #wandb sync wandb/offline-run-*
     if cfg.use_wandb:
+        import os
+        offline = bool(cfg.wandb.get('offline', False)) if hasattr(cfg, 'wandb') else False
+        if offline and os.environ.get('WANDB_MODE') != 'offline':
+            os.environ['WANDB_MODE'] = 'offline'
         import wandb
+        if offline:
+            print("[W&B] Offline mode enabled (runs will sync later with 'wandb sync').")
         wandb_logger = pl.loggers.WandbLogger(
-            project=cfg.project_name, 
+            project=cfg.project_name,
             name=cfg.experiment,
             entity=cfg.wandb.get('entity', None),
             tags=cfg.wandb.get('tags', []),
@@ -50,10 +63,18 @@ def train(cfg: DictConfig) -> None:
         )
         loggers.append(wandb_logger)
 
+    early_stop_callback = pl.callbacks.EarlyStopping(
+        monitor="val_kaggle_score",
+        mode="max",
+        patience=30,
+        min_delta=0.0,
+        verbose=True,
+    )
+
     trainer = pl.Trainer(
         **cfg.trainer,
         logger=loggers,
-        callbacks=[lr_monitor, ckpt_callback]
+        callbacks=[lr_monitor, ckpt_callback, early_stop_callback]
     )
     
     # tuner = Tuner(trainer)

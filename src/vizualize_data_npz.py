@@ -133,8 +133,8 @@ def create_grid_from_slices(folder_path, max_files=None, output_name="all_slices
             
             # Get metadata
             modality = modality_map.get(series_uid, 'Unknown')
-            if modality != 'CTA':
-                continue
+            #if modality != 'CTA':
+            #    continue
             locations = location_map.get(series_uid, [])
             
             metadata = {
@@ -233,66 +233,66 @@ def create_grid_from_slices(folder_path, max_files=None, output_name="all_slices
     individual_dir = f"slice_grids/individual_{output_name}"
     os.makedirs(individual_dir, exist_ok=True)
     
-    for i, (slice_data, filename, metadata) in enumerate(zip(slices, valid_files, metadata_list)):
-        plt.figure(figsize=(10, 10))
-        plt.imshow(slice_data, cmap='gray')
-        
-        # Create detailed title
-        title_parts = [f'Slice {i+1}: {metadata["modality"]}']
-        if metadata['has_aneurysm']:
-            title_parts.append('ANEURYSM DETECTED')
-            locations = metadata['locations']
-            if locations:
-                unique_locations = list(set([loc['location'] for loc in locations]))
-                title_parts.append(f'Locations: {", ".join(unique_locations)}')
-        
-        plt.title(' | '.join(title_parts), fontsize=12)
-        plt.axis('off')
-        
-        # Mark aneurysm locations if present
-        #if metadata['has_aneurysm']:
-        #    for location_info in metadata['locations']:
-        #        if location_info['x'] is not None and location_info['y'] is not None:
-        #            x, y = location_info['x'], location_info['y']
-        #            if 0 <= x < slice_data.shape[1] and 0 <= y < slice_data.shape[0]:
-        #                plt.plot(x, y, 'r+', markersize=12, markeredgewidth=3, 
-        #                       label=f"{location_info['location']} ({x:.1f}, {y:.1f})")
-        #
-        # Clean filename for saving
-        clean_name = filename.replace('.npz', '').replace('.', '_')
-        plt.savefig(f"{individual_dir}/slice_{i+1:03d}_{clean_name}.png", dpi=150, bbox_inches='tight')
-        plt.close()
-    
-    print(f"Saved {len(slices)} individual slices to {individual_dir}/")
-    
-    # Print summary statistics
-    print("\nSummary Statistics:")
-    modalities = [m['modality'] for m in metadata_list]
-    modality_counts = pd.Series(modalities).value_counts()
-    print("Modality distribution:")
-    for modality, count in modality_counts.items():
-        print(f"  {modality}: {count}")
-    
-    aneurysm_count = sum(1 for m in metadata_list if m['has_aneurysm'])
-    print(f"\nAneurysm cases: {aneurysm_count}/{len(metadata_list)} ({aneurysm_count/len(metadata_list)*100:.1f}%)")
-    
-    if aneurysm_count > 0:
-        all_locations = []
-        for m in metadata_list:
-            if m['has_aneurysm']:
-                all_locations.extend([loc['location'] for loc in m['locations']])
-        location_counts = pd.Series(all_locations).value_counts()
-        print("\nAneurysm locations:")
-        for location, count in location_counts.items():
-            print(f"  {location}: {count}")
-    
-    print(f"\nProcessing complete! Check the 'slice_grids/' directory for outputs.")
+    #for i, (slice_data, filename, metadata) in enumerate(zip(slices, valid_files, metadata_list)):
+    #    plt.figure(figsize=(10, 10))
+    #    plt.imshow(slice_data, cmap='gray')
+    #    
+    #    # Create detailed title
+    #    title_parts = [f'Slice {i+1}: {metadata["modality"]}']
+    #    if metadata['has_aneurysm']:
+    #        title_parts.append('ANEURYSM DETECTED')
+    #        locations = metadata['locations']
+    #        if locations:
+    #            unique_locations = list(set([loc['location'] for loc in locations]))
+    #            title_parts.append(f'Locations: {", ".join(unique_locations)}')
+    #    
+    #    plt.title(' | '.join(title_parts), fontsize=12)
+    #    plt.axis('off')
+    #    
+    #    # Mark aneurysm locations if present
+    #    #if metadata['has_aneurysm']:
+    #    #    for location_info in metadata['locations']:
+    #    #        if location_info['x'] is not None and location_info['y'] is not None:
+    #    #            x, y = location_info['x'], location_info['y']
+    #    #            if 0 <= x < slice_data.shape[1] and 0 <= y < slice_data.shape[0]:
+    #    #                plt.plot(x, y, 'r+', markersize=12, markeredgewidth=3, 
+    #    #                       label=f"{location_info['location']} ({x:.1f}, {y:.1f})")
+    #    #
+    #    # Clean filename for saving
+    #    clean_name = filename.replace('.npz', '').replace('.', '_')
+    #    plt.savefig(f"{individual_dir}/slice_{i+1:03d}_{clean_name}.png", dpi=150, bbox_inches='tight')
+    #    plt.close()
+    #
+    #print(f"Saved {len(slices)} individual slices to {individual_dir}/")
+    #
+    ## Print summary statistics
+    #print("\nSummary Statistics:")
+    #modalities = [m['modality'] for m in metadata_list]
+    #modality_counts = pd.Series(modalities).value_counts()
+    #print("Modality distribution:")
+    #for modality, count in modality_counts.items():
+    #    print(f"  {modality}: {count}")
+    #
+    #aneurysm_count = sum(1 for m in metadata_list if m['has_aneurysm'])
+    #print(f"\nAneurysm cases: {aneurysm_count}/{len(metadata_list)} ({aneurysm_count/len(metadata_list)*100:.1f}%)")
+    #
+    #if aneurysm_count > 0:
+    #    all_locations = []
+    #    for m in metadata_list:
+    #        if m['has_aneurysm']:
+    #            all_locations.extend([loc['location'] for loc in m['locations']])
+    #    location_counts = pd.Series(all_locations).value_counts()
+    #    print("\nAneurysm locations:")
+    #    for location, count in location_counts.items():
+    #        print(f"  {location}: {count}")
+    #
+    #print(f"\nProcessing complete! Check the 'slice_grids/' directory for outputs.")
 
 
 if __name__ == "__main__":
     # Specify the folder containing NPZ files
     folder_path = "/home/sersasj/RSNA-IAD-Codebase/data/processed/mip_images/"
     
-    max_files_to_process = 100  # Change this or set to None
+    max_files_to_process = 200  # Change this or set to None
     
     create_grid_from_slices(folder_path, max_files=max_files_to_process, output_name="mip_images_grid")
