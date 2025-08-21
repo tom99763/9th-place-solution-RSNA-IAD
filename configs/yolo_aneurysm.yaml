@@ -1,0 +1,11 @@
+# YOLO dataset config for single-class intracranial aneurysm detection
+# Using an absolute path so it works no matter which directory you launch training from.
+
+path: /home/sersasj/RSNA-IAD-Codebase/data/yolo_dataset  # base path containing images/ and labels/
+train: images/train
+val: images/val
+
+test:  # optional
+
+names:
+  0: aneurysm_present

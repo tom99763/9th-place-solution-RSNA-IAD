@@ -5,7 +5,7 @@ model_name: "deit_small_patch16_224.fb_in1k"
 #python train.py --config-name config_mip \
 #deit_small_patch16_224.fb_in1k
 #tf_efficientnetv2_b0.in1k
-in_chans: 5  # 5-channel multi-window stack
+in_chans: 1  # 5-channel multi-window stack
 img_size: 512
 num_classes: 13
 # Stronger regularization

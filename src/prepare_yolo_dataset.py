@@ -47,8 +47,8 @@ sys.path.insert(0, str(ROOT))
 from configs.data_config import data_path, N_FOLDS, SEED  # type: ignore
 
 # Raw HU clipping range (same as other preprocessing) before per-slice min-max
-RAW_MIN_HU = -1200.0
-RAW_MAX_HU = 4000.0
+#RAW_MIN_HU = -0.0
+#RAW_MAX_HU = 500.0
 
 rng = random.Random(SEED)
 
@@ -65,7 +65,7 @@ def read_dicom_hu(path: Path) -> np.ndarray:
     slope = float(getattr(ds, 'RescaleSlope', 1.0))
     intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
     img = img * slope + intercept
-    img = np.clip(img, RAW_MIN_HU, RAW_MAX_HU)
+    #img = np.clip(img, RAW_MIN_HU, RAW_MAX_HU)
     return img
 
 
@@ -73,7 +73,7 @@ def min_max_normalize(img: np.ndarray) -> np.ndarray:
     mn, mx = float(img.min()), float(img.max())
     if mx - mn < 1e-6:
         return np.zeros_like(img, dtype=np.uint8)
-    norm = (img - mn) / (mx - mn)
+    norm = (img - mn) / (mx - mn)   
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
 
 
@@ -107,6 +107,11 @@ def parse_args():
     ap.add_argument('--image-ext', type=str, default='png', choices=['png','jpg','jpeg'], help='Image file extension')
     ap.add_argument('--overwrite', action='store_true', help='Overwrite existing files')
     ap.add_argument('--verbose', action='store_true')
+    ap.add_argument('--rgb-slices', action='store_true', help='Save labeled slices as RGB images: [slice-1, slice, slice+1]')
+    # MIP dataset options (series-level)
+    ap.add_argument('--mip-dataset', action='store_true', help='If set, generate a series-level MIP YOLO dataset instead of per-slice dataset')
+    ap.add_argument('--mip-img-size', type=int, default=512, help='Resize MIP to this square size (only in --mip-dataset mode; 0 disables resizing)')
+    ap.add_argument('--mip-out-name', type=str, default='yolo_dataset_mip', help='Subdirectory name under data/ for MIP YOLO dataset')
     return ap.parse_args()
 
 
@@ -154,6 +159,96 @@ def pick_negative_slices(series_dir: Path, positive_sops: Set[str], target_n: in
 def main():
     args = parse_args()
     root = Path(data_path)
+    if args.mip_dataset:
+        # --- Series-level MIP dataset ---
+        out_base = root / args.mip_out_name
+        for sub in ["images/train", "images/val", "labels/train", "labels/val"]:
+            (out_base / sub).mkdir(parents=True, exist_ok=True)
+        folds = load_folds(root)
+        label_df = load_labels(root)
+        # Group labels per series
+        series_to_points: Dict[str, List[Tuple[float,float]]] = {}
+        for _, r in label_df.iterrows():
+            series_to_points.setdefault(r.SeriesInstanceUID, []).append((float(r.x), float(r.y)))
+
+        train_csv = pd.read_csv(root / 'train.csv')
+        all_series = train_csv['SeriesInstanceUID'].unique().tolist()
+        total_series = 0
+        total_pos = 0
+        total_neg = 0
+
+        def load_series_slices(series_dir: Path) -> List[np.ndarray]:
+            slices: List[np.ndarray] = []
+            for dcm_path in sorted(series_dir.glob('*.dcm')):
+                try:
+                    arr = read_dicom_hu(dcm_path)
+                    slices.append(arr)
+                except Exception:
+                    continue
+            return slices
+
+        for uid in all_series:
+            fold_id = folds.get(uid, 0)
+            split = 'val' if fold_id == args.val_fold else 'train'
+            series_dir = root / 'series' / uid
+            if not series_dir.exists():
+                if args.verbose:
+                    print(f"[MISS] series {uid}")
+                continue
+            slices = load_series_slices(series_dir)
+            if not slices:
+                if args.verbose:
+                    print(f"[EMPTY] series {uid}")
+                continue
+            # Stack to MIP
+            base_shape = slices[0].shape
+            proc = []
+            for s in slices:
+                if s.shape != base_shape:
+                    s = cv2.resize(s, (base_shape[1], base_shape[0]), interpolation=cv2.INTER_LINEAR)
+                proc.append(s)
+            stack = np.stack(proc, axis=0)
+            mip = stack.max(axis=0)
+            mip_uint8 = min_max_normalize(mip)
+            if args.mip_img_size > 0 and (mip_uint8.shape[0] != args.mip_img_size or mip_uint8.shape[1] != args.mip_img_size):
+                mip_uint8 = cv2.resize(mip_uint8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                resize_w = resize_h = args.mip_img_size
+            else:
+                resize_h, resize_w = mip_uint8.shape
+
+            img_path = out_base / 'images' / split / f"{uid}.{args.image_ext}"
+            label_path = out_base / 'labels' / split / f"{uid}.txt"
+            if img_path.exists() and label_path.exists() and not args.overwrite:
+                total_series += 1
+                continue
+            cv2.imwrite(str(img_path), mip_uint8)
+            pts = series_to_points.get(uid, [])
+            if pts and (not  len(pts)==0):
+                with open(label_path, 'w') as f:
+                    for (x, y) in pts:
+                        # Adjust if resized
+                        orig_h, orig_w = base_shape
+                        if (resize_w, resize_h) != (orig_w, orig_h):
+                            # scale coordinates
+                            x_scaled = x * (resize_w / orig_w)
+                            y_scaled = y * (resize_h / orig_h)
+                        else:
+                            x_scaled, y_scaled = x, y
+                        xc, yc, bw, bh = build_box(x_scaled, y_scaled, args.box_size, resize_w, resize_h)
+                        f.write(f"0 {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
+                total_pos += 1
+             
+            total_series += 1
+
+        print(f"Series processed: {total_series}  (positive label files: {total_pos}, negative: {total_neg})")
+        print(f"MIP YOLO dataset root: {out_base}")
+        for split in ['train','val']:
+            n_imgs = len(list((out_base / 'images' / split).glob('*')))
+            n_lbls = len(list((out_base / 'labels' / split).glob('*.txt')))
+            print(f"{split}: images={n_imgs} labels={n_lbls}")
+        return
+
+    # --- Default per-slice dataset path (original behavior) ---
     out_base = root / 'yolo_dataset'
     ensure_dirs(out_base)
 
@@ -175,6 +270,11 @@ def main():
             if args.verbose:
                 print(f"[MISS] Series directory missing: {series_dir}")
             continue
+
+        # Preload all slice paths for RGB mode
+        slice_paths = sorted(series_dir.glob('*.dcm')) if args.rgb_slices else None
+        slice_path_map = {p.stem: p for p in slice_paths} if slice_paths else None
+        slice_stems = [p.stem for p in slice_paths] if slice_paths else None
 
         # Positive slices first
         for _, row in grp.iterrows():
@@ -198,7 +298,27 @@ def main():
             label_path = out_base / 'labels' / split / f"{stem}.txt"
             if img_path.exists() and label_path.exists() and not args.overwrite:
                 continue
-            cv2.imwrite(str(img_path), img_uint8)
+            if args.rgb_slices:
+                # Find index of current slice
+                idx = slice_stems.index(sop) if slice_stems and sop in slice_stems else None
+                if idx is not None:
+                    # Get previous, current, next
+                    idxs = [max(0, idx-1), idx, min(len(slice_stems)-1, idx+1)]
+                    imgs = []
+                    for i in idxs:
+                        try:
+                            arr = read_dicom_hu(slice_paths[i])
+                            imgs.append(min_max_normalize(arr))
+                        except Exception:
+                            imgs.append(img_uint8)  # fallback to current
+                    rgb_img = np.stack(imgs, axis=-1)  # H,W,3
+                    cv2.imwrite(str(img_path), rgb_img)
+                else:
+                    # fallback: single slice as all channels
+                    rgb_img = np.stack([img_uint8]*3, axis=-1)
+                    cv2.imwrite(str(img_path), rgb_img)
+            else:
+                cv2.imwrite(str(img_path), img_uint8)
             with open(label_path, 'w') as f:
                 f.write(f"0 {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
             total_pos_written += 1
@@ -250,3 +370,5 @@ def main():
 if __name__ == '__main__':
     main()
 #sersasj@DESKTOP-8U9D0KJ:~/RSNA-IAD-Codebase$ python3 src/prepare_yolo_dataset.py --val-fold 0 --box-size 24 --negatives-per-positive 0
+#sersasj@DESKTOP-8U9D0KJ:~/RSNA-IAD-Codebase$ python3 src/prepare_yolo_dataset.py --mip-dataset --val-fold 0 --box-size 24 --negatives-per-positive 0
+#python3 src/prepare_yolo_dataset.py --rgb-slices --val-fold 0 --box-size 24

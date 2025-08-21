@@ -59,13 +59,9 @@ class Volume3DDataset(Dataset):
         series_uid = row['series_uid']
         vol_path = self.data_dir / 'volumes_3d' / row['volume_filename']
         with np.load(vol_path) as data:
-            vol = data['vol'].astype(np.float32)  # (D,H,W) raw HU (un-normalized)
-
-        raw_min = float(getattr(self.cfg, 'raw_min_hu', -1200.0))
-        raw_max = float(getattr(self.cfg, 'raw_max_hu', 4000.0))
-        # Clip first, then scale to [0,1]
-        vol = np.clip(vol, raw_min, raw_max)
-        img = (vol - raw_min) / max(raw_max - raw_min, 1e-6)
+            vol_uint8 = data['vol'].astype(np.uint8)  # (D,H,W) stored 0-255
+        # Scale to [0,1] float32
+        img = (vol_uint8.astype(np.float32)) #/ 255.0)
         # Shape (D,H,W); we'll treat depth as channel dim for 2D augs: transpose -> (H,W,D)
         if self.transform is not None and A is not None:
             hwc = np.transpose(img, (1, 2, 0))  # (H,W,C=depth)
@@ -87,12 +83,12 @@ class Volume3DDataModule(pl.LightningDataModule):
 
             #A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.2),
             #A.GaussianBlur(blur_limit=(3, 5), p=0.05),
-            #A.Normalize(mean=train_mean, std=train_std),
+            A.Normalize(),
             ToTensorV2(),
         ])
 
         self.val_transforms = A.Compose([
-            #A.Normalize(mean=train_mean, std=train_std),
+            A.Normalize(),
             ToTensorV2(),
         ])
 

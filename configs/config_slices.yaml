@@ -5,26 +5,23 @@ project_name: "rsna-intracranial-aneurysm-detection-slices"
 data_dir: ./data/processed
 seed: 42
 fold_id: 0
-use_small_dataset: false  # null = train on all folds except fold_id, or specify list [0,1,2] for subset
+use_small_dataset: true  # null = train on all folds except fold_id, or specify list [0,1,2] for subset
 batch_size: 4  # training batch size
 val_batch_size: 4  # validation batch size
 num_workers: 2  
-experiment: slice_based_3dunet
-# Image mode configuration
+experiment: slice_based
 image_mode: "2.5D"  # Options: "2D" or "2.5D"
 
 # 2.5D specific configuration (only used when image_mode = "2.5D")
-# Use direct window size. Example: 8 = center + 7 adjacent slices
+# Use   window size. Example: 8 = center + 7 adjacent slices
 window_size: 8
-# Window positioning strategy
-# Options: "random" (random position in training), "centered" (always centered)
-window_position_strategy: "centered"  # Use "centered" to always center on target slice
+window_position_strategy: "random"  # Use "centered" to always center on target slice
 
 
 
 # Balanced sampling configuration
 use_balanced_sampling: true  # Set to true to enable balanced pos/neg sampling
-pos_ratio: 0.6 # 0.75
+pos_ratio: 0.95 # 0.75
 
 use_wandb: true
 
@@ -32,7 +29,7 @@ use_wandb: true
 wandb:
   entity: null
   tags: ["baselines", "slice_based", "fold_${fold_id}"]
-  notes: "baselines 2.5D slices pos_ratio=0.6 window_size=8"
+  notes: "baselines 2.5D slices pos_ratio=0.5 window_size=8"
 
 # The 'defaults' list tells Hydra which configs to load by default.
 defaults:

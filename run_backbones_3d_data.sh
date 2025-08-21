@@ -10,8 +10,8 @@ IN_CHANS=$((DEPTH * NUM_WINDOWS))
 # List of timm model names to iterate over
 MODELS=(
   "tf_efficientnetv2_s.in21k_ft_in1k"
-  "resnet18.a1_in1k"
-  "seresnet50.a3_in1k"
+  #"resnet18.a1_in1k"
+  #"seresnet50.a3_in1k"
 )
 
 EPOCHS=120
@@ -19,7 +19,7 @@ IMG_SIZE=384
 
 for MODEL in "${MODELS[@]}"; do
   SAFE_MODEL_NAME=$(echo "$MODEL" | sed 's/[^A-Za-z0-9_-]/_/g')
-  EXPERIMENT="vol3d_${SAFE_MODEL_NAME}_w${NUM_WINDOWS}_e${EPOCHS}_fold${FOLD_ID}"
+  EXPERIMENT="vol3d_${SAFE_MODEL_NAME}_w${NUM_WINDOWS}_e${EPOCHS}_fold${FOLD_ID}_v2"
 
   echo -e "\n>>> Running: $MODEL | experiment=$EXPERIMENT | fold_id=$FOLD_ID | in_chans=$IN_CHANS"
   HYDRA_FULL_ERROR=1 \

@@ -117,6 +117,12 @@ class MipDataset(Dataset):
             (60.0, 300.0),   # wider soft
             (300.0, 700.0),  # bone/high contrast
         ]
+
+        #        base_windows = [
+        #    (40.0, 80.0),    # brain narrow
+        #    (80.0, 200.0),   # soft tissue / brain standard
+        #    (600.0, 2800.0),  # wider soft
+        #]
         jitter = getattr(self.cfg, 'window_jitter_hu', 10.0)
         use_jitter = (self.mode == 'train') and getattr(self.cfg, 'use_window_aug', True)
         window_channels = []
@@ -126,7 +132,8 @@ class MipDataset(Dataset):
                 w = max(1.0, w + np.random.uniform(-jitter, jitter))
             window_channels.append(fixed_hu_window(mip, c, w))
 
-        img = np.stack([raw_norm] + window_channels, axis=-1).astype(np.float32)  # (H,W,5)
+        #img = np.stack([raw_norm] + window_channels, axis=-1).astype(np.float32)  # (H,W,5)
+        img = np.stack([raw_norm], axis=-1).astype(np.float32)  # (H,W,5)
 
         # Apply transforms (Albumentations expects HWC)
         if self.transform:

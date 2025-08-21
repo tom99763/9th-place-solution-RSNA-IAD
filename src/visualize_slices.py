@@ -31,10 +31,10 @@ except Exception:
 # ---------------------- Preprocessing helpers ---------------------- #
 
 def window_ct(image: np.ndarray) -> np.ndarray:
-    low = np.percentile(image, 0.5)
-    high = np.percentile(image, 99.5)
-    if high <= low:
-        high = low + 1.0
+    low = 40
+    high = 80
+    #if high <= low:
+    #    high = low + 1.0
     image = np.clip(image, low, high)
     image = (image - low) / (high - low)
     return (image * 255.0).clip(0, 255).astype(np.uint8)

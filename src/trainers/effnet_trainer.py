@@ -37,10 +37,9 @@ class LitTimmClassifier(pl.LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
-
         x, cls_labels, loc_labels, series_uids = batch
 
-        pred_cls, pred_locs = self.model(x)
+        pred_cls, pred_locs =self(x)
         pred_cls = pred_cls.squeeze(-1)  
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
@@ -78,10 +77,10 @@ class LitTimmClassifier(pl.LightningModule):
 
         return loss
 
-    def validation_step(self, batch, batch_idx):    
+    def validation_step(self, batch, batch_idx):
         x, cls_labels, loc_labels, series_uids = batch
-
-        pred_cls, pred_locs = self.model(x)
+        
+        pred_cls, pred_locs = self(x)
         pred_cls = pred_cls.squeeze(-1)
 
         cls_labels_float = cls_labels.float()
@@ -166,7 +165,7 @@ class LitTimmClassifier(pl.LightningModule):
             cls_preds_series = series_agg['pred_cls'].values
 
             cls_auc_series = 0.5
-            if len(np.unique(cls_labels_series)) > 1 and not (np.isnan(cls_preds_series).any()):
+            if len(np.unique(cls_labels_series)) > 1:
                 cls_auc_series = roc_auc_score(cls_labels_series, cls_preds_series)
             self.log('val_cls_auroc_series', cls_auc_series, on_epoch=True, prog_bar=True)
 
@@ -178,11 +177,8 @@ class LitTimmClassifier(pl.LightningModule):
             for i in range(self.num_classes):
                 y_true_i = loc_labels_series[:, i]
                 y_pred_i = loc_preds_series[:, i]
-                if len(np.unique(y_true_i)) > 1 and not np.isnan(y_pred_i).any():
-                    try:
-                        auc_i = roc_auc_score(y_true_i, y_pred_i)
-                    except ValueError:
-                        auc_i = 0.5
+                if len(np.unique(y_true_i)) > 1:
+                    auc_i = roc_auc_score(y_true_i, y_pred_i)
                 else:
                     auc_i = 0.5
                 loc_aucs.append(auc_i)
@@ -190,20 +186,21 @@ class LitTimmClassifier(pl.LightningModule):
             mean_loc_auc_series = float(np.mean(loc_aucs)) if len(loc_aucs) > 0 else 0.5
             self.log('val_loc_auroc_series', mean_loc_auc_series, on_epoch=True, prog_bar=True)
 
-            # Kaggle score: simple average
+            # Kaggle score: simple average of aneurysm-present AUC and the mean of the other 13 AUCs
             kaggle_score = 0.5 * (cls_auc_series + mean_loc_auc_series)
+            self.log('val_kaggle_score', kaggle_score, on_epoch=True, prog_bar=True)
+                
+            if self.trainer.is_global_zero: 
+                print(f"\nSeries-level validation | Count: {len(series_agg)} | "
+                    f"Positive: {cls_labels_series.sum()}")
+                if len(np.unique(cls_labels_series)) > 1:
+                    print(f"Classification AUC (series): {cls_auc_series:.4f}")
+                if len(loc_aucs) > 0:
+                    print(f"Location AUC (series mean): {mean_loc_auc_series:.4f}")
+                print(f"Kaggle score: {kaggle_score:.4f}")
+                    
         except Exception as e:
             print(f"Error calculating series-level metrics: {e}")
-            kaggle_score = 0.0
-            cls_auc_series = 0.5
-            mean_loc_auc_series = 0.5
-        # Always log, even on failure, so early stopping has a metric
-        self.log('val_kaggle_score', kaggle_score, on_epoch=True, prog_bar=True)
-        if self.trainer.is_global_zero:
-            print(f"\nSeries-level validation | Count: {len(series_agg)}")
-            print(f"Classification AUC (series): {cls_auc_series:.4f}")
-            print(f"Location AUC (series mean): {mean_loc_auc_series:.4f}")
-            print(f"Kaggle score: {kaggle_score:.4f}")
         
         # Step LR scheduler (ReduceLROnPlateau) after validation, when val metrics are available
         try:

@@ -62,31 +62,33 @@ class MultiBackboneModel(nn.Module):
      
 
         # Combined classifier with batch norm for stability (location)
-        self.loc_classifier = nn.Sequential(
-            nn.Linear(num_features, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(drop_rate),
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(drop_rate),
-            nn.Linear(256, num_classes)
-        )
-
-
-        self.aneurysm_classifier = nn.Sequential(
-            nn.Linear(num_features, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(drop_rate),
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(drop_rate),
-            nn.Linear(128, 1)
-        )
-
+        #self.loc_classifier = nn.Sequential(
+        #    nn.Linear(num_features, 512),
+        #    nn.BatchNorm1d(512),
+        #    nn.ReLU(),
+        #    nn.Dropout(drop_rate),
+        #    nn.Linear(512, 256),
+        #    nn.BatchNorm1d(256),
+        #    nn.ReLU(),
+        #    nn.Dropout(drop_rate),
+        #    nn.Linear(256, num_classes)
+        #)
+#
+#
+        #self.aneurysm_classifier = nn.Sequential(
+        #    nn.Linear(num_features, 256),
+        #    nn.BatchNorm1d(256),
+        #    nn.ReLU(),
+        #    nn.Dropout(drop_rate),
+        #    nn.Linear(256, 128),
+        #    nn.BatchNorm1d(128),
+        #    nn.ReLU(),
+        #    nn.Dropout(drop_rate),
+        #    nn.Linear(128, 1)
+        #)
+#
+        self.loc_classifier = nn.Linear(num_features, num_classes)
+        self.aneurysm_classifier = nn.Linear(num_features, 1)
     def forward(self, image):
 
         img_features = self.backbone(image)

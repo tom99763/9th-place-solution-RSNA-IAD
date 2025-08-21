@@ -19,10 +19,16 @@ Usage examples:
     python -m src.visualize_volume3d --data_dir data/processed --series 1.2.3.4 \
         --slice_indices 0,5,10,15,20,25,31
 
-Notes:
- - Volumes stored as (D,H,W). If meta[2]==1 they are already normalized [0,1]; otherwise raw clipped HU
-   and windowing will be applied per requested window.
- - For multiple windows we create a panel per window.
+Notes (updated for new preprocessing):
+ - New preprocessing stores volumes as uint8 (D,H,W) already normalized 0..255 after either:
+     (a) DICOM window-based branch (meta = [window_center, window_width, 1]) using fixed clipping 0..500 → scaled;
+     (b) Percentile statistical normalization branch (meta = [-1, -1, 0]).
+ - Raw HU are NOT stored; windowing now operates on an approximate HU reconstruction:
+     If meta[2]==1 we map uint8 back to [0,500] HU (the fixed range used in preprocessing) then apply requested windows.
+     Else we treat uint8/255 as an already contrast-normalized image; additional windows just re-scale that range.
+ - Multiple windows produce panels per requested (center,width) even if approximation.
+ - Legacy volumes (float raw HU) are still supported: if volume dtype != uint8 and meta doesn't match new schema,
+   we fall back to original behavior treating vol as HU or [0,1] normalized.
 """
 from __future__ import annotations
 import argparse
@@ -74,23 +80,71 @@ def parse_windows(s: str | None):
 
 
 def load_volume(npz_path: Path):
+    """Return a dict with standardized fields regardless of old/new format.
+
+    Returns:
+        {
+          'vol_uint8': uint8 volume (D,H,W) (created if necessary),
+          'approx_hu_vol': float32 approximate HU (if reconstructable) else None,
+          'meta': meta ndarray or None,
+          'mode': 'new_uint8' | 'legacy_hu' | 'legacy_norm'
+        }
+    """
     with np.load(npz_path) as data:
-        vol = data['vol'].astype(np.float32)
+        vol = data['vol']
         meta = data.get('meta', None)
-    normalized = False
+
+    # Detect new format: uint8 + meta where meta[2] in {0,1} and meta[0] possibly -1 or plausible center
+    if vol.dtype == np.uint8 and meta is not None and meta.shape[0] >= 3:
+        window_center, window_width, used_flag = float(meta[0]), float(meta[1]), float(meta[2])
+        vol_uint8 = vol
+        approx_hu_vol = None
+        if used_flag == 1.0:  # window branch used fixed 0..500 mapping
+            approx_hu_vol = (vol_uint8.astype(np.float32) / 255.0) * 500.0  # approximate HU in [0,500]
+        else:
+            # Statistical normalization branch – treat as generic normalized image, no real HU scale.
+            approx_hu_vol = None
+        return {
+            'vol_uint8': vol_uint8,
+            'approx_hu_vol': approx_hu_vol,
+            'meta': meta,
+            'mode': 'new_uint8'
+        }
+
+    # Legacy behavior (previous pipeline): vol stored float (HU clipped or normalized)
+    vol_f32 = vol.astype(np.float32)
     if meta is not None and meta.shape[0] >= 3:
-        normalized = float(meta[2]) == 1.0
+        normalized_flag = float(meta[2]) == 1.0
         hu_min, hu_max = float(meta[0]), float(meta[1])
+        if normalized_flag:
+            # Already [0,1]; create uint8 representation
+            vol_uint8 = (np.clip(vol_f32, 0.0, 1.0) * 255.0).astype(np.uint8)
+            approx_hu_vol = vol_f32 * (hu_max - hu_min) + hu_min
+            mode = 'legacy_norm'
+        else:
+            # Raw HU clipped range hu_min..hu_max
+            vol_uint8 = ((vol_f32 - hu_min) / max(hu_max - hu_min, 1e-6))
+            vol_uint8 = (np.clip(vol_uint8, 0.0, 1.0) * 255.0).astype(np.uint8)
+            approx_hu_vol = vol_f32
+            mode = 'legacy_hu'
     else:
-        # Fallback values from prepare script
-        hu_min, hu_max = -1200.0, 4000.0
-    return vol, normalized, (hu_min, hu_max)
+        # Unknown meta; treat as normalized image
+        vol_uint8 = (np.clip(vol_f32, 0.0, 1.0) * 255.0).astype(np.uint8)
+        approx_hu_vol = None
+        mode = 'legacy_unknown'
+    return {
+        'vol_uint8': vol_uint8,
+        'approx_hu_vol': approx_hu_vol,
+        'meta': meta,
+        'mode': mode
+    }
 
 
-def apply_window(vol: np.ndarray, center: float, width: float) -> np.ndarray:
+def apply_window(vol_hu: np.ndarray, center: float, width: float) -> np.ndarray:
+    """Apply window on approximate HU volume returning [0,1]."""
     low = center - width/2.0
     high = center + width/2.0
-    wv = np.clip(vol, low, high)
+    wv = np.clip(vol_hu, low, high)
     return (wv - low) / max(width, 1e-6)
 
 
@@ -111,19 +165,40 @@ def build_grid_for_series(series_uid: str, vol_dir: Path, windows, args, out_dir
         print(f"[WARN] No volume file found for {series_uid}")
         return
     vol_path = matches[0]
-    vol, normalized, (hu_min, hu_max) = load_volume(vol_path)
-    depth = vol.shape[0]
+    info = load_volume(vol_path)
+    vol_uint8 = info['vol_uint8']
+    depth = vol_uint8.shape[0]
     slice_idxs = choose_slice_indices(depth, args)
+    windowed_sets = []  # List[(window_label, list(slice_imgs))]
+    approx_hu = info['approx_hu_vol']
+    mode = info['mode']
+    meta = info['meta']
+    used_flag = None
+    if meta is not None and len(meta) >= 3:
+        used_flag = int(meta[2])
 
-    # If already normalized, one window only (use original); if multiple windows requested we still show each by re-windowing normalized (harmless)
-    windowed_sets = []  # List[ (window_label, list(slice_imgs)) ]
-    for (c,w) in windows:
-        if normalized:
-            window_vol = apply_window(vol * (hu_max - hu_min) + hu_min, c, w)  # reconstruct HU approx then window
+    if approx_hu is None:
+        # Statistical normalization (MRI / no window tags). Allow multiple artificial windows if requested.
+        base = (vol_uint8.astype(np.float32) / 255.0)
+        if len(windows) <= 1:
+            windowed_sets.append(("BASE", [base[i] for i in slice_idxs]))
         else:
-            window_vol = apply_window(vol, c, w)
-        images = [window_vol[i] for i in slice_idxs]
-        windowed_sets.append((f"C{int(c)}W{int(w)}", images))
+            # Simulate window effects by simple contrast windows over the scaled base (treat base*500 as pseudo HU)
+            pseudo_hu = base * 500.0
+            for (c, w) in windows:
+                window_vol = apply_window(pseudo_hu, c, w)
+                images = [window_vol[i] for i in slice_idxs]
+                windowed_sets.append((f"C{int(c)}W{int(w)}", images))
+    else:
+        # CT with real window tags reconstructed (approx_hu available). If already clipped to 0-500 (used_flag==1) just show single column.
+        if used_flag == 1:
+            base = (vol_uint8.astype(np.float32) / 255.0)
+            windowed_sets.append(("C0-500", [base[i] for i in slice_idxs]))
+        else:
+            for (c, w) in windows:
+                window_vol = apply_window(approx_hu, c, w)
+                images = [window_vol[i] for i in slice_idxs]
+                windowed_sets.append((f"C{int(c)}W{int(w)}", images))
 
     # Figure layout: rows = len(slice_idxs), cols = len(windows)
     rows = len(slice_idxs)
@@ -144,7 +219,12 @@ def build_grid_for_series(series_uid: str, vol_dir: Path, windows, args, out_dir
                 ax.set_title(wlabel, fontsize=9)
             ax.axis('off')
 
-    fig.suptitle(f"Series {series_uid}\nDepth={depth} Normalized={normalized} HU[{hu_min},{hu_max}]", fontsize=10)
+    if info['mode'] == 'new_uint8' and meta is not None:
+        wc, ww, used = meta.tolist()[:3]
+        meta_str = f"wc={wc:.1f} ww={ww:.1f} used={int(used)}"
+    else:
+        meta_str = info['mode']
+    fig.suptitle(f"Series {series_uid}\nDepth={depth} Mode={info['mode']} {meta_str}", fontsize=10)
     plt.tight_layout(rect=(0,0,1,0.95))
     out_path = out_dir / f"{series_uid}_slices.png"
     fig.savefig(out_path, dpi=120)

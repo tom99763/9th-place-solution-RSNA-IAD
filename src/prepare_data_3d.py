@@ -54,9 +54,11 @@ from configs.data_config import *
 
 TARGET_DEPTH = 32
 TARGET_SIZE = 384
-HU_MIN = -1200.0
-HU_MAX = 4000.0
-STORE_NORMALIZED = False  # Set True to revert to [0,1] scaling
+
+# New preprocessing adopts windowing / percentile-based statistical normalization as requested.
+# Output volumes are stored as uint8 in range [0,255]. Meta will contain: [window_center_or_-1, window_width_or_-1, used_window_flag]
+
+STORE_NORMALIZED = True  # Keep for compatibility; now always stores normalized uint8
 
 # Globals for worker processes
 _label_df = None
@@ -73,10 +75,15 @@ def _load_series_dicom_paths(series_uid: str, root: Path) -> List[Path]:
 
 
 def _read_dicom(path: Path):
+    """Read a DICOM file returning (dataset, pixel_array) without applying slope/intercept.
+
+    Kaggle reference pipeline intentionally IGNORES RescaleSlope / RescaleIntercept by
+    hard-setting slope=1, intercept=0. We replicate that here so training volumes
+    match inference preprocessing exactly.
+    """
     ds = pydicom.dcmread(str(path), force=True)
     arr = ds.pixel_array.astype(np.float32)
-    if hasattr(ds, 'RescaleSlope') and hasattr(ds, 'RescaleIntercept'):
-        arr = arr * float(ds.RescaleSlope) + float(ds.RescaleIntercept)
+    # Intentionally skip HU conversion (ignore RescaleSlope / RescaleIntercept)
     return ds, arr
 
 
@@ -95,30 +102,60 @@ def _extract_slice_position(ds) -> float:
     return 0.0
 
 
-def _resample_depth(volume: np.ndarray, target_depth: int) -> np.ndarray:
-    if volume.shape[0] == target_depth:
-        return volume
-    depth_zoom = target_depth / volume.shape[0]
-    # zoom along depth only, order=1 linear
-    return nd_zoom(volume, (depth_zoom, 1.0, 1.0), order=1)
+def _resize_volume_3d(volume: np.ndarray, target_depth: int, target_hw: int) -> np.ndarray:
+    """Single 3D resize using ndimage.zoom (matches Kaggle notebook approach).
 
-
-def _resize_inplane(volume: np.ndarray, target_hw: int) -> np.ndarray:
+    Performs one trilinear interpolation over (D,H,W) with zoom factors for each axis,
+    then crops/pads to exact (target_depth, target_hw, target_hw).
+    """
     d, h, w = volume.shape
-    if h == target_hw and w == target_hw:
+    if (d, h, w) == (target_depth, target_hw, target_hw):
         return volume
-    resized = np.empty((d, target_hw, target_hw), dtype=volume.dtype)
-    for i in range(d):
-        resized[i] = cv2.resize(volume[i], (target_hw, target_hw), interpolation=cv2.INTER_LINEAR)
+    zoom_factors = (target_depth / d, target_hw / h, target_hw / w)
+    resized = nd_zoom(volume, zoom_factors, order=1, mode='nearest')
+    # Crop just in case of minor floating rounding
+    resized = resized[:target_depth, :target_hw, :target_hw]
+    # Pad if any dimension short
+    pad_d = target_depth - resized.shape[0]
+    pad_h = target_hw - resized.shape[1]
+    pad_w = target_hw - resized.shape[2]
+    if pad_d > 0 or pad_h > 0 or pad_w > 0:
+        resized = np.pad(resized,
+                         ((0, max(0, pad_d)), (0, max(0, pad_h)), (0, max(0, pad_w))),
+                         mode='edge')
     return resized
 
 
-def _clip_or_normalize(volume: np.ndarray) -> np.ndarray:
-    """Either clip-only (raw HU retained in range) or clip+normalize to [0,1]."""
-    vol = np.clip(volume, HU_MIN, HU_MAX).astype(np.float32)
-    if STORE_NORMALIZED:
-        vol = (vol - HU_MIN) / (HU_MAX - HU_MIN)
-    return vol
+def apply_windowing_or_normalize(img: np.ndarray, modality_flag: bool) -> np.ndarray:
+    """Match Kaggle notebook logic.
+
+    modality_flag = True  -> treat as CT (Kaggle branch that forces 0..500 clip)
+    modality_flag = False -> treat as MR / other (1-99 percentile normalization)
+    """
+    if modality_flag:  # CT path -> fixed 0..500 clipping regardless of actual distribution
+        p1, p99 = 0.0, 500.0  # override
+        if p99 > p1:
+            normalized = np.clip(img, p1, p99)
+            normalized = (normalized - p1) / (p99 - p1 + 1e-7)
+            return (normalized * 255.0).astype(np.uint8)
+        # Extremely degenerate fallback
+        img_min, img_max = float(img.min()), float(img.max())
+        if img_max > img_min:
+            normalized = (img - img_min) / (img_max - img_min + 1e-7)
+            return (normalized * 255.0).astype(np.uint8)
+        return np.zeros_like(img, dtype=np.uint8)
+    else:
+        # MR / other modality percentile normalization (1-99%)
+        p1, p99 = np.percentile(img, [1, 99])
+        if p99 > p1:
+            normalized = np.clip(img, p1, p99)
+            normalized = (normalized - p1) / (p99 - p1 + 1e-7)
+            return (normalized * 255.0).astype(np.uint8)
+        img_min, img_max = float(img.min()), float(img.max())
+        if img_max > img_min:
+            normalized = (img - img_min) / (img_max - img_min + 1e-7)
+            return (normalized * 255.0).astype(np.uint8)
+        return np.zeros_like(img, dtype=np.uint8)
 
 
 def _process_single_series(uid: str, root: Path, out_dir: Path) -> Dict[str, Any]:
@@ -126,6 +163,7 @@ def _process_single_series(uid: str, root: Path, out_dir: Path) -> Dict[str, Any
         dcm_paths = _load_series_dicom_paths(uid, root)
         if not dcm_paths:
             return {"series_uid": uid, "volume_filename": None, "num_slices_raw": 0}
+
         slices: List[Tuple[float, np.ndarray]] = []
         for p in dcm_paths:
             try:
@@ -141,23 +179,37 @@ def _process_single_series(uid: str, root: Path, out_dir: Path) -> Dict[str, Any
                     slices.append((_extract_slice_position(ds), arr.astype(np.float32)))
             except Exception:
                 continue
+
         if not slices:
             return {"series_uid": uid, "volume_filename": None, "num_slices_raw": 0}
-        # Sort by z
+
+        # Sort by z and stack
         slices.sort(key=lambda x: x[0])
-        vol = np.stack([s[1] for s in slices], axis=0)  # (D, H, W)
+        vol = np.stack([s[1] for s in slices], axis=0)
         num_raw = vol.shape[0]
-        # Clip HU range (optionally normalize based on STORE_NORMALIZED)
-        vol = _clip_or_normalize(vol)
-        # Depth resample
-        vol = _resample_depth(vol, TARGET_DEPTH)
-        # In-plane resize
-        vol = _resize_inplane(vol, TARGET_SIZE)
-        # Save
-        vol_filename = f"{uid}_d{TARGET_DEPTH}_sz{TARGET_SIZE}.npz"
-        # Save meta: [HU_MIN, HU_MAX, normalized_flag]
-        meta = np.array([HU_MIN, HU_MAX, 1.0 if STORE_NORMALIZED else 0.0], dtype=np.float32)
-        np.savez_compressed(out_dir / vol_filename, vol=vol, meta=meta)
+
+        # Single 3D resize
+        vol = _resize_volume_3d(vol, TARGET_DEPTH, TARGET_SIZE)
+
+        # Determine modality (default CT behavior if unknown)
+        modality_flag = False
+        try:
+            ds0 = pydicom.dcmread(str(dcm_paths[0]), stop_before_pixels=True, force=True)
+            if getattr(ds0, 'Modality', 'CT') == 'CT':
+                modality_flag = True
+        except Exception:
+            modality_flag = True
+
+        # Normalize per slice
+        vol_uint8 = np.stack([apply_windowing_or_normalize(vol[i], modality_flag) for i in range(vol.shape[0])], axis=0).astype(np.uint8)
+
+        vol_filename = f"{uid}_d{TARGET_DEPTH}_sz{TARGET_SIZE}_uint8.npz"
+        meta = np.array([
+            1.0 if modality_flag else 0.0,
+            -1.0,
+            -1.0
+        ], dtype=np.float32)
+        np.savez_compressed(out_dir / vol_filename, vol=vol_uint8, meta=meta)
         return {"series_uid": uid, "volume_filename": vol_filename, "num_slices_raw": num_raw}
     except Exception as e:
         return {"series_uid": uid, "volume_filename": None, "error": str(e), "num_slices_raw": 0}

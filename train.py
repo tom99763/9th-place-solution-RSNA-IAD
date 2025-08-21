@@ -4,6 +4,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.rsna_datasets.datasets import *
 from src.rsna_datasets.mip_dataset import MipDataModule
+from src.rsna_datasets.mip_dataset_v2 import MipDataModuleV2
 from src.rsna_datasets.volume3d_dataset import Volume3DDataModule
 from src.trainers.effnet_trainer import *
 from hydra.utils import instantiate
@@ -27,6 +28,12 @@ def train(cfg: DictConfig) -> None:
         datamodule = MipDataModule(cfg)
     elif data_mode == 'volume3d':
         datamodule = Volume3DDataModule(cfg)
+    elif data_mode == 'mip_v2':
+        datamodule = MipDataModuleV2(cfg)
+    elif data_mode == 'mip_v3':
+        from src.rsna_datasets.mip_dataset_v3 import MipDataModuleV3
+        datamodule = MipDataModuleV3(cfg)
+
 
     print(cfg.model)
     model = instantiate(cfg.model)

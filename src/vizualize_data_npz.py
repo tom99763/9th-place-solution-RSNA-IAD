@@ -20,6 +20,8 @@ def load_slice_from_npz(npz_path):
                 return data['image']
             elif 'slice' in data:
                 return data['slice']
+            elif 'mip_frac_uint8' in data:
+                return data['mip_frac_uint8']
             else:
                 # If no known key, try to get the first array
                 keys = list(data.keys())
@@ -118,37 +120,64 @@ def create_grid_from_slices(folder_path, max_files=None, output_name="all_slices
     
     for npz_file in npz_files:
         slice_data = load_slice_from_npz(npz_file)
-        if slice_data is not None:
-            # Handle both 2D and 3D arrays
-            if slice_data.ndim == 3:
-                # If 3D, take the first slice or middle slice
-                slice_data = slice_data[slice_data.shape[0]//2]
-            elif slice_data.ndim > 3:
-                # If more than 3D, flatten to 2D
-                slice_data = slice_data.reshape(slice_data.shape[-2:])
-            
-            # Extract SeriesInstanceUID from filename
-            filename = os.path.basename(npz_file)
-            series_uid = filename.replace('_mip.npz', '')
-            
-            # Get metadata
-            modality = modality_map.get(series_uid, 'Unknown')
-            #if modality != 'CTA':
-            #    continue
-            locations = location_map.get(series_uid, [])
-            
-            metadata = {
-                'series_uid': series_uid,
-                'modality': modality,
-                'locations': locations,
-                'has_aneurysm': len(locations) > 0
-            }
-            
+        if slice_data is None:
+            print(f"Skipping {os.path.basename(npz_file)} - could not load data")
+            continue
+
+        filename = os.path.basename(npz_file)
+        # Robust series UID extraction for both *_mip_fracs.npz and legacy *_mip.npz
+        if filename.endswith('_mip_fracs.npz'):
+            series_uid = filename[:-len('_mip_fracs.npz')]
+        elif filename.endswith('_mip.npz'):
+            series_uid = filename[:-len('_mip.npz')]
+        else:
+            series_uid = filename.replace('.npz', '')
+
+        modality = modality_map.get(series_uid, 'Unknown')
+        locations = location_map.get(series_uid, [])
+        base_metadata = {
+            'series_uid': series_uid,
+            'modality': modality,
+            'locations': locations,
+            'has_aneurysm': len(locations) > 0
+        }
+
+        # Cases:
+        # 1) (H,W) single 2D array -> append directly
+        # 2) (H,W,C) where H==W and small C (e.g. 8 fraction MIPs) -> split channels
+        # 3) (S,H,W) volume -> take middle slice (fallback behaviour)
+        # 4) >3 dims -> collapse last two dims (rare) then treat as 2D
+        if slice_data.ndim == 2:
+            print(slice_data.shape)
             slices.append(slice_data)
             valid_files.append(filename)
-            metadata_list.append(metadata)
-        else:
-            print(f"Skipping {os.path.basename(npz_file)} - could not load data")
+            metadata_list.append(base_metadata)
+        elif slice_data.ndim == 3:
+            h, w = slice_data.shape[0], slice_data.shape[1]
+            # Heuristic: if first two dims are square image and third dim is channel count <= 32 treat as channels
+            if h == w and slice_data.shape[2] <= 32:
+                c = slice_data.shape[2]
+                print(f"{slice_data.shape} -> splitting into {c} channel images")
+                for ci in range(c):
+                    channel_img = slice_data[:, :, ci]
+                    slices.append(channel_img)
+                    valid_files.append(f"{filename}_frac{ci}")
+                    # Copy metadata so lengths align
+                    metadata_list.append(base_metadata)
+            else:
+                # Assume volume shape (S,H,W)
+                mid = slice_data.shape[0] // 2
+                mid_slice = slice_data[mid]
+                print(f"{slice_data.shape} -> taking middle slice -> {mid_slice.shape}")
+                slices.append(mid_slice)
+                valid_files.append(filename)
+                metadata_list.append(base_metadata)
+        else:  # ndim > 3
+            reshaped = slice_data.reshape(slice_data.shape[-2:])
+            print(f"{slice_data.shape} -> reshaped -> {reshaped.shape}")
+            slices.append(reshaped)
+            valid_files.append(filename)
+            metadata_list.append(base_metadata)
     
     if not slices:
         print("No valid slices found!")
@@ -291,8 +320,8 @@ def create_grid_from_slices(folder_path, max_files=None, output_name="all_slices
 
 if __name__ == "__main__":
     # Specify the folder containing NPZ files
-    folder_path = "/home/sersasj/RSNA-IAD-Codebase/data/processed/mip_images/"
+    folder_path = "/home/sersasj/RSNA-IAD-Codebase/data/processed/mip_fraction_images/"
     
-    max_files_to_process = 200  # Change this or set to None
+    max_files_to_process = 100  # Change this or set to None
     
     create_grid_from_slices(folder_path, max_files=max_files_to_process, output_name="mip_images_grid")
