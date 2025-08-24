@@ -4,7 +4,6 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from utils.io import determine_reader_writer
 from utils.data import generate_transforms
 import SimpleITK as sitk
 from concurrent.futures import ThreadPoolExecutor
@@ -78,7 +77,6 @@ class RSNASegDataset(Dataset):
         # init datasets
         self.data_path = dataset_config.path
         self.uids = uids
-        self.reader = determine_reader_writer(dataset_config.file_format)()
         self.transforms = generate_transforms(dataset_config.transforms[mode])
         self.mode = mode
 
@@ -90,12 +88,13 @@ class RSNASegDataset(Dataset):
         #load volume
         vol_path = f'{self.data_path}/series/{uid}'
         vol = load_series2vol(vol_path).astype(np.float32)
-        vol = vol.transpose(0, 2, 1) #(D, H, W)
 
         #load mask
         mask_path = f'{self.data_path}/vessel_segments/{uid}.nii'
         nii_image = nib.load(mask_path)
         mask = nii_image.get_fdata()
+        mask = np.transpose(mask, (2, 1, 0)) #(D, H, W)
+        mask = np.flip(np.flip(mask, axis=1), axis=2)
 
         #transforms
         transformed = self.transforms({'Image': vol, 'Mask': mask})
