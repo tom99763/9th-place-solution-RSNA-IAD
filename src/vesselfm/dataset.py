@@ -90,6 +90,7 @@ class RSNASegDataset(Dataset):
         #load volume
         vol_path = f'{self.data_path}/series/{uid}'
         vol = load_series2vol(vol_path).astype(np.float32)
+        vol = vol.transpose(0, 2, 1) #(D, H, W)
 
         #load mask
         mask_path = f'{self.data_path}/vessel_segments/{uid}.nii'

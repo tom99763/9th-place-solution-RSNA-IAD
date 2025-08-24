@@ -8,80 +8,24 @@ transforms:
     - EnsureChannelFirstd:
         keys: ["Image", "Mask"]
         channel_dim: "no_channel"
-    - RandCropByPosNegLabeld:
+    - RandCropByLabelClassesd:
         keys: [ "Image", "Mask" ]
         label_key: "Mask"
         spatial_size: ${input_size}
-        pos: 1
-        neg: 0
-        num_samples: 2
+        num_classes: 13
+        num_samples: 4
         image_key: "Image"
         allow_smaller: True
-#    - CenterSpatialCropd:
-#        keys: ["Image", "Mask"]
-#        roi_size: ${input_size}
     - ScaleIntensityd:
         keys: ["Image"]
         minv: 0
         maxv: 1
-    - RandZoomd:
-        keys: ["Image", "Mask"]
-        prob: 0.3
-        min_zoom: 1
-        max_zoom: 1.3
-        mode: ["bilinear", "nearest"]
-        padding_mode: "zeros"
-    - SpatialPadd:
-        keys: [ "Image", "Mask" ]
-        spatial_size: ${input_size}
-        mode: "constant"            # Use constant padding instead of reflect
-        method: "symmetric"         # Keep as-is (symmetric padding on all sides)
-        # constant_values: 0        # (optional) set this if you want a value other than 0
-    - RandAffined:
-        keys: ["Image", "Mask"]
-        prob: 0.3
-        shear_range: [0.4, 0.4, 0.4]
-        mode: ["bilinear", "nearest"]
-        padding_mode: "zeros"
-    - RandFlipd:
-        keys: ["Image", "Mask"]
-        prob: 0.3
-        spatial_axis: 0
-    - RandFlipd:
-        keys: ["Image", "Mask"]
-        prob: 0.3
-        spatial_axis: 1
-    - RandGaussianSmoothd:
-        keys: ["Image"]
-        prob: 0.2
-        sigma_x: [0.0, 0.5]
-        sigma_y: [0.0, 0.5]
-        sigma_z: [0.0, 0.5]
-    - RandGaussianNoised:
-        keys: ["Image"]
-        prob: 0.2
-        std: 0.01
-        mean: 0.3
-    - RandHistogramShiftd:
-        keys: ["Image"]
-        prob: 0.3
-        num_control_points: [5, 10]
-
     - ConcatItemsd:
         keys: [ "Image", "Mask" ]
         name: ["Image", "Mask"]
         dim: 0
     - ToTensord:
         keys: [ "Image", "Mask" ]
-
-#    - EnsureTyped:
-#        keys: ["Image", "Mask"]
-
-#    - CenterSpatialCropd:
-#        keys: ["Image", "Mask"]
-#        roi_size: ${input_size}
-#    - ToTensord:
-#        keys: ["Image", "Mask"]
   val:
     - EnsureChannelFirstd:
         keys: ["Image", "Mask"]
