@@ -6,8 +6,71 @@ import torch
 from torch.utils.data import Dataset
 from utils.io import determine_reader_writer
 from utils.data import generate_transforms
+import SimpleITK as sitk
+from concurrent.futures import ThreadPoolExecutor
+import pydicom
+from collections import Counter
+import nibabel as nib
 
 logger = logging.getLogger(__name__)
+
+def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resample=False, default_thickness=1.0, max_workers=20):
+    reader = sitk.ImageSeriesReader()
+
+    # Get all series IDs
+    series_ids = reader.GetGDCMSeriesIDs(series_path)
+    if not series_ids:
+        raise RuntimeError(f"No DICOM series found in {series_path}")
+
+    # Pick first if not specified
+    series_id = str(series_ids[0] if series_id is None else series_id)
+
+    # Get file names for the series
+    all_files = reader.GetGDCMSeriesFileNames(series_path, series_id)
+
+    # --- Parallel metadata read (fast size check) ---
+    def get_size(f):
+        ds = pydicom.dcmread(f, stop_before_pixels=True)
+        return (int(ds.Rows), int(ds.Columns)), f
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        sizes = list(ex.map(get_size, all_files))
+
+    # Pick the most common size
+    most_common_size = Counter(s[0] for s in sizes).most_common(1)[0][0]
+    files = [f for (sz, f) in sizes if sz == most_common_size]
+
+    # --- Now read the actual image series ---
+    reader.SetFileNames(files)
+    image = reader.Execute()
+
+    # --- Fix zero thickness ---
+    spacing = list(image.GetSpacing())
+    if spacing[2] == 0:
+        spacing[2] = default_thickness
+        image.SetSpacing(spacing)
+
+    # --- Optional resample ---
+    if resample and abs(spacing[2] - spacing[0]) > spacing_tolerance:
+        print("resampling....")
+        new_spacing = [spacing[0], spacing[1], spacing[0]]
+        new_size = [
+            int(round(image.GetSize()[0] * spacing[0] / new_spacing[0])),
+            int(round(image.GetSize()[1] * spacing[1] / new_spacing[1])),
+            int(round(image.GetSize()[2] * spacing[2] / new_spacing[2]))
+        ]
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetOutputSpacing(new_spacing)
+        resampler.SetSize(new_size)
+        resampler.SetOutputDirection(image.GetDirection())
+        resampler.SetOutputOrigin(image.GetOrigin())
+        resampler.SetInterpolator(sitk.sitkLinear)
+        image = resampler.Execute(image)
+
+    # Convert to numpy array
+    volume = sitk.GetArrayFromImage(image)
+    return volume
+
 
 class RSNASegDataset(Dataset):
     def __init__(self, uids, dataset_config, mode):
@@ -24,71 +87,17 @@ class RSNASegDataset(Dataset):
 
     def __getitem__(self, idx: int):
         uid = self.uids[idx]
-        vol_path = f'{self.data_path}/segmentations/{uid}/{uid}.nii'
+        #load volume
+        vol_path = f'{self.data_path}/series/{uid}'
+        vol = load_series2vol(vol_path).astype(np.float32)
+
+        #load mask
         mask_path = f'{self.data_path}/vessel_segments/{uid}.nii'
-        vol = self.reader.read_images(vol_path)[0].astype(np.float32)
-        mask = self.reader.read_images(mask_path)[0].astype(bool)
+        nii_image = nib.load(mask_path)
+        mask = nii_image.get_fdata()
+
+        #transforms
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':
             return transformed
-        return transformed['Image'], transformed['Mask'] > 0
-
-
-
-class UnionDataset(Dataset):
-    """
-    Dataset that accumulates all given datasets.
-    """
-
-    def __init__(self, dataset_configs, mode, finetune=False):
-        super().__init__()
-        # init datasets
-        self.finetune = finetune
-        self.datasets, probs = [], []
-        self.len = 0
-        for name, dataset_config in dataset_configs.items():
-            data_dir = Path(dataset_config.path) / mode if finetune else Path(dataset_config.path)
-            paths = sorted(list(data_dir.iterdir()))  # ensures that we use same 1-shot sample
-
-            self.len += len(paths)
-            self.datasets.append(
-                {
-                    "name": name,
-                    "paths": paths,
-                    "reader": determine_reader_writer(dataset_config.file_format)(),
-                    "transforms": generate_transforms(dataset_config.transforms[mode]),
-                    "sample_prop": dataset_config.sample_prop,
-                    "filter_dataset_IDs": dataset_config.filter_dataset_IDs
-                }
-            )
-            probs.append(dataset_config.sample_prop)
-
-        # ensure that probs sum up to 1
-        probs = torch.tensor(probs)
-        self.probs = probs / probs.sum()
-
-    def __len__(self):
-        return self.len
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        # sample dataset
-        dataset_id = torch.multinomial(self.probs, 1).item()
-        dataset = self.datasets[dataset_id]
-
-        # sample data sample
-        while True:
-            data_idx = idx if self.finetune else torch.randint(0, len(dataset["paths"]), (1,)).item()
-            sample_id = dataset["paths"][data_idx]
-
-            img_path = [path for path in sample_id.iterdir() if 'img' in path.name][0]
-            mask_path = [path for path in sample_id.iterdir() if 'mask' in path.name][0]
-
-            if dataset['filter_dataset_IDs'] is not None:
-                if int(img_path.stem.split("_")[-1]) in dataset['filter_dataset_IDs']:
-                    continue
-
-            img = dataset['reader'].read_images(str(img_path))[0].astype(np.float32)
-            mask = dataset['reader'].read_images(str(mask_path))[0].astype(bool)
-
-            transformed = dataset['transforms']({'Image': img, 'Mask': mask})
-            return transformed['Image'], transformed['Mask'] > 0
+        return transformed['Image'], transformed['Mask']
