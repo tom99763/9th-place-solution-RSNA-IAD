@@ -1,235 +1,350 @@
-"""Prepare a YOLO detection dataset (single class: aneurysm) from raw DICOM slices.
-
-This script:
-  * Reads label coordinates from train_localizers.csv (x,y point labels)
-  * Loads corresponding DICOM slices, converts to HU, clips, and min-max normalizes per-slice
-  * Creates square bounding boxes centered at the point (configurable size)
-  * Splits images into train/val via existing fold assignments in train.csv (or random if missing)
-  * Optionally samples negative slices (empty label files) for context
-  * Outputs YOLO-format dataset under data/yolo_dataset/
-    - images/train, images/val
-    - labels/train, labels/val
-    - configs/yolo_aneurysm.yaml (dataset descriptor – created separately)
-
-YOLO txt label format:
-  class x_center y_center width height (all normalized 0-1)
-
-Assumptions / Notes:
-  * train_localizers.csv has columns: SeriesInstanceUID, SOPInstanceUID, coordinates (dict-like string with 'x','y'), location
-  * Coordinates are pixel indices matching the stored DICOM pixel array orientation (no flips applied here)
-  * For multi-frame DICOMs we skip frames to keep logic simple (can extend later)
-  * Bounding box size is clamped to image boundaries
-
-Usage:
-  python src/prepare_yolo_dataset.py --val-fold 0 --box-size 48 --negatives-per-positive 1
-
-After running, you can train with:
-  python src/train_yolo_aneurysm.py --data configs/yolo_aneurysm.yaml --model yolov8n.pt --epochs 50
-"""
 from __future__ import annotations
+
 import argparse
 import ast
-from pathlib import Path
 import random
 import sys
-import json
-import math
+from pathlib import Path
 from typing import Dict, List, Tuple, Set
 
+import cv2
 import numpy as np
 import pandas as pd
 import pydicom
-import cv2
+from sklearn.model_selection import StratifiedKFold
 
 # Allow importing project configs
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from configs.data_config import data_path, N_FOLDS, SEED  # type: ignore
 
-# Raw HU clipping range (same as other preprocessing) before per-slice min-max
-#RAW_MIN_HU = -0.0
-#RAW_MAX_HU = 500.0
 
 rng = random.Random(SEED)
 
 
-def read_dicom_hu(path: Path) -> np.ndarray:
-    """Read a single-slice DICOM and return float32 array in HU clipped to standard range.
-    Multi-frame DICOMs are skipped by raising ValueError.
+def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
+    """Read a DICOM file and return a list of frames in HU (float32).
+
+    Supports:
+      - 2D single-slice DICOM -> one frame [H,W]
+      - 3D multi-frame -> list of frames [N,H,W]
+      - 3-channel RGB DICOM -> converted to single grayscale frame
     """
     ds = pydicom.dcmread(str(path), force=True)
     pix = ds.pixel_array
-    if pix.ndim == 3:  # multi-frame or RGB
-        raise ValueError("Multi-frame / RGB DICOM not supported in this simple script")
-    img = pix.astype(np.float32)
-    slope = float(getattr(ds, 'RescaleSlope', 1.0))
-    intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
-    img = img * slope + intercept
-    #img = np.clip(img, RAW_MIN_HU, RAW_MAX_HU)
-    return img
+    slope = float(getattr(ds, "RescaleSlope", 1.0))
+    intercept = float(getattr(ds, "RescaleIntercept", 0.0))
+    frames: List[np.ndarray] = []
+    if pix.ndim == 2:
+        img = pix.astype(np.float32)
+        frames.append(img * slope + intercept)
+    elif pix.ndim == 3:
+        # If RGB (H,W,3), take first channel; else assume multi-frame (N,H,W)
+        if pix.shape[-1] == 3 and pix.shape[0] != 3:
+            gray = pix[..., 0].astype(np.float32)
+            frames.append(gray * slope + intercept)
+        else:
+            for i in range(pix.shape[0]):
+                frm = pix[i].astype(np.float32)
+                frames.append(frm * slope + intercept)
+    else:
+        # Unsupported layout
+        pass
+    return frames
 
 
 def min_max_normalize(img: np.ndarray) -> np.ndarray:
     mn, mx = float(img.min()), float(img.max())
     if mx - mn < 1e-6:
         return np.zeros_like(img, dtype=np.uint8)
-    norm = (img - mn) / (mx - mn)   
+    norm = (img - mn) / (mx - mn)
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
 
 
 def build_box(x: float, y: float, box_size: int, w: int, h: int) -> Tuple[float, float, float, float]:
-    """Return normalized (xc, yc, bw, bh) for YOLO given center point and desired box size in pixels."""
+    """Return normalized (xc, yc, bw, bh) for YOLO given center point and square size in pixels."""
     half = box_size / 2.0
     x0 = max(0.0, x - half)
     y0 = max(0.0, y - half)
     x1 = min(w - 1.0, x + half)
     y1 = min(h - 1.0, y + half)
-    bw = x1 - x0
-    bh = y1 - y0
+    bw = max(0.0, x1 - x0)
+    bh = max(0.0, y1 - y0)
     xc = x0 + bw / 2.0
     yc = y0 + bh / 2.0
-    # Normalize
     return xc / w, yc / h, bw / w, bh / h
 
 
-def ensure_dirs(base: Path):
+def ensure_yolo_dirs(base: Path):
     for sub in ["images/train", "images/val", "labels/train", "labels/val"]:
         (base / sub).mkdir(parents=True, exist_ok=True)
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Prepare YOLO aneurysm dataset from DICOM slices")
-    ap.add_argument('--val-fold', type=int, default=0, help='Fold ID to use for validation (from train.csv)')
-    ap.add_argument('--box-size', type=int, default=48, help='Square box size in pixels around aneurysm point')
-    ap.add_argument('--negatives-per-positive', type=float, default=0.0, help='Ratio of negative (no label) slices to add per positive example (can be fractional)')
-    ap.add_argument('--max-negatives', type=int, default=5000, help='Hard cap on total negative slices to avoid explosion')
-    ap.add_argument('--limit', type=int, default=0, help='Optional limit on number of positives (for quick tests)')
-    ap.add_argument('--image-ext', type=str, default='png', choices=['png','jpg','jpeg'], help='Image file extension')
-    ap.add_argument('--overwrite', action='store_true', help='Overwrite existing files')
-    ap.add_argument('--verbose', action='store_true')
-    ap.add_argument('--rgb-slices', action='store_true', help='Save labeled slices as RGB images: [slice-1, slice, slice+1]')
-    # MIP dataset options (series-level)
-    ap.add_argument('--mip-dataset', action='store_true', help='If set, generate a series-level MIP YOLO dataset instead of per-slice dataset')
-    ap.add_argument('--mip-img-size', type=int, default=512, help='Resize MIP to this square size (only in --mip-dataset mode; 0 disables resizing)')
-    ap.add_argument('--mip-out-name', type=str, default='yolo_dataset_mip', help='Subdirectory name under data/ for MIP YOLO dataset')
+    ap = argparse.ArgumentParser(description="Prepare MIP-based YOLO aneurysm dataset")
+    ap.add_argument("--seed", type=int, default=SEED, help="Random seed")
+    ap.add_argument("--val-fold", type=int, default=0, help="Fold id used for validation")
+    ap.add_argument("--box-size", type=int, default=48, help="Square box size in pixels around the point")
+    ap.add_argument("--image-ext", type=str, default="png", choices=["png", "jpg", "jpeg"], help="Output image extension")
+    ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
+    ap.add_argument("--verbose", action="store_true")
+    # MIP options
+    ap.add_argument("--mip-img-size", type=int, default=512, help="Final square size (0 = keep original MIP size)")
+    ap.add_argument("--mip-out-name", type=str, default="yolo_dataset", help="Subdirectory under data/ for outputs")
+    ap.add_argument("--mip-pos-window", type=int, default=3, help="If >0, build MIPs from +/- window around positive slices")
     return ap.parse_args()
 
 
 def load_folds(root: Path) -> Dict[str, int]:
-    train_csv = root / 'train.csv'
-    df = pd.read_csv(train_csv)
-    if 'fold_id' not in df.columns:
-        # deterministic fold assignment if missing
-        uids = df['SeriesInstanceUID'].unique().tolist()
-        folds = {}
-        for i, uid in enumerate(sorted(uids)):
-            folds[uid] = i % N_FOLDS
-        return folds
-    return dict(zip(df['SeriesInstanceUID'], df['fold_id']))
+    """Map SeriesInstanceUID -> fold_id using stratified folds from train_df.csv.
+
+    Requirements:
+      - data/train_df.csv must exist
+      - Columns: 'SeriesInstanceUID', 'Aneurysm Present'
+      - Will create N_FOLDS stratified splits on the series-level label
+    """
+    df_path = root / "train_df.csv"
+
+    df = pd.read_csv(df_path)
+
+    series_df = df[["SeriesInstanceUID", "Aneurysm Present"]].drop_duplicates().reset_index(drop=True)
+    series_df["SeriesInstanceUID"] = series_df["SeriesInstanceUID"].astype(str)
+
+    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
+    fold_map: Dict[str, int] = {}
+    for i, (_, test_idx) in enumerate(
+        skf.split(series_df["SeriesInstanceUID"], series_df["Aneurysm Present"]) 
+    ):
+        for uid in series_df.loc[test_idx, "SeriesInstanceUID"].tolist():
+            fold_map[uid] = i
+    return fold_map
 
 
 def load_labels(root: Path) -> pd.DataFrame:
-    label_df = pd.read_csv(root / 'train_localizers.csv')
-    # Parse coordinate dict
-    if 'x' not in label_df.columns or 'y' not in label_df.columns:
-        label_df['x'] = label_df['coordinates'].map(lambda s: ast.literal_eval(s)['x'])
-        label_df['y'] = label_df['coordinates'].map(lambda s: ast.literal_eval(s)['y'])
+    label_df = pd.read_csv(root / "train_localizers.csv")
+    if "x" not in label_df.columns or "y" not in label_df.columns:
+        label_df["x"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["x"])  # type: ignore[arg-type]
+        label_df["y"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["y"])  # type: ignore[arg-type]
+    # Standardize dtypes
+    label_df["SeriesInstanceUID"] = label_df["SeriesInstanceUID"].astype(str)
+    label_df["SOPInstanceUID"] = label_df["SOPInstanceUID"].astype(str)
     return label_df
 
 
-def collect_series_sops(label_df: pd.DataFrame) -> Dict[str, Set[str]]:
-    d: Dict[str, Set[str]] = {}
-    for _, r in label_df.iterrows():
-        d.setdefault(r.SeriesInstanceUID, set()).add(str(r.SOPInstanceUID))
-    return d
+def ordered_dcm_paths(series_dir: Path) -> Tuple[List[Path], Dict[str, int]]:
+    paths = sorted(series_dir.glob("*.dcm"), key=lambda p: p.name)
+    sop_to_idx = {p.stem: i for i, p in enumerate(paths)}
+    return paths, sop_to_idx
 
 
-def pick_negative_slices(series_dir: Path, positive_sops: Set[str], target_n: int) -> List[Path]:
-    # gather candidate dcm paths
-    cands = []
-    for p in series_dir.glob('*.dcm'):
-        if p.stem not in positive_sops:
-            cands.append(p)
-    if not cands:
-        return []
-    rng.shuffle(cands)
-    return cands[:target_n]
+def load_series_slices_selected(paths: List[Path], selected_indices: List[int] | None) -> List[np.ndarray]:
+    indices = selected_indices if selected_indices is not None else list(range(len(paths)))
+    slices: List[np.ndarray] = []
+    for i in indices:
+        if 0 <= i < len(paths):
+            for arr in read_dicom_frames_hu(paths[i]):
+                slices.append(arr)
+    return slices
 
 
 def main():
     args = parse_args()
+    global rng
+    rng = random.Random(args.seed)
+
     root = Path(data_path)
-    if args.mip_dataset:
-        # --- Series-level MIP dataset ---
-        out_base = root / args.mip_out_name
-        for sub in ["images/train", "images/val", "labels/train", "labels/val"]:
-            (out_base / sub).mkdir(parents=True, exist_ok=True)
-        folds = load_folds(root)
-        label_df = load_labels(root)
-        # Group labels per series
-        series_to_points: Dict[str, List[Tuple[float,float]]] = {}
-        for _, r in label_df.iterrows():
-            series_to_points.setdefault(r.SeriesInstanceUID, []).append((float(r.x), float(r.y)))
+    out_base = root / args.mip_out_name
+    ensure_yolo_dirs(out_base)
 
-        train_csv = pd.read_csv(root / 'train.csv')
-        all_series = train_csv['SeriesInstanceUID'].unique().tolist()
-        total_series = 0
-        total_pos = 0
-        total_neg = 0
+    # Ignore known problematic and multi-frame series
+    ignore_uids: Set[str] = set(
+        [
+            "1.2.826.0.1.3680043.8.498.11145695452143851764832708867797988068",
+            "1.2.826.0.1.3680043.8.498.35204126697881966597435252550544407444",
+            "1.2.826.0.1.3680043.8.498.87480891990277582946346790136781912242",
+        ]
+    )
+    mf_path = root / "multiframe_dicoms.csv"
+    if mf_path.exists():
+        try:
+            mf_df = pd.read_csv(mf_path)
+            if "SeriesInstanceUID" in mf_df.columns:
+                ignore_uids.update(mf_df["SeriesInstanceUID"].astype(str).tolist())
+        except Exception:
+            pass
 
-        def load_series_slices(series_dir: Path) -> List[np.ndarray]:
-            slices: List[np.ndarray] = []
-            for dcm_path in sorted(series_dir.glob('*.dcm')):
-                try:
-                    arr = read_dicom_hu(dcm_path)
-                    slices.append(arr)
-                except Exception:
-                    continue
-            return slices
+    folds = load_folds(root)
+    label_df = load_labels(root)
 
-        for uid in all_series:
-            fold_id = folds.get(uid, 0)
-            split = 'val' if fold_id == args.val_fold else 'train'
-            series_dir = root / 'series' / uid
-            if not series_dir.exists():
-                if args.verbose:
-                    print(f"[MISS] series {uid}")
-                continue
-            slices = load_series_slices(series_dir)
-            if not slices:
-                if args.verbose:
-                    print(f"[EMPTY] series {uid}")
-                continue
-            # Stack to MIP
-            base_shape = slices[0].shape
-            proc = []
-            for s in slices:
-                if s.shape != base_shape:
-                    s = cv2.resize(s, (base_shape[1], base_shape[0]), interpolation=cv2.INTER_LINEAR)
-                proc.append(s)
-            stack = np.stack(proc, axis=0)
-            mip = stack.max(axis=0)
-            mip_uint8 = min_max_normalize(mip)
-            if args.mip_img_size > 0 and (mip_uint8.shape[0] != args.mip_img_size or mip_uint8.shape[1] != args.mip_img_size):
-                mip_uint8 = cv2.resize(mip_uint8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
-                resize_w = resize_h = args.mip_img_size
+    # Group labels per series, keep SOP to locate slice indices
+    series_to_labels: Dict[str, List[Tuple[str, float, float]]] = {}
+    for _, r in label_df.iterrows():
+        series_to_labels.setdefault(r.SeriesInstanceUID, []).append(
+            (str(r.SOPInstanceUID), float(r.x), float(r.y))
+        )
+
+    all_series: List[str] = []
+    train_df_path = root / "train_df.csv"
+    if train_df_path.exists():
+        try:
+            train_csv = pd.read_csv(train_df_path)
+            if "SeriesInstanceUID" in train_csv.columns:
+                all_series = (
+                    train_csv["SeriesInstanceUID"].astype(str).unique().tolist()
+                )
+        except Exception:
+            pass
+    if not all_series:
+        all_series = sorted(series_to_labels.keys())
+
+    total_series = 0
+    total_pos = 0
+    total_neg = 0
+    print(f"Processing {len(all_series)} series for MIP YOLO dataset...")
+
+    for uid in all_series:
+        if uid in ignore_uids:
+            if args.verbose:
+                print(f"[SKIP] ignored series {uid}")
+            continue
+        split = "val" if folds.get(uid, 0) == args.val_fold else "train"
+        series_dir = root / "series" / uid
+        if not series_dir.exists():
+            if args.verbose:
+                print(f"[MISS] series {uid}")
+            continue
+
+        paths, sop_to_idx = ordered_dcm_paths(series_dir)
+        n_slices = len(paths)
+        labels_for_series = series_to_labels.get(uid, [])
+
+        # MIP windows around positives
+        if args.mip_pos_window and args.mip_pos_window > 0 and n_slices > 0:
+            window = args.mip_pos_window
+            if labels_for_series:
+                for (sop_c, _x_c, _y_c) in labels_for_series:
+                    if sop_c not in sop_to_idx:
+                        continue
+                    center = sop_to_idx[sop_c]
+                    lo = max(0, center - window)
+                    hi = min(n_slices - 1, center + window)
+                    idxs = list(range(lo, hi + 1))
+                    slices = load_series_slices_selected(paths, idxs)
+                    if not slices:
+                        continue
+                    base_shape = slices[0].shape
+                    mip = None
+                    for s in slices:
+                        if s.shape != base_shape:
+                            s = cv2.resize(s, (base_shape[1], base_shape[0]), interpolation=cv2.INTER_LINEAR)
+                        mip = s if mip is None else np.maximum(mip, s)
+                    mip_uint8 = min_max_normalize(mip)
+                    if args.mip_img_size > 0 and (
+                        mip_uint8.shape[0] != args.mip_img_size
+                        or mip_uint8.shape[1] != args.mip_img_size
+                    ):
+                        mip_uint8 = cv2.resize(
+                            mip_uint8,
+                            (args.mip_img_size, args.mip_img_size),
+                            interpolation=cv2.INTER_LINEAR,
+                        )
+                        resize_w = resize_h = args.mip_img_size
+                    else:
+                        resize_h, resize_w = mip_uint8.shape
+
+                    stem = f"{uid}_{sop_c}_w{lo}-{hi}"
+                    img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+                    label_path = out_base / "labels" / split / f"{stem}.txt"
+                    if img_path.exists() and label_path.exists() and not args.overwrite:
+                        continue
+                    cv2.imwrite(str(img_path), mip_uint8)
+
+                    # Points within this window
+                    pts_in_win: List[Tuple[float, float]] = []
+                    for (sop, x, y) in labels_for_series:
+                        idx = sop_to_idx.get(sop)
+                        if idx is not None and lo <= idx <= hi:
+                            pts_in_win.append((x, y))
+                    with open(label_path, "w") as f:
+                        for (x, y) in pts_in_win:
+                            orig_h, orig_w = base_shape
+                            if (resize_w, resize_h) != (orig_w, orig_h):
+                                x_scaled = x * (resize_w / orig_w)
+                                y_scaled = y * (resize_h / orig_h)
+                            else:
+                                x_scaled, y_scaled = x, y
+                            xc, yc, bw, bh = build_box(
+                                x_scaled, y_scaled, args.box_size, resize_w, resize_h
+                            )
+                            f.write(f"0 {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
+                    total_pos += 1
+                    total_series += 1
             else:
-                resize_h, resize_w = mip_uint8.shape
+                # Negative: random window with empty label
+                center = rng.randint(0, n_slices - 1)
+                lo = max(0, center - window)
+                hi = min(n_slices - 1, center + window)
+                idxs = list(range(lo, hi + 1))
+                slices = load_series_slices_selected(paths, idxs)
+                if not slices:
+                    continue
+                base_shape = slices[0].shape
+                mip = None
+                for s in slices:
+                    if s.shape != base_shape:
+                        s = cv2.resize(s, (base_shape[1], base_shape[0]), interpolation=cv2.INTER_LINEAR)
+                    mip = s if mip is None else np.maximum(mip, s)
+                mip_uint8 = min_max_normalize(mip)
+                if args.mip_img_size > 0 and (
+                    mip_uint8.shape[0] != args.mip_img_size or mip_uint8.shape[1] != args.mip_img_size
+                ):
+                    mip_uint8 = cv2.resize(
+                        mip_uint8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR
+                    )
+                stem = f"{uid}_neg_w{lo}-{hi}"
+                img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+                label_path = out_base / "labels" / split / f"{stem}.txt"
+                if not (img_path.exists() and label_path.exists()) or args.overwrite:
+                    cv2.imwrite(str(img_path), mip_uint8)
+                    open(label_path, "w").close()
+                    total_neg += 1
+                    total_series += 1
+            # Windowed case handled; continue to next series
+            continue
 
-            img_path = out_base / 'images' / split / f"{uid}.{args.image_ext}"
-            label_path = out_base / 'labels' / split / f"{uid}.txt"
-            if img_path.exists() and label_path.exists() and not args.overwrite:
-                total_series += 1
-                continue
+        # Whole-series MIP (no window requested)
+        slices = load_series_slices_selected(paths, None)
+        if not slices:
+            if args.verbose:
+                print(f"[EMPTY] series {uid}")
+            continue
+        base_shape = slices[0].shape
+        mip = None
+        for s in slices:
+            if s.shape != base_shape:
+                s = cv2.resize(s, (base_shape[1], base_shape[0]), interpolation=cv2.INTER_LINEAR)
+            mip = s if mip is None else np.maximum(mip, s)
+        mip_uint8 = min_max_normalize(mip)
+        if args.mip_img_size > 0 and (
+            mip_uint8.shape[0] != args.mip_img_size or mip_uint8.shape[1] != args.mip_img_size
+        ):
+            mip_uint8 = cv2.resize(
+                mip_uint8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR
+            )
+            resize_w = resize_h = args.mip_img_size
+        else:
+            resize_h, resize_w = mip_uint8.shape
+
+        img_path = out_base / "images" / split / f"{uid}.{args.image_ext}"
+        label_path = out_base / "labels" / split / f"{uid}.txt"
+        if not (img_path.exists() and label_path.exists()) or args.overwrite:
             cv2.imwrite(str(img_path), mip_uint8)
-            pts = series_to_points.get(uid, [])
-            if pts and (not  len(pts)==0):
-                with open(label_path, 'w') as f:
+            pts = [(x, y) for (_sop, x, y) in labels_for_series]
+            if pts:
+                with open(label_path, "w") as f:
                     for (x, y) in pts:
-                        # Adjust if resized
                         orig_h, orig_w = base_shape
                         if (resize_w, resize_h) != (orig_w, orig_h):
-                            # scale coordinates
                             x_scaled = x * (resize_w / orig_w)
                             y_scaled = y * (resize_h / orig_h)
                         else:
@@ -237,138 +352,18 @@ def main():
                         xc, yc, bw, bh = build_box(x_scaled, y_scaled, args.box_size, resize_w, resize_h)
                         f.write(f"0 {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
                 total_pos += 1
-             
+            else:
+                open(label_path, "w").close()
+                total_neg += 1
             total_series += 1
 
-        print(f"Series processed: {total_series}  (positive label files: {total_pos}, negative: {total_neg})")
-        print(f"MIP YOLO dataset root: {out_base}")
-        for split in ['train','val']:
-            n_imgs = len(list((out_base / 'images' / split).glob('*')))
-            n_lbls = len(list((out_base / 'labels' / split).glob('*.txt')))
-            print(f"{split}: images={n_imgs} labels={n_lbls}")
-        return
-
-    # --- Default per-slice dataset path (original behavior) ---
-    out_base = root / 'yolo_dataset'
-    ensure_dirs(out_base)
-
-    folds = load_folds(root)
-    label_df = load_labels(root)
-
-    # Build per-series groups
-    label_groups = label_df.groupby('SeriesInstanceUID')
-
-    total_pos_written = 0
-    total_neg_written = 0
-    neg_budget = args.max_negatives
-
-    for series_uid, grp in label_groups:
-        fold_id = folds.get(series_uid, 0)
-        split = 'val' if fold_id == args.val_fold else 'train'
-        series_dir = root / 'series' / series_uid
-        if not series_dir.exists():
-            if args.verbose:
-                print(f"[MISS] Series directory missing: {series_dir}")
-            continue
-
-        # Preload all slice paths for RGB mode
-        slice_paths = sorted(series_dir.glob('*.dcm')) if args.rgb_slices else None
-        slice_path_map = {p.stem: p for p in slice_paths} if slice_paths else None
-        slice_stems = [p.stem for p in slice_paths] if slice_paths else None
-
-        # Positive slices first
-        for _, row in grp.iterrows():
-            sop = str(row.SOPInstanceUID)
-            dcm_path = series_dir / f"{sop}.dcm"
-            if not dcm_path.exists():
-                if args.verbose:
-                    print(f"[MISS] DICOM missing: {dcm_path}")
-                continue
-            try:
-                img_hu = read_dicom_hu(dcm_path)
-            except Exception as e:
-                if args.verbose:
-                    print(f"[SKIP] {dcm_path.name}: {e}")
-                continue
-            h, w = img_hu.shape
-            img_uint8 = min_max_normalize(img_hu)
-            xc, yc, bw, bh = build_box(float(row.x), float(row.y), args.box_size, w, h)
-            stem = f"{series_uid}_{sop}"
-            img_path = out_base / 'images' / split / f"{stem}.{args.image_ext}"
-            label_path = out_base / 'labels' / split / f"{stem}.txt"
-            if img_path.exists() and label_path.exists() and not args.overwrite:
-                continue
-            if args.rgb_slices:
-                # Find index of current slice
-                idx = slice_stems.index(sop) if slice_stems and sop in slice_stems else None
-                if idx is not None:
-                    # Get previous, current, next
-                    idxs = [max(0, idx-1), idx, min(len(slice_stems)-1, idx+1)]
-                    imgs = []
-                    for i in idxs:
-                        try:
-                            arr = read_dicom_hu(slice_paths[i])
-                            imgs.append(min_max_normalize(arr))
-                        except Exception:
-                            imgs.append(img_uint8)  # fallback to current
-                    rgb_img = np.stack(imgs, axis=-1)  # H,W,3
-                    cv2.imwrite(str(img_path), rgb_img)
-                else:
-                    # fallback: single slice as all channels
-                    rgb_img = np.stack([img_uint8]*3, axis=-1)
-                    cv2.imwrite(str(img_path), rgb_img)
-            else:
-                cv2.imwrite(str(img_path), img_uint8)
-            with open(label_path, 'w') as f:
-                f.write(f"0 {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
-            total_pos_written += 1
-            if args.limit and total_pos_written >= args.limit:
-                break
-        if args.limit and total_pos_written >= args.limit:
-            break
-
-        # Negatives (sample from same series if requested)
-        if args.negatives_per_positive > 0 and neg_budget > 0:
-            positives_in_series = len(grp)
-            desired_neg = args.negatives_per_positive * positives_in_series
-            # accumulate fractional across series
-            take_n = int(desired_neg)
-            if rng.random() < (desired_neg - take_n):
-                take_n += 1
-            take_n = min(take_n, neg_budget)
-            if take_n > 0:
-                pos_sops = {str(s) for s in grp.SOPInstanceUID.values}
-                cand_paths = pick_negative_slices(series_dir, pos_sops, take_n)
-                for neg_path in cand_paths:
-                    try:
-                        img_hu = read_dicom_hu(neg_path)
-                    except Exception:
-                        continue
-                    img_uint8 = min_max_normalize(img_hu)
-                    stem = f"{series_uid}_{neg_path.stem}"
-                    img_path = out_base / 'images' / split / f"{stem}.{args.image_ext}"
-                    label_path = out_base / 'labels' / split / f"{stem}.txt"
-                    if img_path.exists() and label_path.exists() and not args.overwrite:
-                        continue
-                    cv2.imwrite(str(img_path), img_uint8)
-                    # Empty label file indicates no objects
-                    open(label_path, 'w').close()
-                    total_neg_written += 1
-                    neg_budget -= 1
-                    if neg_budget <= 0:
-                        break
-
-    print(f"Positives written: {total_pos_written}")
-    print(f"Negatives written: {total_neg_written}")
-    print(f"Dataset root: {out_base}")
-    # Summaries
-    for split in ['train','val']:
-        n_imgs = len(list((out_base / 'images' / split).glob('*')))
-        n_lbls = len(list((out_base / 'labels' / split).glob('*.txt')))
+    print(f"Series processed: {total_series}  (positive label files: {total_pos}, negative: {total_neg})")
+    print(f"MIP YOLO dataset root: {out_base}")
+    for split in ["train", "val"]:
+        n_imgs = len(list((out_base / "images" / split).glob("*")))
+        n_lbls = len(list((out_base / "labels" / split).glob("*.txt")))
         print(f"{split}: images={n_imgs} labels={n_lbls}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
-#sersasj@DESKTOP-8U9D0KJ:~/RSNA-IAD-Codebase$ python3 src/prepare_yolo_dataset.py --val-fold 0 --box-size 24 --negatives-per-positive 0
-#sersasj@DESKTOP-8U9D0KJ:~/RSNA-IAD-Codebase$ python3 src/prepare_yolo_dataset.py --mip-dataset --val-fold 0 --box-size 24 --negatives-per-positive 0
-#python3 src/prepare_yolo_dataset.py --rgb-slices --val-fold 0 --box-size 24

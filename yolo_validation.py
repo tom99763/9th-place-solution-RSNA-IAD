@@ -1,25 +1,19 @@
-"""Validate YOLO aneurysm detector at series level.
+"""Validate a single-class YOLO aneurysm detector at series level.
 
-Per user request:
-  * Use same preprocessing as in `src/prepare_yolo_dataset.py` (DICOM -> HU -> per-slice min-max -> uint8)
-  * Series-level aneurysm present probability = max detection confidence across ALL slices in the series
-  * Location probabilities (13 anatomical sites) are set to constant 0.5 (baseline) since YOLO model is single-class
+Preprocessing:
+    - DICOM -> HU -> per-slice min-max -> uint8 grayscale for YOLO (auto BGR conversion on call)
+
+Series score:
+    - Probability = max detection confidence across all processed slices/MIP windows in a series
 
 Outputs:
-  * Prints classification AUC (aneurysm present)
-  * Prints (degenerate) location macro AUC (expected ~0.5 due to constant probs)
-  * Optional CSV with per-series probabilities
+    - Prints classification AUC (aneurysm present)
+    - Prints location macro AUC (degenerate ~0.5; constant probs)
+    - Optional CSV with per-series probabilities
 
-Usage:
-  python3 yolo_validation.py --weights runs/detect/train/weights/best.pt --val-fold 0 
-  (adjust weights path to your YOLO trained weights)
-
-Additional modes:
-    --rgb-slices : replicate RGB slice construction used in dataset prep (channels = [prev, current, next])
-python3 yolo_validation.py --weights /home/sersasj/RSNA-IAD-Codebase/runs/yolo_aneurysm/exp-yolon-new-data5/weights/best.pt --val-fold 0 --rgb-slices 
 Notes:
-  * Requires ultralytics package (YOLOv8/11). Assumes single-class model trained on aneurysm dataset.
-  * For speed you can set --max-slices to limit number of slices per series during quick experiments.
+    - Requires ultralytics (YOLOv8/11). Single-class model assumed.
+    - Use --mip-window > 0 to validate on sliding-window MIPs instead of raw slices.
 """
 from __future__ import annotations
 import argparse
@@ -32,18 +26,20 @@ import numpy as np
 import pandas as pd
 import pydicom
 import cv2
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
+sys.path.insert(0, "ultralytics-timm")
+from ultralytics import YOLO
 
 # Project root & config imports
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'src'))  # to allow importing configs.data_config
 from configs.data_config import data_path  # type: ignore
 
-try:
-    from ultralytics import YOLO  # type: ignore
-except ImportError as e:  # pragma: no cover
-    raise SystemExit("ultralytics not installed. Install with `pip install ultralytics`.") from e
-
+#try:
+#    from ultralytics import YOLO  # type: ignore
+#except ImportError as e:  # pragma: no cover
+#    raise SystemExit("ultralytics not installed. Install with `pip install ultralytics`.") from e
+#
 
 LABELS_TO_IDX = {
     'Anterior Communicating Artery': 0,
@@ -66,28 +62,44 @@ N_LOC = len(LOCATION_LABELS)
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Series-level validation for YOLO aneurysm detector")
-    ap.add_argument('--weights', type=str, required=True, help='Path to YOLO weights (.pt)')
+    #ap.add_argument('--weights', type=str, required=True, help='Path to YOLO weights (.pt)')
     ap.add_argument('--val-fold', type=int, default=0, help='Fold id to evaluate (matches train.csv fold_id)')
     ap.add_argument('--series-limit', type=int, default=0, help='Optional limit on number of validation series (debug)')
     ap.add_argument('--max-slices', type=int, default=0, help='Optional cap on number of slices per series (debug)')
     ap.add_argument('--save-csv', type=str, default='', help='Optional path to save per-series predictions CSV')
     ap.add_argument('--batch-size', type=int, default=16, help='Batch size for slice inference (higher = faster, more VRAM)')
     ap.add_argument('--verbose', action='store_true')
-    ap.add_argument('--rgb-slices', action='store_true', help='Use 3-channel [prev,current,next] slice stacking (matches dataset prep RGB mode)')
+    ap.add_argument('--slice-step', type=int, default=1, help='Process every Nth slice (default=1)')
+    # Sliding-window MIP mode
+    ap.add_argument('--mip-window', type=int, default=3, help='Half-window (in slices) for sliding MIP across the full tomogram; 0 disables MIP mode')
+    ap.add_argument('--mip-img-size', type=int, default=0, help='Optional resize of MIP to this square size before inference (0 keeps original)')
+    ap.add_argument('--mip-no-overlap', action='store_true', help='Use non-overlapping MIP windows (stride = 2*w+1 instead of slice_step)')
     return ap.parse_args()
 
 
-def read_dicom_hu(path: Path) -> np.ndarray:
-    """Copy of logic from prepare_yolo_dataset (without global clipping) and per-slice min-max."""
+def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
+    """Return list of HU frames from a DICOM. Handles 2D, multi-frame, and RGB->grayscale."""
     ds = pydicom.dcmread(str(path), force=True)
     pix = ds.pixel_array
-    if pix.ndim == 3:  # skip multi-frame for this simple loop
-        raise ValueError('Multi-frame DICOM not supported in this script')
-    img = pix.astype(np.float32)
     slope = float(getattr(ds, 'RescaleSlope', 1.0))
     intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
-    img = img * slope + intercept
-    return img
+    frames: List[np.ndarray] = []
+    if pix.ndim == 2:
+        img = pix.astype(np.float32)
+        frames.append(img * slope + intercept)
+    elif pix.ndim == 3:
+        # RGB or multi-frame
+        if pix.shape[-1] == 3 and pix.shape[0] != 3:
+            try:
+                gray = cv2.cvtColor(pix.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+            except Exception:
+                gray = pix[..., 0].astype(np.float32)
+            frames.append(gray * slope + intercept)
+        else:
+            for i in range(pix.shape[0]):
+                frm = pix[i].astype(np.float32)
+                frames.append(frm * slope + intercept)
+    return frames
 
 
 def min_max_normalize(img: np.ndarray) -> np.ndarray:
@@ -132,13 +144,28 @@ def main():
         val_series = val_series[:args.series_limit]
 
     print(f"Validation fold {args.val_fold}: {len(val_series)} series")
-    model = YOLO(args.weights)
+    print(f"Processing every {args.slice_step} slice(s)")
+    model_path = "/home/sersasj/RSNA-IAD-Codebase/runs/yolo_aneurysm/baseline_one_slice3/weights/best.pt"
+    model = YOLO(model_path)
 
     series_probs: Dict[str, float] = {}
     cls_labels: List[int] = []
     loc_labels: List[np.ndarray] = []
     const_loc_probs = np.full(N_LOC, 0.5, dtype=np.float32)
     series_pred_loc_probs: List[np.ndarray] = []
+
+    # For confidence comparison
+    pos_confidences: list[float] = []
+    neg_confidences: list[float] = []
+    pos_modalities: list[str] = []
+    neg_modalities: list[str] = []
+    # Detection counts per class for optional summary
+    pos_det_counts: list[int] = []
+    neg_det_counts: list[int] = []
+    # Per-series metadata for optional CSV
+    series_true_labels: Dict[str, int] = {}
+    series_modalities: Dict[str, str] = {}
+    series_pred_counts: Dict[str, int] = {}
 
     for sid in val_series:
         series_dir = series_root / sid
@@ -151,91 +178,136 @@ def main():
             if args.verbose:
                 print(f"[EMPTY] {sid}")
             continue
-        if args.max_slices and len(dicoms) > args.max_slices:
-            dicoms = dicoms[:args.max_slices]
+        
+        # In MIP mode we need the full tomogram; otherwise allow stepping per file
+        if args.mip_window <= 0:
+            # Apply slice stepping BEFORE max_slices limit
+            dicoms = dicoms[::args.slice_step]  # Skip every N slices
+            if args.max_slices and len(dicoms) > args.max_slices:
+                dicoms = dicoms[:args.max_slices]
 
         max_conf = 0.0
+        total_dets = 0
         batch: list[np.ndarray] = []
         def flush_batch(batch_imgs: list[np.ndarray]):
-            nonlocal max_conf
+            nonlocal max_conf, total_dets
             if not batch_imgs:
                 return
             # Ultralytics can take list/np.array. Provide list for variable shapes (should be consistent though).
-            results = model.predict(batch_imgs, verbose=False, conf=0.005)
+            results = model.predict(batch_imgs, verbose=False, conf=0.01)
             for r in results:
                 if not r or r.boxes is None or r.boxes.conf is None or len(r.boxes) == 0:
                     continue
                 batch_max = float(r.boxes.conf.max().item())
                 if batch_max > max_conf:
                     max_conf = batch_max
-
-        if args.rgb_slices:
-            # Pre-read & normalize all usable slices first (skip failures silently unless verbose)
-            slice_imgs: list[np.ndarray] = []  # each uint8 single channel
+                # Count detections (single-class)
+                try:
+                    total_dets += int(len(r.boxes))
+                except Exception:
+                    pass
+        if args.mip_window > 0:
+            # Load all frames as HU arrays (keep original shapes)
+            slices_hu: list[np.ndarray] = []
+            shapes_count: Dict[tuple[int, int], int] = {}
             for dcm_path in dicoms:
                 try:
-                    img_hu = read_dicom_hu(dcm_path)
+                    frames = read_dicom_frames_hu(dcm_path)
                 except Exception as e:
                     if args.verbose:
                         print(f"[SKIP] {dcm_path.name}: {e}")
                     continue
-                slice_imgs.append(min_max_normalize(img_hu))
-            if not slice_imgs:
+                for f in frames:
+                    f = f.astype(np.float32)
+                    slices_hu.append(f)
+                    shapes_count[f.shape] = shapes_count.get(f.shape, 0) + 1
+            if not slices_hu:
                 if args.verbose:
                     print(f"[NO_VALID_SLICES] {sid}")
+                series_probs[sid] = 0.0
+                series_pred_counts[sid] = 0
+                continue
+            # Choose a target shape (most common); resize MIPs (or per-slice via cache) to this
+            target_shape = max(shapes_count.items(), key=lambda kv: kv[1])[0]
+            th, tw = target_shape
+            # Window centers
+            n = len(slices_hu)
+            if args.mip_no_overlap:
+                # Non-overlapping windows: stride equals full window size (2w+1)
+                w = max(0, int(args.mip_window))
+                window_size = 2 * w + 1
+                if n <= 0:
+                    centers: list[int] = []
+                elif n < window_size:
+                    centers = [n // 2]
+                else:
+                    centers = list(range(w, n, window_size))
+                    # Ensure tail coverage if remaining slices after last window are significant
+                    if centers and centers[-1] + w < n - 1:
+                        centers.append(min(n - 1 - w, n - 1))
+                if args.verbose:
+                    print(f"[MIP] non-overlap mode: window_size={window_size}, centers={len(centers)}")
             else:
-                # Harmonize shapes (choose most common HxW)
-                shape_counts: Dict[tuple[int,int], int] = {}
-                for arr in slice_imgs:
-                    shape_counts[arr.shape] = shape_counts.get(arr.shape, 0) + 1
-                target_shape = max(shape_counts.items(), key=lambda kv: kv[1])[0]
-                if len(shape_counts) > 1 and args.verbose:
-                    print(f"[RESIZE] {sid}: {len(shape_counts)} shapes -> {target_shape}")
-                if len(shape_counts) > 1:
-                    th, tw = target_shape
-                    for i, arr in enumerate(slice_imgs):
-                        if arr.shape != target_shape:
-                            slice_imgs[i] = cv2.resize(arr, (tw, th), interpolation=cv2.INTER_LINEAR)
-                for i in range(1,len(slice_imgs)-1):
-                    prev_img = slice_imgs[i-1] if i > 0 else slice_imgs[i]
-                    cur_img = slice_imgs[i]
-                    next_img = slice_imgs[i+1] if i+1 < len(slice_imgs) else slice_imgs[i]
-                    try:
-                        rgb = np.stack([prev_img, cur_img, next_img], axis=-1)  # H,W,3
-                    except ValueError:
-                        # Shape mismatch despite harmonization; skip
-                        if args.verbose:
-                            print(f"[STACK_FAIL] {sid} slice index {i} shape mismatch; skipping triplet")
-                        continue
-                    batch.append(rgb)
-                    if len(batch) >= args.batch_size:
-                        flush_batch(batch)
-                        batch.clear()
-                flush_batch(batch)
-        else:
-            for dcm_path in dicoms:
-                try:
-                    img_hu = read_dicom_hu(dcm_path)
-                except Exception as e:
-                    if args.verbose:
-                        print(f"[SKIP] {dcm_path.name}: {e}")
-                    continue
-                img_uint8 = min_max_normalize(img_hu)
-                if img_uint8.ndim == 2:
-                    img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
-                batch.append(img_uint8)
+                stride = max(1, args.slice_step)
+                centers = list(range(0, n, stride))
+                if args.verbose:
+                    print(f"[MIP] overlap mode: half-window={args.mip_window}, stride={stride}, centers={len(centers)}")
+            if args.max_slices and len(centers) > args.max_slices:
+                centers = centers[:args.max_slices]
+            # Optional cache for resized HU slices to avoid repeated resizing across overlapping windows
+            resized_cache: Dict[int, np.ndarray] = {}
+            w = args.mip_window
+            for c in centers:
+                lo = max(0, c - w)
+                hi = min(n - 1, c + w)
+                mip_hu = None
+                for i in range(lo, hi + 1):
+                    arr = resized_cache.get(i)
+                    if arr is None:
+                        a = slices_hu[i]
+                        if a.shape != target_shape:
+                            a = cv2.resize(a, (tw, th), interpolation=cv2.INTER_LINEAR)
+                        resized_cache[i] = a
+                        arr = a
+                    mip_hu = arr if mip_hu is None else np.maximum(mip_hu, arr)
+                mip_u8 = min_max_normalize(mip_hu)
+                # Optional square resize for YOLO
+                mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2BGR)
+                batch.append(mip_rgb)
                 if len(batch) >= args.batch_size:
                     flush_batch(batch)
                     batch.clear()
-            # flush remaining
+            # Flush remaining MIP windows
+            flush_batch(batch)
+        else:
+            # Per-slice inference
+            for dcm_path in dicoms:
+                try:
+                    frames = read_dicom_frames_hu(dcm_path)
+                except Exception as e:
+                    if args.verbose:
+                        print(f"[SKIP] {dcm_path.name}: {e}")
+                    continue
+                for f in frames:
+                    img_uint8 = min_max_normalize(f)
+                    if img_uint8.ndim == 2:
+                        img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
+                    batch.append(img_uint8)
+                    if len(batch) >= args.batch_size:
+                        flush_batch(batch)
+                        batch.clear()
             flush_batch(batch)
         series_probs[sid] = max_conf
-        print(f"Series {sid} max_conf={max_conf:.4f}")
+        series_pred_counts[sid] = total_dets
+        print(f"Series {sid} max_conf={max_conf:.4f} dets={total_dets} (processed {len(dicoms)} slices)")
         if args.verbose:
-            print(f"Series {sid} max_conf={max_conf:.4f}")
+            print(f"Series {sid} max_conf={max_conf:.4f} dets={total_dets}")
 
+        # Labels and metadata for this series
         row = train_df[train_df['SeriesInstanceUID'] == sid].iloc[0]
-        cls_labels.append(int(row['Aneurysm Present']))
+        label = int(row['Aneurysm Present'])
+        cls_labels.append(label)
+        series_true_labels[sid] = label
         # Build location label vector (13) if present; else zeros
         loc_vec = np.zeros(N_LOC, dtype=np.float32)
         missing_loc_cols = False
@@ -252,9 +324,102 @@ def main():
         loc_labels.append(loc_vec)
         series_pred_loc_probs.append(const_loc_probs.copy())
 
+        # Collect confidences and modality for comparison
+        modality = 'Unknown'
+        if dicoms:
+            try:
+                ds = pydicom.dcmread(str(dicoms[0]), stop_before_pixels=True)
+                modality = getattr(ds, 'Modality', 'Unknown')
+            except Exception:
+                modality = 'Error'
+        series_modalities[sid] = modality
+        if label == 1:
+            pos_confidences.append(max_conf)
+            pos_modalities.append(modality)
+            pos_det_counts.append(total_dets)
+        else:
+            neg_confidences.append(max_conf)
+            neg_modalities.append(modality)
+            neg_det_counts.append(total_dets)
+
     if not series_probs:
         print("No series processed.")
         return
+
+    # Confidence comparison between positive and negative tomograms
+    if pos_confidences and neg_confidences:
+        pos_arr = np.asarray(pos_confidences, dtype=float)
+        neg_arr = np.asarray(neg_confidences, dtype=float)
+        def stats(a: np.ndarray) -> dict:
+            return {
+                'n': int(a.size),
+                'mean': float(np.mean(a)),
+                'median': float(np.median(a)),
+                'std': float(np.std(a, ddof=1)) if a.size > 1 else 0.0,
+                'min': float(np.min(a)),
+                'q25': float(np.percentile(a, 25)),
+                'q75': float(np.percentile(a, 75)),
+                'max': float(np.max(a)),
+            }
+        pos_s = stats(pos_arr)
+        neg_s = stats(neg_arr)
+        # Cohen's d (pooled std)
+        if pos_s['n'] > 1 and neg_s['n'] > 1:
+            s_pooled_num = (pos_s['n'] - 1) * (pos_s['std'] ** 2) + (neg_s['n'] - 1) * (neg_s['std'] ** 2)
+            s_pooled_den = pos_s['n'] + neg_s['n'] - 2
+            s_pooled = math.sqrt(s_pooled_num / s_pooled_den) if s_pooled_den > 0 and s_pooled_num >= 0 else 0.0
+            cohend = (pos_s['mean'] - neg_s['mean']) / s_pooled if s_pooled > 0 else float('nan')
+        else:
+            cohend = float('nan')
+
+        # Effect size via rank-based separation: Cliff's delta approx from AUROC
+        # AUROC computed later as cls_auc; delta = 2*AUC - 1
+        # Determine optimal threshold (Youden's J)
+        y_true = np.array(cls_labels)
+        y_scores = np.array([series_probs[sid] for sid in series_probs.keys()])
+        fpr, tpr, thr = roc_curve(y_true, y_scores)
+        youden = tpr - fpr
+        best_idx = int(np.argmax(youden)) if youden.size else 0
+        best_thr = float(thr[best_idx]) if thr.size else 0.5
+
+        # Confusion matrix at best threshold
+        y_pred = (y_scores >= best_thr).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+        sens = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+
+        print("\n--- Confidence Comparison ---")
+        print(f"Positive tomograms (n={pos_s['n']}): mean={pos_s['mean']:.4f}, median={pos_s['median']:.4f}, std={pos_s['std']:.4f}, min={pos_s['min']:.4f}, q25={pos_s['q25']:.4f}, q75={pos_s['q75']:.4f}, max={pos_s['max']:.4f}")
+        print(f"Negative tomograms (n={neg_s['n']}): mean={neg_s['mean']:.4f}, median={neg_s['median']:.4f}, std={neg_s['std']:.4f}, min={neg_s['min']:.4f}, q25={neg_s['q25']:.4f}, q75={neg_s['q75']:.4f}, max={neg_s['max']:.4f}")
+        print(f"Cohen's d: {cohend:.3f}")
+
+        # Modality breakdown
+        if pos_modalities or neg_modalities:
+            from collections import Counter
+            pos_mod_ct = Counter(pos_modalities)
+            neg_mod_ct = Counter(neg_modalities)
+            print("\nModalities (top) for positives:")
+            for m, c in pos_mod_ct.most_common(5):
+                print(f"  {m}: {c}")
+            print("Modalities (top) for negatives:")
+            for m, c in neg_mod_ct.most_common(5):
+                print(f"  {m}: {c}")
+
+        # Threshold summary
+        print(f"\nBest threshold by Youden's J: {best_thr:.4f}  (TPR={tpr[best_idx]:.3f}, FPR={fpr[best_idx]:.3f})")
+        print(f"Confusion matrix at best threshold: TP={tp}, FP={fp}, TN={tn}, FN={fn}")
+        print(f"Precision={prec:.3f}, Recall/Sensitivity={sens:.3f}, Specificity={spec:.3f}")
+
+        # Detection count summary by class
+        if pos_det_counts or neg_det_counts:
+            pd_mean = float(np.mean(pos_det_counts)) if pos_det_counts else 0.0
+            pd_med = float(np.median(pos_det_counts)) if pos_det_counts else 0.0
+            nd_mean = float(np.mean(neg_det_counts)) if neg_det_counts else 0.0
+            nd_med = float(np.median(neg_det_counts)) if neg_det_counts else 0.0
+            print("\nDetection counts per tomogram:")
+            print(f"  Positives: mean={pd_mean:.2f}, median={pd_med:.2f}")
+            print(f"  Negatives: mean={nd_mean:.2f}, median={nd_med:.2f}")
 
     # Metrics
     y_true = np.array(cls_labels)
@@ -283,11 +448,15 @@ def main():
             out_rows.append({
                 'SeriesInstanceUID': sid,
                 'aneurysm_prob': prob,
+                'true_label': series_true_labels.get(sid, None),
+                'modality': series_modalities.get(sid, ''),
+                'num_detections': series_pred_counts.get(sid, 0),
                 **{f'loc_prob_{i}': 0.5 for i in range(N_LOC)}
             })
         pd.DataFrame(out_rows).to_csv(args.save_csv, index=False)
         print(f"Saved per-series predictions to {args.save_csv}")
 
-
+import time
 if __name__ == '__main__':
     main()
+
