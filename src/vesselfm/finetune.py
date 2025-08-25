@@ -32,7 +32,7 @@ def flatten_batch_collate_fn(batch):
 
     images = torch.stack([d['Image'] for d in flat], dim=0)
     masks = torch.stack([d['Mask'] for d in flat], dim=0)
-    return images, masks > 0
+    return images, masks
 
 
 @hydra.main(config_path="configs", config_name="finetune", version_base="1.3.2")
@@ -124,7 +124,7 @@ def main(cfg):
 
     # Now load pretrained weights, but ignore the mismatched final layer
     model.load_state_dict(ckpt, strict=False)
-    model.output_block = nn.Conv3d(32, 13, kernel_size=1)
+    model.output_block = nn.Conv3d(32, 14, kernel_size=1)
 
 
     # init lightning module
