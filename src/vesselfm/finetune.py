@@ -15,6 +15,7 @@ from lightning.pytorch.loggers import WandbLogger
 from dataset import RSNASegDataset
 from huggingface_hub import hf_hub_download
 from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold
+import torch.nn as nn
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -48,9 +49,9 @@ def main(cfg):
 
     #split
     df_seg['fold'] = -1
-    gkf = StratifiedGroupKFold(n_splits = 5, shuffle=True, random_state=42)
+    skf = StratifiedKFold(n_splits = 5, shuffle=True, random_state=42)
     groups = df_seg['Modality'].values
-    for fold, (train_idx, val_idx) in enumerate(gkf.split(df_seg, df_seg['Aneurysm Present'], groups)):
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df_seg, df_seg['Aneurysm Present'], groups)):
         df_seg.loc[val_idx, 'fold'] = fold
 
     train_uids = df_seg[df_seg.fold != cfg.fold_idx].SeriesInstanceUID.values.tolist()
@@ -107,13 +108,23 @@ def main(cfg):
 
 
     # # init model
-    hf_hub_download(repo_id='bwittmann/vesselFM', filename='meta.yaml')  # required to track downloads
     ckpt = torch.load(
         hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
-        map_location=f'cuda:{cfg.devices[0]}', weights_only=True
+        map_location=f'cuda:{cfg.devices[0]}',
+        weights_only=True
     )
+
+    # Instantiate model from hydra config
     model = hydra.utils.instantiate(cfg.model)
-    model.load_state_dict(ckpt)
+
+    # Replace last layer: DynUNet uses model.output_block as final conv
+    in_channels = model.output_block.out_channels  # this should be the input to last conv
+    model.output_block = nn.Conv3d(in_channels, 13, kernel_size=1)
+
+    # Now load pretrained weights, but ignore the mismatched final layer
+    missing, unexpected = model.load_state_dict(ckpt, strict=False)
+    print("Missing keys:", missing)
+    print("Unexpected keys:", unexpected)
 
 
     # init lightning module

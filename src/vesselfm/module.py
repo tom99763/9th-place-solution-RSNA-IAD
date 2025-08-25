@@ -38,35 +38,26 @@ class RSNAModuleFinetune(lightning.LightningModule):
 
     def training_step(self, batch, batch_idx):
         image, mask = batch
-        mask = mask.float()
+        mask = mask.long()  # make sure labels are class indices, not float
         pred_mask = self.model(image)
         loss = self.loss(pred_mask, mask)
-        self.log(f"train_loss", loss.item(), logger=(self.rank == 0), prog_bar=True)
+        self.log("train_loss", loss.item(), logger=(self.rank == 0), prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         image, mask = batch
-        mask = mask.float()
+        mask = mask.long()
         with torch.no_grad():
             pred_mask = self.sliding_window_inferer(image, self.model)
             loss = self.loss(pred_mask, mask)
             self.log(f"{self.dataset_name}_val_loss", loss.item(), prog_bar=True)
 
-            recall, tp, fn = volumetric_recall(
-                pred_mask.sigmoid() > self.threshold,
-                mask
-            )
-            self.log("val_volumetric_recall", recall.item(), prog_bar=True)
+            # Convert predictions
+            pred_classes = pred_mask.softmax(dim=1).argmax(dim=1)
 
-            # metrics = self.evaluator.estimate_metrics(
-            #     pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold, fast=True
-            # )
-            # for name, value in metrics.items():
-            #     value = value.item() if isinstance(value, (torch.Tensor, np.ndarray)) else value
-            #     self.log(f"{self.dataset_name}_val_{name}", value)
-            #
-            #     if name == "dice":
-            #         self.log("val_DiceMetric", value)
+            # Example metric: per-class recall
+            recall, tp, fn = volumetric_recall(pred_classes, mask)
+            self.log("val_volumetric_recall", recall.item(), prog_bar=True)
 
         return loss
 
