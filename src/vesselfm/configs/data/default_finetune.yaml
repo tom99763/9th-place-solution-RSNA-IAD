@@ -8,12 +8,14 @@ transforms:
     - EnsureChannelFirstd:
         keys: ["Image", "Mask"]
         channel_dim: "no_channel"
+    - EnsureTyped:
+        keys: ["Image", "Mask"]
     - RandCropByLabelClassesd:
-        keys: [ "Image", "Mask" ]
+        keys: ["Image", "Mask"]
         label_key: "Mask"
         spatial_size: ${input_size}
         num_classes: 13
-        num_samples: 4
+        num_samples: 16
         image_key: "Image"
         allow_smaller: True
     - ScaleIntensityd:
@@ -21,15 +23,18 @@ transforms:
         minv: 0
         maxv: 1
     - ConcatItemsd:
-        keys: [ "Image", "Mask" ]
+        keys: ["Image", "Mask"]
         name: ["Image", "Mask"]
         dim: 0
     - ToTensord:
-        keys: [ "Image", "Mask" ]
+        keys: ["Image", "Mask"]
+
   val:
     - EnsureChannelFirstd:
         keys: ["Image", "Mask"]
         channel_dim: "no_channel"
+    - EnsureTyped:
+        keys: ["Image", "Mask"]
     - ScaleIntensityRangePercentilesd:
         keys: ["Image"]
         lower: 2
@@ -37,11 +42,14 @@ transforms:
         b_min: 0
         b_max: 1
     - ToTensord:
-        keys: [Image, Mask]
+        keys: ["Image", "Mask"]
+
   test:
     - EnsureChannelFirstd:
         keys: ["Image", "Mask"]
         channel_dim: "no_channel"
+    - EnsureTyped:
+        keys: ["Image", "Mask"]
     - ScaleIntensityRangePercentilesd:
         keys: ["Image"]
         lower: 1
@@ -49,4 +57,4 @@ transforms:
         b_min: 0
         b_max: 1
     - ToTensord:
-        keys: [Image, Mask]
+        keys: ["Image", "Mask"]
