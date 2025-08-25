@@ -1,25 +1,14 @@
 # conf/config.yaml
 # These are some base parameters for the experiment
 project_name: "rsna-intracranial-aneurysm-detection"
-
-data_dir: ./data/processed
+experiment: windowed_mip
 seed: 42
-fold_id: 0
-batch_size: 12
-num_workers: 8
-experiment: 2-5d-fold0
-
-modality:
-  - CTA
-  - MRA
-  - MRI T2
-  - MRI T1post
-
 
 # The 'defaults' list tells Hydra which configs to load by default.
 # It will look for 'lightgbm.yaml' inside the 'model' sub-directory.
 defaults:
-  - model: Net_25D
-  - optimizer: AdamW
-  - trainer: default
-  - _self_
+  - preprocess: segmentation
+  # - model: Net_25D
+  # - optimizer: AdamW
+  # - trainer: default
+  # - _self_
