@@ -50,15 +50,14 @@ def main(cfg):
     #split
     df_seg['fold'] = -1
     skf = StratifiedKFold(n_splits = 5, shuffle=True, random_state=42)
-    groups = df_seg['Modality'].values
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df_seg, df_seg['Aneurysm Present'], groups)):
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df_seg, df_seg['Aneurysm Present'])):
         df_seg.loc[val_idx, 'fold'] = fold
 
     train_uids = df_seg[df_seg.fold != cfg.fold_idx].SeriesInstanceUID.values.tolist()
     val_uids = df_seg[df_seg.fold == cfg.fold_idx].SeriesInstanceUID.values.tolist()
 
     dataset_name = 'rsna'
-    run_name = f'finetune_{dataset_name}_' + cfg.run_name
+    run_name = cfg.run_name
 
     # init logger
     wnb_logger = WandbLogger(
