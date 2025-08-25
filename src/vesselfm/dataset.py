@@ -90,7 +90,7 @@ class RSNASegDataset(Dataset):
         vol = load_series2vol(vol_path).astype(np.float32)
 
         #load mask
-        mask_path = f'{self.data_path}/vessel_segments/{uid}.nii'
+        mask_path = f'{self.data_path}/segmentations/{uid}/{uid}_cowseg.nii'
         nii_image = nib.load(mask_path)
         mask = nii_image.get_fdata()
         mask = np.transpose(mask, (2, 1, 0)) #(D, H, W)
