@@ -44,6 +44,9 @@ def main(cfg):
     #load data
     df = pd.read_csv('../rsna_data/train.csv')
     uids = os.listdir('../rsna_data/segmentations')
+    uids = [x.split('.nii')[0] for x in uids if not x.endswith("_cowseg.nii")]
+    print(uids[0])
+
     df_seg = df[df.SeriesInstanceUID.isin(uids)].copy()
     df_seg.reset_index(inplace=True)
 
@@ -117,13 +120,11 @@ def main(cfg):
     model = hydra.utils.instantiate(cfg.model)
 
     # Replace last layer: DynUNet uses model.output_block as final conv
-    in_channels = model.output_block.out_channels  # this should be the input to last conv
-    model.output_block = nn.Conv3d(in_channels, 13, kernel_size=1)
+    #in_channels = model.output_block.out_channels  # this should be the input to last conv
 
     # Now load pretrained weights, but ignore the mismatched final layer
-    missing, unexpected = model.load_state_dict(ckpt, strict=False)
-    print("Missing keys:", missing)
-    print("Unexpected keys:", unexpected)
+    model.load_state_dict(ckpt, strict=False)
+    model.output_block = nn.Conv3d(32, 13, kernel_size=1)
 
 
     # init lightning module
