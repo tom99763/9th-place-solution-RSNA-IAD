@@ -10,23 +10,44 @@ transforms:
         channel_dim: "no_channel"
     - EnsureTyped:
         keys: ["Image", "Mask"]
+    - Resized:                        # 🔹 resize before cropping
+        keys: ["Image", "Mask"]
+        spatial_size: ${vol_size}  # e.g. [128, 128, 128]
+        mode: ["trilinear", "nearest"]  # image → trilinear, mask → nearest
     - RandCropByLabelClassesd:
         keys: ["Image", "Mask"]
         label_key: "Mask"
         spatial_size: ${input_size}
         num_classes: 13
-        num_samples: 16
+        num_samples: 4
         image_key: "Image"
         allow_smaller: True
+
+    - RandFlipd:
+        keys: ["Image", "Mask"]
+        spatial_axis: [0]        # flip along z-axis (depth)
+        prob: 0.5
+    - RandFlipd:
+        keys: ["Image", "Mask"]
+        spatial_axis: [1]        # flip along y-axis
+        prob: 0.5
+    - RandFlipd:
+        keys: ["Image", "Mask"]
+        spatial_axis: [2]        # flip along x-axis
+        prob: 0.5
+    - RandRotate90d:
+        keys: ["Image", "Mask"]
+        prob: 0.5
+        max_k: 3
     - ScaleIntensityd:
         keys: ["Image"]
         minv: 0
         maxv: 1
     - SpatialPadd:
-        keys: [ "Image", "Mask" ]
+        keys: ["Image", "Mask"]
         spatial_size: ${input_size}
-        mode: "constant"            # Use constant padding instead of reflect
-        method: "symmetric"         # Keep as-is (symmetric padding on all sides)
+        mode: "constant"
+        method: "symmetric"
     - ConcatItemsd:
         keys: ["Image", "Mask"]
         name: ["Image", "Mask"]
@@ -40,6 +61,10 @@ transforms:
         channel_dim: "no_channel"
     - EnsureTyped:
         keys: ["Image", "Mask"]
+    - Resized:                        # 🔹 add resize for validation
+        keys: ["Image", "Mask"]
+        spatial_size: ${vol_size}
+        mode: ["trilinear", "nearest"]
     - ScaleIntensityRangePercentilesd:
         keys: ["Image"]
         lower: 2
@@ -55,6 +80,10 @@ transforms:
         channel_dim: "no_channel"
     - EnsureTyped:
         keys: ["Image", "Mask"]
+    - Resized:                        # 🔹 add resize for test
+        keys: ["Image", "Mask"]
+        spatial_size: ${vol_size}
+        mode: ["trilinear", "nearest"]
     - ScaleIntensityRangePercentilesd:
         keys: ["Image"]
         lower: 1

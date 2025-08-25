@@ -100,8 +100,6 @@ class RSNASegDataset(Dataset):
         vol = torch.as_tensor(vol.copy()).contiguous()
         mask = torch.as_tensor(mask.copy()).contiguous()
 
-
-
         #transforms
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':

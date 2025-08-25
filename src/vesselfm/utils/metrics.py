@@ -1,13 +1,19 @@
 import torch
 
 
-def volumetric_recall(pred_mask, gt_mask, num_classes=13, ignore_index=None):
+def volumetric_recall(pred_mask, gt_mask, num_classes=13, ignore_index=None, already_classes=False):
     """
-    pred_mask: (B, C, D, H, W) raw logits or softmax probs
+    Compute volumetric recall per class and mean recall.
+
+    pred_mask: (B, C, D, H, W) raw logits or softmax probabilities,
+               or (B, D, H, W) class indices if already_classes=True
     gt_mask:   (B, D, H, W) with class indices [0..C-1]
+    already_classes: set True if pred_mask contains class indices
     """
-    # Convert predictions to class IDs
-    pred_classes = pred_mask.softmax(dim=1).argmax(dim=1)  # (B, D, H, W)
+    if not already_classes:
+        pred_classes = pred_mask.softmax(dim=1).argmax(dim=1)  # (B, D, H, W)
+    else:
+        pred_classes = pred_mask
 
     recalls = []
     tps, fns = [], []
