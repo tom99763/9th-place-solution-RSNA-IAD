@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pydicom
 from collections import Counter
 import nibabel as nib
-
+sitk.ProcessObject.SetGlobalWarningDisplay(False)
 logger = logging.getLogger(__name__)
 
 def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resample=False, default_thickness=1.0, max_workers=20):
@@ -51,7 +51,6 @@ def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resampl
 
     # --- Optional resample ---
     if resample and abs(spacing[2] - spacing[0]) > spacing_tolerance:
-        print("resampling....")
         new_spacing = [spacing[0], spacing[1], spacing[0]]
         new_size = [
             int(round(image.GetSize()[0] * spacing[0] / new_spacing[0])),
@@ -95,6 +94,13 @@ class RSNASegDataset(Dataset):
         mask = nii_image.get_fdata()
         mask = np.transpose(mask, (2, 1, 0)) #(D, H, W)
         mask = np.flip(np.flip(mask, axis=1), axis=2)
+
+        #vol = vol.copy()
+        #mask = mask.copy()
+        vol = torch.as_tensor(vol.copy()).contiguous()
+        mask = torch.as_tensor(mask.copy()).contiguous()
+
+
 
         #transforms
         transformed = self.transforms({'Image': vol, 'Mask': mask})
