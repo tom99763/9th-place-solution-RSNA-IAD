@@ -14,9 +14,9 @@ ce_fn = torch.nn.CrossEntropyLoss()
 
 
 def dice_loss(pred, target, num_classes=14,
-                 lambda_ce=0.8, lambda_dice=0.2,
-                 bg_weight=0.05,  # very small background weight
-                 smooth=1e-6):
+              lambda_ce=0.05, lambda_dice=0.95,
+              bg_weight=0.05,  # very small background weight
+              smooth=1e-6):
     """
     pred: (B, C, D, H, W) - raw logits
     target: (B, D, H, W) - long class indices [0..C-1]
@@ -25,9 +25,9 @@ def dice_loss(pred, target, num_classes=14,
     B, C, D, H, W = pred.shape
     target = target.long()
 
-    # ---- Compute class weights from target ----
+    # ---- Compute class weights from target for CE ----
     with torch.no_grad():
-        flat_target = target.view(-1) # FIXED
+        flat_target = target.view(-1)
         counts = torch.bincount(flat_target, minlength=num_classes).float()
 
         weights = torch.zeros_like(counts)
@@ -39,7 +39,7 @@ def dice_loss(pred, target, num_classes=14,
         weights[0] = bg_weight * weights[1:].mean()
 
     ce_fn = nn.CrossEntropyLoss(weight=weights.to(pred.device))
-    ce_loss = ce_fn(pred, target[:, 0])
+    ce_loss = ce_fn(pred, target[:, 0] if target.ndim == 5 else target)
 
     # ---- Dice Loss ----
     pred_soft = F.softmax(pred, dim=1)  # (B, C, D, H, W)
@@ -60,8 +60,10 @@ def dice_loss(pred, target, num_classes=14,
     intersection = (pred_flat * target_flat).sum(-1)  # (B, C)
     union = pred_flat.sum(-1) + target_flat.sum(-1)  # (B, C)
 
+    # ---- Ignore background class 0 ----
     dice_score = (2. * intersection + smooth) / (union + smooth)
-    dice_loss_val = 1 - dice_score.mean()
+    dice_score_fg = dice_score[:, 1:]  # ignore background
+    dice_loss_val = 1 - dice_score_fg.mean()
 
     # ---- Combine ----
     return lambda_ce * ce_loss + lambda_dice * dice_loss_val
