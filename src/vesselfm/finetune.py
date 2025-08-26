@@ -109,12 +109,12 @@ def main(cfg):
     logger.info(f"Val dataset size: {len(val_dataset)}")
 
 
-    # # init model
-    ckpt = torch.load(
-        hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
-        map_location=f'cuda:{cfg.devices[0]}',
-        weights_only=True
-    )
+    # # # init model
+    # ckpt = torch.load(
+    #     hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
+    #     map_location=f'cuda:{cfg.devices[0]}',
+    #     weights_only=True
+    # )
 
     # Instantiate model from hydra config
     model = hydra.utils.instantiate(cfg.model)
@@ -123,8 +123,8 @@ def main(cfg):
     #in_channels = model.output_block.out_channels  # this should be the input to last conv
 
     # Now load pretrained weights, but ignore the mismatched final layer
-    model.load_state_dict(ckpt, strict=False)
-    model.output_block = nn.Conv3d(32, 14, kernel_size=1)
+    # model.load_state_dict(ckpt, strict=False)
+    # model.output_block = nn.Conv3d(32, 14, kernel_size=1)
 
 
     # init lightning module

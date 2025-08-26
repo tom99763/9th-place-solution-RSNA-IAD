@@ -1,6 +1,6 @@
 import logging
 import os
-import lightning
+import lightning as L
 from monai.inferers.inferer import SlidingWindowInfererAdapt
 from utils.metrics import *
 import monai
@@ -12,70 +12,82 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 ce_fn = torch.nn.CrossEntropyLoss()
 
+class ForegroundHitRate:
+    def __init__(self, num_classes: int, include_background: bool = False):
+        self.num_classes = num_classes
+        self.include_background = include_background
+        self.reset()
 
-def dice_loss(pred, target, num_classes=14,
-              lambda_ce=0.05, lambda_dice=0.95,
-              bg_weight=0.05,  # very small background weight
-              smooth=1e-6):
+    def reset(self):
+        self.hits = torch.zeros(self.num_classes)
+        self.total = torch.zeros(self.num_classes)
+
+    def __call__(self, y_pred, y):
+        # y_pred and y: one-hot encoded (B, C, D, H, W)
+        for c in range(int(self.include_background), self.num_classes):
+            gt_present = (y[:, c].sum() > 0).item()
+            pred_present = (y_pred[:, c].sum() > 0).item()
+            if gt_present:
+                self.total[c] += 1
+                if pred_present:
+                    self.hits[c] += 1
+
+    def aggregate(self):
+        return (self.hits / (self.total + 1e-8)).mean().item()
+
+
+# -----------------------------
+# Loss Function
+# -----------------------------
+def dice_loss(pred, target, num_classes=14, lambda_ce=0.1, lambda_dice=0.9,
+              bg_weight=0.05, smooth=1e-6):
     """
     pred: (B, C, D, H, W) - raw logits
     target: (B, D, H, W) - long class indices [0..C-1]
     """
-
     B, C, D, H, W = pred.shape
     target = target.long()
 
-    # ---- Compute class weights from target for CE ----
+    # Compute class weights for CE
     with torch.no_grad():
         flat_target = target.view(-1)
         counts = torch.bincount(flat_target, minlength=num_classes).float()
-
         weights = torch.zeros_like(counts)
         nonzero = counts > 0
         weights[nonzero] = counts.sum() / (counts[nonzero] * len(counts[nonzero]))
         weights = weights / weights.sum()
-
-        # reduce background weight
         weights[0] = bg_weight * weights[1:].mean()
 
     ce_fn = nn.CrossEntropyLoss(weight=weights.to(pred.device))
-    ce_loss = ce_fn(pred, target[:, 0] if target.ndim == 5 else target)
+    ce_loss = ce_fn(pred, target)
 
-    # ---- Dice Loss ----
-    pred_soft = F.softmax(pred, dim=1)  # (B, C, D, H, W)
+    # Softmax for dice
+    pred_soft = F.softmax(pred, dim=1)
 
-    # ensure target shape is (B, D, H, W)
-    if target.ndim == 5 and target.shape[1] == 1:
-        target = target.squeeze(1)  # remove channel dim
-
-    # one-hot encode
-    target_onehot = F.one_hot(target.long(), num_classes=C)  # (B, D, H, W, C)
-    target_onehot = target_onehot.permute(0, 4, 1, 2, 3).float()  # (B, C, D, H, W)
+    # One-hot target
+    target_onehot = F.one_hot(target, num_classes=C).permute(0, 4, 1, 2, 3).float()
 
     # Flatten
     pred_flat = pred_soft.view(B, C, -1)
     target_flat = target_onehot.view(B, C, -1)
 
-    # Intersection & union
-    intersection = (pred_flat * target_flat).sum(-1)  # (B, C)
-    union = pred_flat.sum(-1) + target_flat.sum(-1)  # (B, C)
+    # Intersection and union
+    intersection = (pred_flat * target_flat).sum(-1)
+    union = pred_flat.sum(-1) + target_flat.sum(-1)
 
-    # ---- Ignore background class 0 ----
-    dice_score = (2. * intersection + smooth) / (union + smooth)  # (B, C)
-    dice_loss_per_class = 1 - dice_score  # (B, C)
+    dice_score = (2. * intersection + smooth) / (union + smooth)
+    dice_loss_per_class = 1 - dice_score
 
-    # Apply class weights
-    class_weights = torch.ones(C, device=pred.device)
-    class_weights[0] = bg_weight
-    dice_loss_val = (dice_loss_per_class * class_weights).sum(dim=1) / class_weights.sum()
-    dice_loss_val = dice_loss_val.mean()  # average over batch
+    # Ignore background
+    dice_loss_val = dice_loss_per_class[:, 1:].mean()
 
-    # ---- Combine ----
     return lambda_ce * ce_loss + lambda_dice * dice_loss_val
 
 
-
-class RSNAModuleFinetune(lightning.LightningModule):
+# -----------------------------
+# Lightning Module
+# -----------------------------
+class RSNAModuleFinetune(L.LightningModule):
     def __init__(
             self,
             model: torch.nn.Module,
@@ -93,7 +105,7 @@ class RSNAModuleFinetune(lightning.LightningModule):
         super().__init__()
         print('threshold:', threshold)
         self.model = model
-        self.loss = dice_loss
+        self.loss = loss
         self.optimizer_factory = optimizer_factory
         self.scheduler_configs = scheduler_configs
         self.prediction_threshold = prediction_threshold
@@ -101,59 +113,58 @@ class RSNAModuleFinetune(lightning.LightningModule):
         self.dataset_name = dataset_name
         logger.info(f"Dataset name: {self.dataset_name}")
         self.sliding_window_inferer = SlidingWindowInfererAdapt(
-            roi_size=input_size, sw_batch_size=batch_size, overlap=0,
+            roi_size=input_size, sw_batch_size=batch_size, overlap=0.5,
         )
         self.threshold = threshold
-        self.dice_metric = DiceMetric(include_background=False, reduction="mean_batch")
+
+        # Metrics
+        self.dice_metric = DiceMetric(include_background=False,
+                                      reduction="mean",
+                                      ignore_empty=True)
+        self.hit_metric = ForegroundHitRate(num_classes=14, include_background=False)
 
     def training_step(self, batch, batch_idx):
         image, mask = batch
-        pred_mask = self.model(image)
-        loss = self.loss(pred_mask, mask)  # no extra .long() here; handled inside loss
-        self.log("train_loss", loss.item(), logger=(self.rank == 0), prog_bar=True)
+        pred = self.model(image)
+        loss = self.loss(pred, mask)
+        self.log("train_loss", loss, prog_bar=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         image, mask = batch
-
         with torch.no_grad():
             pred_logits = self.sliding_window_inferer(image, self.model)
             loss = self.loss(pred_logits, mask)
-            self.log(f"{self.dataset_name}_val_loss", loss.item(), prog_bar=True)
 
-            # convert to predicted labels
-            pred_labels = torch.argmax(pred_logits, dim=1, keepdim=True)  # (B,1,D,H,W)
+            # One-hot encode
+            pred_labels = torch.argmax(pred_logits, dim=1, keepdim=True)
+            pred_oh = one_hot(pred_labels, num_classes=14)
+            target_oh = one_hot(mask, num_classes=14)
 
-            # one-hot encode target and prediction for metric
-            num_classes = pred_logits.shape[1]
-            target_oh = one_hot(mask, num_classes=num_classes)
-            pred_oh = one_hot(pred_labels, num_classes=num_classes)
-
-            # update dice metric
+            # Update metrics
             self.dice_metric(y_pred=pred_oh, y=target_oh)
+            self.hit_metric(pred_oh, target_oh)
+
+            self.log("val_loss", loss, prog_bar=True, sync_dist=True)
         return loss
 
     def on_validation_epoch_end(self):
-        # aggregate
         dice_score = self.dice_metric.aggregate().mean().item()
+        hit_score = self.hit_metric.aggregate()
         self.log("val_dice", dice_score, prog_bar=True)
+        self.log("val_hit_rate", hit_score, prog_bar=True)
 
-        # reset for next epoch
         self.dice_metric.reset()
+        self.hit_metric.reset()
 
     def configure_optimizers(self):
-        optimizer = self.optimizer_factory(params=self.parameters())
-
-        if self.scheduler_configs is not None:
+        optimizer = self.optimizer_factory(self.parameters())
+        if self.scheduler_configs:
             schedulers = []
-            logger.info(f"Initializing schedulers: {self.scheduler_configs}")
-            for scheduler_name, scheduler_config in self.scheduler_configs.items():
-                if scheduler_config is None:
-                    continue  # skip empty configs during finetuning
-
-                logger.info(f"Initializing scheduler: {scheduler_name}")
-                scheduler_config["scheduler"] = scheduler_config["scheduler"](optimizer=optimizer)
-                scheduler_config = dict(scheduler_config)
-                schedulers.append(scheduler_config)
+            for _, cfg in self.scheduler_configs.items():
+                if cfg is None:
+                    continue
+                cfg["scheduler"] = cfg["scheduler"](optimizer=optimizer)
+                schedulers.append(dict(cfg))
             return [optimizer], schedulers
         return optimizer
