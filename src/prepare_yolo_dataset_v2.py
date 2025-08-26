@@ -16,7 +16,7 @@ from sklearn.model_selection import StratifiedKFold
 # Allow importing project configs
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from configs.data_config import data_path, N_FOLDS, SEED  # type: ignore
+from configs.data_config import data_path, N_FOLDS, SEED, LABELS_TO_IDX  # type: ignore
 
 
 rng = random.Random(SEED)
@@ -91,7 +91,15 @@ def parse_args():
     # MIP options
     ap.add_argument("--mip-img-size", type=int, default=512, help="Final square size (0 = keep original MIP size)")
     ap.add_argument("--mip-out-name", type=str, default="yolo_dataset", help="Subdirectory under data/ for outputs")
-    ap.add_argument("--mip-pos-window", type=int, default=0, help="If >0, build MIPs from +/- window around positive slices")
+    ap.add_argument(
+        "--mip-pos-window",
+        type=str,
+        default="0",
+            help=(
+                "Window/MIP mode: >0 builds MIPs from +/- window around positive slices; "
+                "0 uses the exact positive slice without MIP; 'none' saves ALL slices individually (no MIP)."
+            ),
+    )
     return ap.parse_args()
 
 
@@ -151,6 +159,16 @@ def main():
     args = parse_args()
     global rng
     rng = random.Random(args.seed)
+    # Interpret mip-pos-window: 'none' -> None, otherwise int
+    raw_win = args.mip_pos_window if isinstance(args.mip_pos_window, str) else str(args.mip_pos_window)
+    win: int | None
+    if raw_win.strip().lower() == "none":
+        win = None
+    else:
+        try:
+            win = int(raw_win)
+        except Exception:
+            win = 0
 
     root = Path(data_path)
     out_base = root / args.mip_out_name
@@ -177,10 +195,17 @@ def main():
     label_df = load_labels(root)
 
     # Group labels per series, keep SOP to locate slice indices
-    series_to_labels: Dict[str, List[Tuple[str, float, float]]] = {}
+    # Build map of series -> list of (SOPInstanceUID, x, y, cls_id) using 13-class localization
+    series_to_labels: Dict[str, List[Tuple[str, float, float, int]]] = {}
     for _, r in label_df.iterrows():
+        loc = r.get("location", None)
+        if isinstance(loc, str) and loc in LABELS_TO_IDX:
+            cls_id = int(LABELS_TO_IDX[loc])
+        else:
+            # Skip entries without a recognized location label
+            continue
         series_to_labels.setdefault(r.SeriesInstanceUID, []).append(
-            (str(r.SOPInstanceUID), float(r.x), float(r.y))
+            (str(r.SOPInstanceUID), float(r.x), float(r.y), cls_id)
         )
 
     all_series: List[str] = []
@@ -218,11 +243,11 @@ def main():
         n_slices = len(paths)
         labels_for_series = series_to_labels.get(uid, [])
 
-        # MIP windows around positives
-        if args.mip_pos_window and args.mip_pos_window > 0 and n_slices > 0:
-            window = args.mip_pos_window
-            if labels_for_series:
-                for (sop_c, _x_c, _y_c) in labels_for_series:
+        # Mode 1: windowed MIPs around positives
+        if (win is not None) and (win > 0) and n_slices > 0:
+            window = win
+            if labels_for_series:     
+                for (sop_c, _x_c, _y_c, _cls_id) in labels_for_series:
                     if sop_c not in sop_to_idx:
                         continue
                     center = sop_to_idx[sop_c]
@@ -260,13 +285,13 @@ def main():
                     cv2.imwrite(str(img_path), mip_uint8)
 
                     # Points within this window
-                    pts_in_win: List[Tuple[float, float]] = []
-                    for (sop, x, y) in labels_for_series:
+                    pts_in_win: List[Tuple[float, float, int]] = []
+                    for (sop, x, y, cls_id) in labels_for_series:
                         idx = sop_to_idx.get(sop)
                         if idx is not None and lo <= idx <= hi:
-                            pts_in_win.append((x, y))
+                            pts_in_win.append((x, y, cls_id))
                     with open(label_path, "w") as f:
-                        for (x, y) in pts_in_win:
+                        for (x, y, cls_id) in pts_in_win:
                             orig_h, orig_w = base_shape
                             if (resize_w, resize_h) != (orig_w, orig_h):
                                 x_scaled = x * (resize_w / orig_w)
@@ -276,7 +301,7 @@ def main():
                             xc, yc, bw, bh = build_box(
                                 x_scaled, y_scaled, args.box_size, resize_w, resize_h
                             )
-                            f.write(f"0 {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
+                            f.write(f"{cls_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
                     total_pos += 1
                     total_series += 1
             else:
@@ -312,7 +337,70 @@ def main():
             # Windowed case handled; continue to next series
             continue
 
-        # Whole-series MIP (no window requested)
+        # Mode 2: per-slice (no MIP) -> create one image per positive slice; for negative series, one random slice
+        if win == 0:
+            if labels_for_series:
+                for (sop, x, y, cls_id) in labels_for_series:
+                    dcm_path = root / "series" / uid / f"{sop}.dcm"
+                    if not dcm_path.exists():
+                        continue
+                    frames = read_dicom_frames_hu(dcm_path)
+                    if not frames:
+                        continue
+                    img = min_max_normalize(frames[0])
+                    if args.mip_img_size > 0 and (
+                        img.shape[0] != args.mip_img_size or img.shape[1] != args.mip_img_size
+                    ):
+                        img_resized = cv2.resize(img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                        resize_w = resize_h = args.mip_img_size
+                    else:
+                        img_resized = img
+                        resize_h, resize_w = img_resized.shape
+
+                    stem = f"{uid}_{sop}_slice"
+                    img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+                    label_path = out_base / "labels" / split / f"{stem}.txt"
+                    if img_path.exists() and label_path.exists() and not args.overwrite:
+                        continue
+                    cv2.imwrite(str(img_path), img_resized)
+
+                    # Scale point if resized
+                    orig_h, orig_w = frames[0].shape
+                    if (resize_w, resize_h) != (orig_w, orig_h):
+                        x_scaled = x * (resize_w / orig_w)
+                        y_scaled = y * (resize_h / orig_h)
+                    else:
+                        x_scaled, y_scaled = x, y
+                    xc, yc, bw, bh = build_box(x_scaled, y_scaled, args.box_size, resize_w, resize_h)
+                    with open(label_path, "w") as f:
+                        f.write(f"{cls_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
+                    total_pos += 1
+                    total_series += 1
+            else:
+                # Negative series: choose one random slice and write empty label
+                if n_slices == 0:
+                    continue
+                center = rng.randint(0, n_slices - 1)
+                dcm_path = paths[center]
+                frames = read_dicom_frames_hu(dcm_path)
+                if not frames:
+                    continue
+                img = min_max_normalize(frames[0])
+                if args.mip_img_size > 0 and (
+                    img.shape[0] != args.mip_img_size or img.shape[1] != args.mip_img_size
+                ):
+                    img = cv2.resize(img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                stem = f"{uid}_{dcm_path.stem}_slice_neg"
+                img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+                label_path = out_base / "labels" / split / f"{stem}.txt"
+                if not (img_path.exists() and label_path.exists()) or args.overwrite:
+                    cv2.imwrite(str(img_path), img)
+                    open(label_path, "w").close()
+                    total_neg += 1
+                    total_series += 1
+            continue
+
+        # Mode 3: whole-series MIP (win is None)
         slices = load_series_slices_selected(paths, None)
         if not slices:
             if args.verbose:
@@ -339,10 +427,10 @@ def main():
         label_path = out_base / "labels" / split / f"{uid}.txt"
         if not (img_path.exists() and label_path.exists()) or args.overwrite:
             cv2.imwrite(str(img_path), mip_uint8)
-            pts = [(x, y) for (_sop, x, y) in labels_for_series]
+            pts = [(x, y, cls_id) for (_sop, x, y, cls_id) in labels_for_series]
             if pts:
                 with open(label_path, "w") as f:
-                    for (x, y) in pts:
+                    for (x, y, cls_id) in pts:
                         orig_h, orig_w = base_shape
                         if (resize_w, resize_h) != (orig_w, orig_h):
                             x_scaled = x * (resize_w / orig_w)
@@ -350,7 +438,7 @@ def main():
                         else:
                             x_scaled, y_scaled = x, y
                         xc, yc, bw, bh = build_box(x_scaled, y_scaled, args.box_size, resize_w, resize_h)
-                        f.write(f"0 {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
+                        f.write(f"{cls_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
                 total_pos += 1
             else:
                 open(label_path, "w").close()
