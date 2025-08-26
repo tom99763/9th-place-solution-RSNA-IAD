@@ -14,15 +14,15 @@ transforms:
         keys: ["Image", "Mask"]
         spatial_size: ${vol_size}  # e.g. [128, 128, 128]
         mode: ["trilinear", "nearest"]  # image → trilinear, mask → nearest
-    - RandCropByLabelClassesd:
-        keys: ["Image", "Mask"]
+    - RandCropByPosNegLabeld:
+        keys: [ "Image", "Mask" ]
         label_key: "Mask"
-        spatial_size: ${input_size}
-        num_classes: 13
-        num_samples: 2
+        spatial_size: ${input_size}   # same as before
+        pos: 4                        # number of foreground patches per sample
+        neg: 0                        # number of background patches per sample
+        num_samples: 4                # total number of crops per volume
         image_key: "Image"
         allow_smaller: True
-        allow_missing_keys: True
     - RandFlipd:
         keys: ["Image", "Mask"]
         spatial_axis: [0]        # flip along z-axis (depth)
