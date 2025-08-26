@@ -14,7 +14,7 @@ ce_fn = torch.nn.CrossEntropyLoss()
 
 
 def dice_loss(pred, target, num_classes=14,
-                 lambda_ce=0.1, lambda_dice=0.9,
+                 lambda_ce=0.8, lambda_dice=0.2,
                  bg_weight=0.05,  # very small background weight
                  smooth=1e-6):
     """
