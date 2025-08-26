@@ -61,9 +61,14 @@ def dice_loss(pred, target, num_classes=14,
     union = pred_flat.sum(-1) + target_flat.sum(-1)  # (B, C)
 
     # ---- Ignore background class 0 ----
-    dice_score = (2. * intersection + smooth) / (union + smooth)
-    dice_score_fg = dice_score[:, 1:]  # ignore background
-    dice_loss_val = 1 - dice_score_fg.mean()
+    dice_score = (2. * intersection + smooth) / (union + smooth)  # (B, C)
+    dice_loss_per_class = 1 - dice_score  # (B, C)
+
+    # Apply class weights
+    class_weights = torch.ones(C, device=pred.device)
+    class_weights[0] = bg_weight
+    dice_loss_val = (dice_loss_per_class * class_weights).sum(dim=1) / class_weights.sum()
+    dice_loss_val = dice_loss_val.mean()  # average over batch
 
     # ---- Combine ----
     return lambda_ce * ce_loss + lambda_dice * dice_loss_val
