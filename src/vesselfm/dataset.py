@@ -71,13 +71,51 @@ def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resampl
     return volume
 
 
+# class RSNASegDataset(Dataset):
+#     def __init__(self, uids, dataset_config, mode):
+#         super().__init__()
+#         # init datasets
+#         self.data_path = dataset_config.path
+#         self.uids = uids
+#         # self.reader = determine_reader_writer(dataset_config.file_format)()
+#         self.transforms = generate_transforms(dataset_config.transforms[mode])
+#         self.mode = mode
+#
+#     def __len__(self):
+#         return len(self.uids)
+#
+#     def __getitem__(self, idx: int):
+#         uid = self.uids[idx]
+#         #load volume
+#         vol_path = f'{self.data_path}/seg_nii/{uid}_seg.nii'
+#         nii_image = nib.load(vol_path)
+#         vol = nii_image.get_fdata()
+#         vol = np.transpose(vol, (2, 1, 0))  # (D, H, W)
+#
+#         #load mask
+#         mask_path = f'{self.data_path}/segmentations/{uid}_cowseg.nii'
+#         nii_image = nib.load(mask_path)
+#         mask = nii_image.get_fdata()
+#         mask = np.transpose(mask, (2, 1, 0)) #(D, H, W)
+#         mask = np.flip(np.flip(mask, axis=1), axis=2)
+#
+#         vol = torch.as_tensor(vol.copy()).contiguous()
+#         mask = torch.as_tensor(mask.copy()).contiguous()
+#
+#         #vol = vol.copy()
+#         #transforms
+#         transformed = self.transforms({'Image': vol, 'Mask': mask})
+#         if self.mode == 'train':
+#             return transformed
+#         return transformed['Image'], transformed['Mask']
+
 class RSNASegDataset(Dataset):
     def __init__(self, uids, dataset_config, mode):
         super().__init__()
         # init datasets
         self.data_path = dataset_config.path
         self.uids = uids
-        # self.reader = determine_reader_writer(dataset_config.file_format)()
+        self.reader = determine_reader_writer(dataset_config.file_format)()
         self.transforms = generate_transforms(dataset_config.transforms[mode])
         self.mode = mode
 
@@ -86,24 +124,10 @@ class RSNASegDataset(Dataset):
 
     def __getitem__(self, idx: int):
         uid = self.uids[idx]
-        #load volume
-        vol_path = f'{self.data_path}/seg_nii/{uid}_seg.nii'
-        nii_image = nib.load(vol_path)
-        vol = nii_image.get_fdata()
-        vol = np.transpose(vol, (2, 1, 0))  # (D, H, W)
-
-        #load mask
+        vol_path = f'{self.data_path}/segmentations/{uid}.nii'
         mask_path = f'{self.data_path}/segmentations/{uid}_cowseg.nii'
-        nii_image = nib.load(mask_path)
-        mask = nii_image.get_fdata()
-        mask = np.transpose(mask, (2, 1, 0)) #(D, H, W)
-        mask = np.flip(np.flip(mask, axis=1), axis=2)
-
-        vol = torch.as_tensor(vol.copy()).contiguous()
-        mask = torch.as_tensor(mask.copy()).contiguous()
-
-        #vol = vol.copy()
-        #transforms
+        vol = self.reader.read_images(vol_path)[0].astype(np.float32)
+        mask = self.reader.read_images(mask_path)[0]
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':
             return transformed

@@ -14,27 +14,18 @@ transforms:
         keys: ["Image", "Mask"]
         spatial_size: ${vol_size}  # e.g. [128, 128, 128]
         mode: ["trilinear", "nearest"]  # image → trilinear, mask → nearest
-    - RandCropByPosNegLabeld:
+    - RandCropByLabelClassesd:
         keys: [ "Image", "Mask" ]
         label_key: "Mask"
-        spatial_size: ${input_size}   # same as before
-        pos: 4                        # number of foreground patches per sample
-        neg: 0                        # number of background patches per sample
-        num_samples: 4                # total number of crops per volume
+        spatial_size: ${input_size}
+        num_classes: 13                # 14 total classes - 1 background = 13
+        ratios: [ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 ]  # equal sampling
+        num_samples: 4
         image_key: "Image"
         allow_smaller: True
-    - RandFlipd:
-        keys: ["Image", "Mask"]
-        spatial_axis: [0]        # flip along z-axis (depth)
-        prob: 0.5
-    - RandFlipd:
-        keys: ["Image", "Mask"]
-        spatial_axis: [1]        # flip along y-axis
-        prob: 0.5
-    - RandFlipd:
-        keys: ["Image", "Mask"]
-        spatial_axis: [2]        # flip along x-axis
-        prob: 0.5
+#    - CenterSpatialCropd:
+#        keys: [ "Image", "Mask" ]
+#        roi_size: ${input_size}
     - ScaleIntensityd:
         keys: ["Image"]
         minv: 0
