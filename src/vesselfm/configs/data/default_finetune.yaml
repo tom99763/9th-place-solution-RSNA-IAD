@@ -35,10 +35,6 @@ transforms:
         keys: ["Image", "Mask"]
         spatial_axis: [2]        # flip along x-axis
         prob: 0.5
-    - RandRotate90d:
-        keys: ["Image", "Mask"]
-        prob: 0.5
-        max_k: 3
     - ScaleIntensityd:
         keys: ["Image"]
         minv: 0
