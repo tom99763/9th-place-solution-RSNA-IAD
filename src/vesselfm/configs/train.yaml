@@ -7,13 +7,13 @@ defaults:
 
 # data
 input_size: [128, 128, 128]
-vol_size: [null, 384, 384]
+vol_size: [256, 384, 384]
 image_channels: 1
 num_classes: 1
 
 # training
 seed: 404
-lr: 0.00001
+lr: 0.0005
 batch_size: 1
 eval_path: /path/to/eval_set_pretrain
 path_to_chkpt: null

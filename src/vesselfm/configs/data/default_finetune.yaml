@@ -19,10 +19,10 @@ transforms:
         label_key: "Mask"
         spatial_size: ${input_size}
         num_classes: 13
-        num_samples: 4
+        num_samples: 2
         image_key: "Image"
         allow_smaller: True
-
+        allow_missing_keys: True
     - RandFlipd:
         keys: ["Image", "Mask"]
         spatial_axis: [0]        # flip along z-axis (depth)

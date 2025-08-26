@@ -5,39 +5,66 @@ from monai.inferers.inferer import SlidingWindowInfererAdapt
 from utils.metrics import *
 import monai
 import torch.nn.functional as F
-from monai.networks import one_hot
+from monai.metrics import DiceMetric
+from monai.networks.utils import one_hot
+import torch.nn as nn
 
 logger = logging.getLogger(__name__)
 ce_fn = torch.nn.CrossEntropyLoss()
 
-def dice_loss(pred, target, num_classes=14, lambda_ce=0.1, lambda_dice=0.9):
-    """
-    pred: (B, C, D, H, W)
-    target: (B, D, H, W), long class indices 0..C-1
-    """
-    # CrossEntropyLoss (expects class indices)
-    ce_loss = ce_fn(pred, target[:, 0].long())
 
-    # DiceLoss memory-efficient: gather predicted probabilities per target class
+def dice_loss(pred, target, num_classes=14,
+                 lambda_ce=0.1, lambda_dice=0.9,
+                 bg_weight=0.05,  # very small background weight
+                 smooth=1e-6):
+    """
+    pred: (B, C, D, H, W) - raw logits
+    target: (B, D, H, W) - long class indices [0..C-1]
+    """
+
+    B, C, D, H, W = pred.shape
+    target = target.long()
+
+    # ---- Compute class weights from target ----
+    with torch.no_grad():
+        flat_target = target.view(-1) # FIXED
+        counts = torch.bincount(flat_target, minlength=num_classes).float()
+
+        weights = torch.zeros_like(counts)
+        nonzero = counts > 0
+        weights[nonzero] = counts.sum() / (counts[nonzero] * len(counts[nonzero]))
+        weights = weights / weights.sum()
+
+        # reduce background weight
+        weights[0] = bg_weight * weights[1:].mean()
+
+    ce_fn = nn.CrossEntropyLoss(weight=weights.to(pred.device))
+    ce_loss = ce_fn(pred, target[:, 0])
+
+    # ---- Dice Loss ----
     pred_soft = F.softmax(pred, dim=1)  # (B, C, D, H, W)
 
-    # Compute per-class Dice in a vectorized way
-    # pred_flat: (B, C, D*H*W), target_flat: (B, D*H*W)
-    B, C, D, H, W = pred.shape
-    pred_flat = pred_soft.view(B, C, -1)
-    target_flat = target.view(B, -1)
+    # ensure target shape is (B, D, H, W)
+    if target.ndim == 5 and target.shape[1] == 1:
+        target = target.squeeze(1)  # remove channel dim
 
-    dice_loss_total = 0.0
-    for c in range(C):
-        # create binary mask for this class
-        target_c = (target_flat == c).float()  # (B, D*H*W)
-        pred_c = pred_flat[:, c, :]  # (B, D*H*W)
-        intersection = (pred_c * target_c).sum(dim=1)
-        union = pred_c.sum(dim=1) + target_c.sum(dim=1)
-        dice_c = 1 - (2 * intersection + 1e-6) / (union + 1e-6)
-        dice_loss_total += dice_c.mean()
-    dice_loss_total /= C
-    return lambda_ce * ce_loss + lambda_dice * dice_loss_total
+    # one-hot encode
+    target_onehot = F.one_hot(target.long(), num_classes=C)  # (B, D, H, W, C)
+    target_onehot = target_onehot.permute(0, 4, 1, 2, 3).float()  # (B, C, D, H, W)
+
+    # Flatten
+    pred_flat = pred_soft.view(B, C, -1)
+    target_flat = target_onehot.view(B, C, -1)
+
+    # Intersection & union
+    intersection = (pred_flat * target_flat).sum(-1)  # (B, C)
+    union = pred_flat.sum(-1) + target_flat.sum(-1)  # (B, C)
+
+    dice_score = (2. * intersection + smooth) / (union + smooth)
+    dice_loss_val = 1 - dice_score.mean()
+
+    # ---- Combine ----
+    return lambda_ce * ce_loss + lambda_dice * dice_loss_val
 
 
 
@@ -70,6 +97,7 @@ class RSNAModuleFinetune(lightning.LightningModule):
             roi_size=input_size, sw_batch_size=batch_size, overlap=0,
         )
         self.threshold = threshold
+        self.dice_metric = DiceMetric(include_background=False, reduction="mean_batch")
 
     def training_step(self, batch, batch_idx):
         image, mask = batch
@@ -82,22 +110,29 @@ class RSNAModuleFinetune(lightning.LightningModule):
         image, mask = batch
 
         with torch.no_grad():
-            # raw logits
-            pred_mask = self.sliding_window_inferer(image, self.model)
-            loss = self.loss(pred_mask, mask)
+            pred_logits = self.sliding_window_inferer(image, self.model)
+            loss = self.loss(pred_logits, mask)
             self.log(f"{self.dataset_name}_val_loss", loss.item(), prog_bar=True)
 
-            # ensure target is (B,D,H,W)
-            if mask.dim() == 5 and mask.size(1) == 1:
-                target_idx = mask[:, 0].long()
-            else:
-                target_idx = mask.long()
+            # convert to predicted labels
+            pred_labels = torch.argmax(pred_logits, dim=1, keepdim=True)  # (B,1,D,H,W)
 
-            # compute recall using raw logits
-            recall, tp, fn = volumetric_recall(pred_mask, target_idx, already_classes=False)
-            self.log(f"{self.dataset_name}_val_volumetric_recall", recall.item(), prog_bar=True)
+            # one-hot encode target and prediction for metric
+            num_classes = pred_logits.shape[1]
+            target_oh = one_hot(mask, num_classes=num_classes)
+            pred_oh = one_hot(pred_labels, num_classes=num_classes)
 
+            # update dice metric
+            self.dice_metric(y_pred=pred_oh, y=target_oh)
         return loss
+
+    def on_validation_epoch_end(self):
+        # aggregate
+        dice_score = self.dice_metric.aggregate().mean().item()
+        self.log("val_dice", dice_score, prog_bar=True)
+
+        # reset for next epoch
+        self.dice_metric.reset()
 
     def configure_optimizers(self):
         optimizer = self.optimizer_factory(params=self.parameters())

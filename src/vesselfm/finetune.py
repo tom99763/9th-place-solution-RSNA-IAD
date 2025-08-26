@@ -43,8 +43,8 @@ def main(cfg):
 
     #load data
     df = pd.read_csv('../rsna_data/train.csv')
-    uids = os.listdir('../rsna_data/segmentations')
-    uids = [x.split('.nii')[0] for x in uids if not x.endswith("_cowseg.nii")]
+    uids = os.listdir('../rsna_data/seg_nii')
+    uids = [x.split('_seg.nii')[0] for x in uids]
     print(uids[0])
 
     df_seg = df[df.SeriesInstanceUID.isin(uids)].copy()
@@ -72,13 +72,13 @@ def main(cfg):
 
     # callbacks
     lr_monitor = LearningRateMonitor()
-    monitor_metric = "val_volumetric_recall"
+    monitor_metric = "val_dice"
     checkpoint_callback = ModelCheckpoint(
         dirpath=cfg.chkpt_folder + "/" + cfg.wandb_project + "/" + run_name,
         monitor=monitor_metric,
         save_top_k=1,
         mode="max",
-        filename = f"{run_name}-{{val_volumetric_recall:.4f}}",
+        filename = f"{run_name}-{{val_dice:.4f}}",
         #auto_insert_metric_name=True,
         save_last=True
     )
