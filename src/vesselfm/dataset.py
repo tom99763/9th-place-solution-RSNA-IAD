@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pydicom
 from collections import Counter
 import nibabel as nib
+from utils.io import determine_reader_writer
 sitk.ProcessObject.SetGlobalWarningDisplay(False)
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class RSNASegDataset(Dataset):
         # init datasets
         self.data_path = dataset_config.path
         self.uids = uids
+        # self.reader = determine_reader_writer(dataset_config.file_format)()
         self.transforms = generate_transforms(dataset_config.transforms[mode])
         self.mode = mode
 
@@ -85,8 +87,10 @@ class RSNASegDataset(Dataset):
     def __getitem__(self, idx: int):
         uid = self.uids[idx]
         #load volume
-        vol_path = f'{self.data_path}/series/{uid}'
-        vol = load_series2vol(vol_path).astype(np.float32)
+        vol_path = f'{self.data_path}/seg_nii/{uid}_seg.nii'
+        nii_image = nib.load(vol_path)
+        vol = nii_image.get_fdata()
+        vol = np.transpose(vol, (2, 1, 0))  # (D, H, W)
 
         #load mask
         mask_path = f'{self.data_path}/segmentations/{uid}_cowseg.nii'
@@ -95,11 +99,10 @@ class RSNASegDataset(Dataset):
         mask = np.transpose(mask, (2, 1, 0)) #(D, H, W)
         mask = np.flip(np.flip(mask, axis=1), axis=2)
 
-        #vol = vol.copy()
-        #mask = mask.copy()
         vol = torch.as_tensor(vol.copy()).contiguous()
         mask = torch.as_tensor(mask.copy()).contiguous()
 
+        #vol = vol.copy()
         #transforms
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':

@@ -5,7 +5,7 @@ defaults:
   - _self_
 
 num_shots: 0
-lr: 0.00001
+lr: 0.0005
 fold_idx: 0
 threshold: 0.1
 devices: [1]
@@ -18,7 +18,7 @@ dataloader:
 
 trainer:
   lightning_trainer:
-    val_check_interval: 20
+    val_check_interval: 100
     max_steps: 5000
     max_epochs: -1
 
