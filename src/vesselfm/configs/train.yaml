@@ -17,7 +17,7 @@ lr: 0.0005
 batch_size: 1
 eval_path: /path/to/eval_set_pretrain
 path_to_chkpt: null
-devices: [1]
+devices: [0]
 
 # logging
 run_name: 'fine-tune-vesselfm-13-classes-seg'
