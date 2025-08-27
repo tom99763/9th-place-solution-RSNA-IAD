@@ -126,6 +126,14 @@ def main(cfg):
     # model.load_state_dict(ckpt, strict=False)
     # model.output_block = nn.Conv3d(32, 14, kernel_size=1)
 
+    # ckpt = torch.load(
+    #     './finetune_ckpts/rsna-iad-13classes-seg/vesselfm_13_classes/vesselfm_13_classes-val_dice=0.5000.ckpt',
+    #     map_location=f'cuda:{cfg.devices[0]}',
+    #     weights_only=False
+    # )
+    # ckpt = {k.replace("model.", ""): v for k, v in ckpt['state_dict'].items()}
+    # model.load_state_dict(ckpt)
+
 
     # init lightning module
     lightning_module = hydra.utils.instantiate(

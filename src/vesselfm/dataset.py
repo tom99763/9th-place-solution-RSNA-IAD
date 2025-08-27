@@ -109,6 +109,32 @@ def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resampl
 #             return transformed
 #         return transformed['Image'], transformed['Mask']
 
+mapping = {
+        0: 0,
+        1: 1,
+        2: 2,
+        3: 3, 4: 3,
+        5: 4, 6: 4,
+        7: 5, 8: 5,
+        9: 6, 10: 6,
+        11: 7, 12: 7,
+        13: 8
+    }
+
+def remap_class(mask):
+    mask = mask.astype(np.int32)
+
+    # Mapping: 0→0, 1→1, 2→2, (3,4)→3, (5,6)→4, (7,8)→5, (9,10)→6, (11,12)→7, 13→8
+
+    # Create lookup table
+    lut = np.arange(max(mapping.keys()) + 1)
+    for k, v in mapping.items():
+        lut[k] = v
+
+    # Apply LUT
+    new_mask = lut[mask]
+    return new_mask
+
 class RSNASegDataset(Dataset):
     def __init__(self, uids, dataset_config, mode):
         super().__init__()
@@ -127,7 +153,7 @@ class RSNASegDataset(Dataset):
         vol_path = f'{self.data_path}/segmentations/{uid}.nii'
         mask_path = f'{self.data_path}/segmentations/{uid}_cowseg.nii'
         vol = self.reader.read_images(vol_path)[0].astype(np.float32)
-        mask = self.reader.read_images(mask_path)[0]
+        mask = remap_class(self.reader.read_images(mask_path)[0])
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':
             return transformed
