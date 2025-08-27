@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from monai.metrics import DiceMetric
 from monai.networks.utils import one_hot
 import torch.nn as nn
+from monai.metrics import DiceMetric, HausdorffDistanceMetric, MeanIoU
 
 logger = logging.getLogger(__name__)
 ce_fn = torch.nn.CrossEntropyLoss()
@@ -39,7 +40,7 @@ class ForegroundHitRate:
 # -----------------------------
 # Loss Function
 # -----------------------------
-def dice_loss(pred, target, num_classes=14, lambda_ce=0.1, lambda_dice=0.9,
+def dice_loss(pred, target, num_classes=9, lambda_ce=0.1, lambda_dice=0.9,
               bg_weight=0.05, smooth=1e-6):
     """
     pred: (B, C, D, H, W) - raw logits
@@ -121,7 +122,7 @@ class RSNAModuleFinetune(L.LightningModule):
         self.dice_metric = DiceMetric(include_background=False,
                                       reduction="mean",
                                       ignore_empty=True)
-        self.hit_metric = ForegroundHitRate(num_classes=14, include_background=False)
+        self.hit_metric = ForegroundHitRate(num_classes=9, include_background=False)
 
     def training_step(self, batch, batch_idx):
         image, mask = batch
@@ -138,8 +139,8 @@ class RSNAModuleFinetune(L.LightningModule):
 
             # One-hot encode
             pred_labels = torch.argmax(pred_logits, dim=1, keepdim=True)
-            pred_oh = one_hot(pred_labels, num_classes=14)
-            target_oh = one_hot(mask, num_classes=14)
+            pred_oh = one_hot(pred_labels, num_classes=9)
+            target_oh = one_hot(mask, num_classes=9)
 
             # Update metrics
             self.dice_metric(y_pred=pred_oh, y=target_oh)
@@ -153,6 +154,7 @@ class RSNAModuleFinetune(L.LightningModule):
         hit_score = self.hit_metric.aggregate()
         self.log("val_dice", dice_score, prog_bar=True)
         self.log("val_hit_rate", hit_score, prog_bar=True)
+
 
         self.dice_metric.reset()
         self.hit_metric.reset()

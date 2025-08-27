@@ -9,7 +9,7 @@ lr: 0.0005
 fold_idx: 0
 threshold: 0.1
 devices: [1]
-run_name: vesselfm_13_classes
+run_name: vesselfm_8_classes
 path_to_chkpt: /path/to/pretrained_ckpt
 chkpt_folder:  ./finetune_ckpts
 
