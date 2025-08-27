@@ -153,7 +153,7 @@ class RSNASegDataset(Dataset):
         vol_path = f'{self.data_path}/segmentations/{uid}.nii'
         mask_path = f'{self.data_path}/segmentations/{uid}_cowseg.nii'
         vol = self.reader.read_images(vol_path)[0].astype(np.float32)
-        mask = remap_class(self.reader.read_images(mask_path)[0])
+        mask = self.reader.read_images(mask_path)[0]
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':
             return transformed
