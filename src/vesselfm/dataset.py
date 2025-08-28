@@ -11,138 +11,90 @@ import pydicom
 from collections import Counter
 import nibabel as nib
 from utils.io import determine_reader_writer
+from monai.transforms import (
+    Compose,
+    EnsureChannelFirstd,
+    EnsureTyped,
+    Resized,
+    RandCropByLabelClassesd,
+    SpatialPadd,
+    ConcatItemsd,
+    ToTensord,
+    Lambdad,
+)
+from monai.transforms import MapTransform
+
+
 sitk.ProcessObject.SetGlobalWarningDisplay(False)
 logger = logging.getLogger(__name__)
 
-def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resample=False, default_thickness=1.0, max_workers=20):
-    reader = sitk.ImageSeriesReader()
+class ModalityIntensityScalingd(MapTransform):
+    """
+    Modality-agnostic normalization:
+      - Robust z-score within 2–98 percentiles
+      - Then rescale to [0, 1]
+    """
+    def __init__(self, keys=("Image",)):
+        super().__init__(keys)
 
-    # Get all series IDs
-    series_ids = reader.GetGDCMSeriesIDs(series_path)
-    if not series_ids:
-        raise RuntimeError(f"No DICOM series found in {series_path}")
+    def __call__(self, data):
+        d = dict(data)
+        img = d[self.keys[0]]
 
-    # Pick first if not specified
-    series_id = str(series_ids[0] if series_id is None else series_id)
+        # robust stats
+        p2, p98 = np.percentile(img, (2, 98))
+        mask = (img >= p2) & (img <= p98)
+        mean = np.mean(img[mask])
+        std = np.std(img[mask]) + 1e-6
 
-    # Get file names for the series
-    all_files = reader.GetGDCMSeriesFileNames(series_path, series_id)
+        img = (img - mean) / std
+        img = np.clip((img - img.min()) / (img.max() - img.min() + 1e-6), 0, 1)
 
-    # --- Parallel metadata read (fast size check) ---
-    def get_size(f):
-        ds = pydicom.dcmread(f, stop_before_pixels=True)
-        return (int(ds.Rows), int(ds.Columns)), f
-
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        sizes = list(ex.map(get_size, all_files))
-
-    # Pick the most common size
-    most_common_size = Counter(s[0] for s in sizes).most_common(1)[0][0]
-    files = [f for (sz, f) in sizes if sz == most_common_size]
-
-    # --- Now read the actual image series ---
-    reader.SetFileNames(files)
-    image = reader.Execute()
-
-    # --- Fix zero thickness ---
-    spacing = list(image.GetSpacing())
-    if spacing[2] == 0:
-        spacing[2] = default_thickness
-        image.SetSpacing(spacing)
-
-    # --- Optional resample ---
-    if resample and abs(spacing[2] - spacing[0]) > spacing_tolerance:
-        new_spacing = [spacing[0], spacing[1], spacing[0]]
-        new_size = [
-            int(round(image.GetSize()[0] * spacing[0] / new_spacing[0])),
-            int(round(image.GetSize()[1] * spacing[1] / new_spacing[1])),
-            int(round(image.GetSize()[2] * spacing[2] / new_spacing[2]))
-        ]
-        resampler = sitk.ResampleImageFilter()
-        resampler.SetOutputSpacing(new_spacing)
-        resampler.SetSize(new_size)
-        resampler.SetOutputDirection(image.GetDirection())
-        resampler.SetOutputOrigin(image.GetOrigin())
-        resampler.SetInterpolator(sitk.sitkLinear)
-        image = resampler.Execute(image)
-
-    # Convert to numpy array
-    volume = sitk.GetArrayFromImage(image)
-    return volume
+        d[self.keys[0]] = img.astype(np.float32)
+        return d
 
 
-# class RSNASegDataset(Dataset):
-#     def __init__(self, uids, dataset_config, mode):
-#         super().__init__()
-#         # init datasets
-#         self.data_path = dataset_config.path
-#         self.uids = uids
-#         # self.reader = determine_reader_writer(dataset_config.file_format)()
-#         self.transforms = generate_transforms(dataset_config.transforms[mode])
-#         self.mode = mode
-#
-#     def __len__(self):
-#         return len(self.uids)
-#
-#     def __getitem__(self, idx: int):
-#         uid = self.uids[idx]
-#         #load volume
-#         vol_path = f'{self.data_path}/seg_nii/{uid}_seg.nii'
-#         nii_image = nib.load(vol_path)
-#         vol = nii_image.get_fdata()
-#         vol = np.transpose(vol, (2, 1, 0))  # (D, H, W)
-#
-#         #load mask
-#         mask_path = f'{self.data_path}/segmentations/{uid}_cowseg.nii'
-#         nii_image = nib.load(mask_path)
-#         mask = nii_image.get_fdata()
-#         mask = np.transpose(mask, (2, 1, 0)) #(D, H, W)
-#         mask = np.flip(np.flip(mask, axis=1), axis=2)
-#
-#         vol = torch.as_tensor(vol.copy()).contiguous()
-#         mask = torch.as_tensor(mask.copy()).contiguous()
-#
-#         #vol = vol.copy()
-#         #transforms
-#         transformed = self.transforms({'Image': vol, 'Mask': mask})
-#         if self.mode == 'train':
-#             return transformed
-#         return transformed['Image'], transformed['Mask']
+def _generate_transforms(vol_size, input_size, mode):
+    if mode == "train":
+        return Compose([
+            EnsureChannelFirstd(keys=["Image", "Mask"], channel_dim="no_channel"),
+            EnsureTyped(keys=["Image", "Mask"]),
+            Resized(keys=["Image", "Mask"], spatial_size=vol_size, mode=["trilinear", "nearest"]),
+            RandCropByLabelClassesd(
+                keys=["Image", "Mask"],
+                label_key="Mask",
+                spatial_size=input_size,
+                num_classes=13,
+                ratios=[1] * 13,
+                num_samples=4,
+                image_key="Image",
+                allow_smaller=True,
+            ),
+            ModalityIntensityScalingd(keys=["Image"]),
+            SpatialPadd(keys=["Image", "Mask"], spatial_size=input_size, mode="constant", method="symmetric"),
+            ToTensord(keys=["Image", "Mask"]),
+        ])
+    else:  # val / test
+        return Compose([
+            EnsureChannelFirstd(keys=["Image", "Mask"], channel_dim="no_channel"),
+            EnsureTyped(keys=["Image", "Mask"]),
+            Resized(keys=["Image", "Mask"], spatial_size=vol_size, mode=["trilinear", "nearest"]),
+            ModalityIntensityScalingd(keys=["Image"]),
+            ToTensord(keys=["Image", "Mask"]),
+        ])
 
-mapping = {
-        0: 0,
-        1: 1,
-        2: 2,
-        3: 3, 4: 3,
-        5: 4, 6: 4,
-        7: 5, 8: 5,
-        9: 6, 10: 6,
-        11: 7, 12: 7,
-        13: 8
-    }
 
-def remap_class(mask):
-    mask = mask.astype(np.int32)
-
-    # Mapping: 0→0, 1→1, 2→2, (3,4)→3, (5,6)→4, (7,8)→5, (9,10)→6, (11,12)→7, 13→8
-
-    # Create lookup table
-    lut = np.arange(max(mapping.keys()) + 1)
-    for k, v in mapping.items():
-        lut[k] = v
-
-    # Apply LUT
-    new_mask = lut[mask]
-    return new_mask
 
 class RSNASegDataset(Dataset):
     def __init__(self, uids, dataset_config, mode):
         super().__init__()
         # init datasets
+        print(dataset_config)
         self.data_path = dataset_config.path
         self.uids = uids
         self.reader = determine_reader_writer(dataset_config.file_format)()
-        self.transforms = generate_transforms(dataset_config.transforms[mode])
+        self.transforms = _generate_transforms(
+            dataset_config['vol_size'], dataset_config['input_size'], mode) #generate_transforms(dataset_config.transforms[mode])
         self.mode = mode
 
     def __len__(self):

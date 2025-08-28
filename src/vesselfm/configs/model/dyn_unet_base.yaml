@@ -2,8 +2,32 @@ _target_: "monai.networks.nets.DynUNet"
 in_channels: 1
 out_channels: 14
 spatial_dims: 3
-strides: [[1, 1, 1], [2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2]]  # 5 levels
+strides: [[1, 1, 1], [2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2]]
 kernel_size: [[3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3]]
 upsample_kernel_size: [[2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2]]
 filters: [32, 64, 128, 256, 320]
 res_block: True
+
+
+#_target_: "monai.networks.nets.SwinUNETR"
+#
+#in_channels: 1
+#out_channels: 14
+#spatial_dims: 3
+#
+#feature_size: 24
+#patch_size: 2
+#depths: [2, 2, 2, 1]
+#num_heads: [2, 4, 8, 16]
+#window_size: 4
+#mlp_ratio: 4.0
+#qkv_bias: true
+#norm_name: "instance"
+#drop_rate: 0.1
+#attn_drop_rate: 0.1
+#dropout_path_rate: 0.1
+#normalize: true
+#patch_norm: false
+#use_checkpoint: false
+#downsample: "merging"
+#use_v2: true
