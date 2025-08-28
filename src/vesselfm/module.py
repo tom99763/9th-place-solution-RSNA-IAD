@@ -44,10 +44,15 @@ def dice_loss(pred, target, num_classes=14, lambda_ce=0.1, lambda_dice=0.9,
               bg_weight=0.05, smooth=1e-6):
     """
     pred: (B, C, D, H, W) - raw logits
-    target: (B, D, H, W) - long class indices [0..C-1]
+    target: (B, D, H, W) or (B, 1, D, H, W) - long class indices [0..C-1]
     """
+
     B, C, D, H, W = pred.shape
     target = target.long()
+
+    # Remove channel dim if present
+    if target.dim() == 5 and target.shape[1] == 1:
+        target = target[:, 0]
 
     # Compute class weights for CE
     with torch.no_grad():
@@ -80,7 +85,7 @@ def dice_loss(pred, target, num_classes=14, lambda_ce=0.1, lambda_dice=0.9,
     dice_loss_per_class = 1 - dice_score
 
     # Ignore background
-    dice_loss_val = dice_loss_per_class[:, 1:].mean()
+    dice_loss_val = dice_loss_per_class.mean()
 
     return lambda_ce * ce_loss + lambda_dice * dice_loss_val
 
