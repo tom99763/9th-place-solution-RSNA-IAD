@@ -89,13 +89,9 @@ class WindowedMIP(Dataset):
 
         sample = np.load(self.data_path / f"{uid}.npz")
 
-        vol,coords,loc_labels = sample["vol"],sample["coords"], sample["location_labels"]
-        mask = np.zeros_like(vol, dtype=np.uint8)
+        vol,_,loc_labels = sample["vol"],sample["coords"], sample["location_labels"]
 
         vol_depth,_,_ = vol.shape
-
-        for coord,label in zip(coords,loc_labels):
-            mask = self.create_hard_ball_mask(mask,coord,label)
 
         if modality == "CTA":
             z_stride = self.cfg.params.sliding_stride.cta
@@ -106,7 +102,6 @@ class WindowedMIP(Dataset):
 
 
         images = []
-        masks = []
 
         (patch_z,_,_) = spatial_size
 
@@ -117,29 +112,22 @@ class WindowedMIP(Dataset):
             slice_mip = vol[sidx:eidx].max(axis=0)
 
             images.append(np.stack([slice_mip,slice], axis=-1))
-            masks.append(mask[sidx:eidx].max(axis=0))
 
 
         for i in range(len(images)):
             image = images[i]
-            mask  = masks[i]
 
             if self.transform:
-                transformed = self.transform(image=image, mask=mask)
+                transformed = self.transform(image=image)
                 image = transformed["image"]
-                mask = transformed["mask"]
 
             images[i] = image
-            masks[i]  = mask
 
         images = torch.stack(images, dim=0)
-        masks  = torch.stack(masks, dim=0)
 
         labels = torch.zeros(self.num_classes)
-        labels[0] = 1
         labels[loc_labels] = 1
-
-        return uid, images, masks.long(), labels
+        return uid, images, labels
 
     def get_train_sample(self, idx):
 
@@ -164,7 +152,9 @@ class WindowedMIP(Dataset):
             spatial_size = np.array(self.cfg.params.spatial_size.mr)
 
         (patch_z,_,_) = spatial_size
-        patch, (center_z,_,_) = self.extract_patch({"image": np.expand_dims(vol, 0), "label": np.expand_dims(mask, 0), "spatial_size": spatial_size})
+        patch, (center_z,center_y,center_x) = self.extract_patch({"image": np.expand_dims(vol, 0), "label": np.expand_dims(mask, 0), "spatial_size": spatial_size})
+        center_label = mask[center_z,center_y, center_x]
+
 
         img_width,img_height = (self.cfg.params.img_width, self.cfg.params.img_height)
 
@@ -176,17 +166,14 @@ class WindowedMIP(Dataset):
         slice     = cv2.resize(vol[center_z], (img_width, img_height))
         slice_mip = cv2.resize(vol[center_z-patch_z//2:center_z+patch_z//2+1].max(axis=0), (img_width, img_height))
 
-        patch_mask  = cv2.resize(patch["label"][0].numpy().T, (img_width, img_height)).T
-        mask = patch_mask.max(axis=0)
-
         image = np.stack([patch_mip, patch_slice, slice_mip, slice],axis=-1)
 
         if self.transform:
-            transformed = self.transform(image=image, mask=mask)
+            transformed = self.transform(image=image)
             image = transformed["image"]
-            mask = transformed["mask"]
 
-        return image, mask.long()
+        ## Classification related stuff
+        return image, center_label
 
     def create_hard_ball_mask(self, mask, center, fill_value):
         volume_shape = mask.shape
@@ -213,11 +200,11 @@ class WindowedMIPDataModule(pl.LightningDataModule):
             A.RandomRotate90(p=0.5),
             A.Normalize(mean=(0,0,0,0), std=(1,1,1,1)),  # normalize only image
             ToTensorV2()
-        ], additional_targets={'mask': 'mask'})
+        ])
         self.val_transforms = A.Compose([
             A.Normalize(mean=(0,0,0,0), std=(1,1,1,1)),  # normalize only image
             ToTensorV2()
-        ], additional_targets={'mask': 'mask'})
+        ])
 
     def setup(self, stage: str = None):
 
@@ -229,7 +216,7 @@ class WindowedMIPDataModule(pl.LightningDataModule):
         print(f"train_uids: {len(train_uids)}, val_uids: {len(val_uids)}")
 
         self.train_dataset = WindowedMIP(uids=list(train_uids), cfg=self.cfg, transform=self.train_transforms)
-        self.val_dataset = WindowedMIP(uids=list(val_uids), cfg=self.cfg, transform=self.val_transforms, mode="val")
+        self.val_dataset = WindowedMIP(uids=list(train_uids[:400]), cfg=self.cfg, transform=self.val_transforms, mode="val")
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.cfg.params.batch_size, shuffle=True, num_workers=self.cfg.params.num_workers, pin_memory=False)

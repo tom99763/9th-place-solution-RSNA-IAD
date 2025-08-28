@@ -2,6 +2,7 @@ import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 
 
 class MultiBackboneModel(nn.Module):
@@ -60,17 +61,6 @@ class MultiBackboneModel(nn.Module):
             nn.Dropout(drop_rate),
             nn.Linear(256, num_classes)
         )
-        self.aneurysm_classifier = nn.Sequential(
-            nn.Linear(num_features, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(drop_rate),
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(drop_rate),
-            nn.Linear(128, 1)
-        )
 
     def forward(self, image):
         # Extract image features
@@ -93,6 +83,5 @@ class MultiBackboneModel(nn.Module):
 
         # Classification
         loc_output = self.loc_classifier(img_features)
-        cls_logit = self.aneurysm_classifier(img_features)
 
-        return cls_logit, loc_output
+        return loc_output

@@ -1,0 +1,10 @@
+data_path: ./data
+
+cta: 
+  window_width: 600
+  window_level: 300
+
+volume:
+  depth: 256
+  height: 512
+  width: 512

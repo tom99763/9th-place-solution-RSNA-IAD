@@ -3,12 +3,30 @@
 project_name: "rsna-intracranial-aneurysm-detection"
 experiment: windowed_mip
 seed: 42
+fold_id: 0
+
+params:
+  data_path: ./data/processed
+  num_classes: 14
+  sliding_stride:
+    cta: 8
+    mr: 16
+  spatial_size:
+    cta: [4,128,128]
+    mr: [32,128,128]
+  img_height: 256
+  img_width: 256
+  radius: 5
+  validation:
+    output_img: [1,14,512,512]
+    patch_size: [128,128]
+  batch_size: 12
+  num_workers: 16
 
 # The 'defaults' list tells Hydra which configs to load by default.
 # It will look for 'lightgbm.yaml' inside the 'model' sub-directory.
 defaults:
   - preprocess: segmentation
-  # - model: Net_25D
-  # - optimizer: AdamW
-  # - trainer: default
-  # - _self_
+  - optimizer: AdamW
+  - trainer: default
+  - _self_
