@@ -24,3 +24,6 @@ pycache/
 *.pyc
 *.pyo
 CLAUDE.md
+ultralytics-timm/
+yolo_aneurysm_locations/
+*.pt
