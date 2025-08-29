@@ -13,14 +13,14 @@ experiment: mip_baselines
 data_mode: mip_v3
 
 # Balanced sampling (optional at series-level)
-use_balanced_sampling: false
-pos_ratio: 0.9
+use_balanced_sampling: true
+pos_ratio: 0.5
 
 use_wandb: true
-
+val_stride_slice: 8
 wandb:
   entity: null
-  tags: ["new dataset-quartile", "8 channel", "uint8", "fold_${fold_id}"]
+  tags: ["new dataset-quartile", "8 window", "uint8", "fold_${fold_id}"]
   notes: "Axial MIP per series"
   offline: false  # set true to run W&B in offline mode (can sync later)
 

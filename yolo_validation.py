@@ -15,7 +15,6 @@ Notes:
     - Requires ultralytics (YOLOv8/11). Single-class model assumed.
     - Use --mip-window > 0 to validate on sliding-window MIPs instead of raw slices.
 """
-from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
@@ -145,7 +144,7 @@ def main():
 
     print(f"Validation fold {args.val_fold}: {len(val_series)} series")
     print(f"Processing every {args.slice_step} slice(s)")
-    model_path = "/home/sersasj/RSNA-IAD-Codebase/runs/yolo_aneurysm/baseline_one_slice3/weights/best.pt"
+    model_path = "/home/sersasj/RSNA-IAD-Codebase/runs/yolo_aneurysm/baseline_slice_24bbox2/weights/best.pt"
     model = YOLO(model_path)
 
     series_probs: Dict[str, float] = {}
@@ -460,3 +459,7 @@ import time
 if __name__ == '__main__':
     main()
 
+# yolo11n.pt 48 bbox fold1
+#Classification AUC (aneurysm present): 0.6960
+#Location macro AUC: 0.7659
+#Combined (mean) metric: 0.7309

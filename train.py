@@ -2,10 +2,11 @@ import torch
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from src.rsna_datasets.datasets import *
 from src.rsna_datasets.mip_dataset import MipDataModule
 from src.rsna_datasets.mip_dataset_v2 import MipDataModuleV2
+from src.rsna_datasets.mip_fraction_dataset_v3 import MipFractionDatasetV3
 from src.rsna_datasets.volume3d_dataset import Volume3DDataModule
+from src.rsna_datasets.slice_datasets import SliceDataModule
 from src.trainers.effnet_trainer import *
 from hydra.utils import instantiate
 
@@ -31,9 +32,10 @@ def train(cfg: DictConfig) -> None:
     elif data_mode == 'mip_v2':
         datamodule = MipDataModuleV2(cfg)
     elif data_mode == 'mip_v3':
-        from src.rsna_datasets.mip_dataset_v3 import MipDataModuleV3
-        datamodule = MipDataModuleV3(cfg)
-
+        from src.rsna_datasets.mip_fraction_dataset_v3 import MipFractionDataModuleV3
+        datamodule = MipFractionDataModuleV3(cfg)
+    elif data_mode == 'slices':
+        datamodule = SliceDataModule(cfg)
 
     print(cfg.model)
     model = instantiate(cfg.model)

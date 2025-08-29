@@ -10,7 +10,7 @@ batch_size: 4  # training batch size
 val_batch_size: 4  # validation batch size
 num_workers: 2  
 experiment: slice_based
-image_mode: "2.5D"  # Options: "2D" or "2.5D"
+image_mode: "2D"  # Options: "2D" or "2.5D"
 
 # 2.5D specific configuration (only used when image_mode = "2.5D")
 # Use   window size. Example: 8 = center + 7 adjacent slices
@@ -28,8 +28,8 @@ use_wandb: true
 # WandB settings
 wandb:
   entity: null
-  tags: ["baselines", "slice_based", "fold_${fold_id}"]
-  notes: "baselines 2.5D slices pos_ratio=0.5 window_size=8"
+  tags: ["baselinesv2", "slice_based", "fold_${fold_id}"]
+  notes: "baselinesv2"
 
 # The 'defaults' list tells Hydra which configs to load by default.
 defaults:

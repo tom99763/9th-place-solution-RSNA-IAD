@@ -1,4 +1,3 @@
-from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
@@ -16,32 +15,34 @@ from ultralytics import YOLO
 def parse_args():
     ap = argparse.ArgumentParser(description='Train YOLO aneurysm detector')
     ap.add_argument('--data', type=str, default='configs/yolo_aneurysm_locations.yaml', help='Dataset YAML path')
-    ap.add_argument('--model', type=str, default='yolo11n.pt', help='Pretrained checkpoint or model config')
+    ap.add_argument('--model', type=str, default='yolo11s.pt', help='Pretrained checkpoint or model config')
     ap.add_argument('--epochs', type=int, default=100)
     ap.add_argument('--img', type=int, default=512, help='Image size (will auto-resize)')
     ap.add_argument('--batch', type=int, default=16)
     ap.add_argument('--device', type=str, default='')
     ap.add_argument('--project', type=str, default='runs/yolo_aneurysm_locations')
-    ap.add_argument('--name', type=str, default='raw_images_size_512_efficient_net')
+    ap.add_argument('--name', type=str, default='exp_yolo11s')
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--freeze', type=int, default=0, help='Number of layers to freeze (backbone)')
     ap.add_argument('--patience', type=int, default=100, help='Early stopping patience')
     ap.add_argument('--exist-ok', action='store_true')
     ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--skip-train', action='store_true', help='Skip training and only run val on existing best.pt under project/name')
+    ap.add_argument('--fold', type=int, default=0, help='Fold to validate after training')
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
-    # sleep for 30 min
-    time.sleep(60*60)
-    #models = ["/home/sersasj/RSNA-IAD-Codebase/ultralytics-timm/ultralytics/cfg/models/11/yolo11-timm/yolo-11-efficientnet-v2-m.yaml", "yolo11n.pt", "/home/sersasj/RSNA-IAD-Codebase/ultralytics-timm/ultralytics/cfg/models/11/yolo11-timm/yolo-11-convx_tiny_head_l.yaml", "/home/sersasj/RSNA-IAD-Codebase/ultralytics-timm/ultralytics/cfg/models/11/yolo11-timm/yolo-11-convx-tiny-single-scale-config2.yaml"]
-    models = ["/home/sersasj/RSNA-IAD-Codebase/ultralytics-timm/ultralytics/cfg/models/11/yolo11-timm/yolo-11-resnet18.yaml"]
-    experiment_names = ["baseline_resnet_18_24bbox"]
-    for m, name in zip(models, experiment_names):
-        model = YOLO(m)  # Load model from checkpoint or config
+    exp_name = args.name
+    model = YOLO(args.model)  # Load model from checkpoint or config
 
-
+    if args.skip_train:
+        save_dir = Path(args.project) / exp_name
+        weights_path = save_dir / 'weights' / 'best.pt'
+        if not weights_path.exists():
+            raise SystemExit(f"--skip-train set but weights not found at {weights_path}")
+    else:
         results = model.train(
             data=args.data,
             epochs=args.epochs,
@@ -49,7 +50,7 @@ def main():
             batch=args.batch,
             device=args.device if args.device else None,
             project=args.project,
-            name=name,
+            name=exp_name,
             workers=args.workers,
             freeze=args.freeze,
             patience=args.patience,
@@ -57,16 +58,16 @@ def main():
             seed=args.seed,
             verbose=True,
             deterministic=True,
-            mosaic=0,
-            mixup=0,
         )
         print(results)
+        save_dir = Path(results.save_dir)
+        weights_path = save_dir / 'weights' / 'best.pt'
 
-        # Validate explicitly (optional) - uses best.pt
-        print("Running validation on best.pt ...")
-        model = YOLO(Path(results.save_dir) / 'weights' / 'best.pt')
-        val_metrics = model.val(data=args.data, imgsz=args.img, split='val')
-        print(val_metrics)
+    # Quick built-in val (dataset val split)
+    print("Running Ultralytics val on best.pt ...")
+    model = YOLO(str(weights_path))
+    val_metrics = model.val(data=args.data, imgsz=args.img, split='val')
+    print(val_metrics)
 
 if __name__ == '__main__':
     main()

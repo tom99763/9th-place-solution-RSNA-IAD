@@ -11,7 +11,6 @@ Notes:
   - Requires ultralytics, numpy, pandas, pydicom, opencv-python, matplotlib.
   - Defaults to the same weights path used in yolo_validation.py; override with --weights.
 """
-from __future__ import annotations
 
 import argparse
 import random

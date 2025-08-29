@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import argparse
 import ast
@@ -83,14 +82,15 @@ def ensure_yolo_dirs(base: Path):
 def parse_args():
     ap = argparse.ArgumentParser(description="Prepare MIP-based YOLO aneurysm dataset")
     ap.add_argument("--seed", type=int, default=SEED, help="Random seed")
-    ap.add_argument("--val-fold", type=int, default=0, help="Fold id used for validation")
+    ap.add_argument("--val-fold", type=int, default=0, help="Fold id used for validation (ignored if --generate-all-folds)")
+    ap.add_argument("--generate-all-folds", action="store_true", help="Generate one dataset per fold and write per-fold YAMLs")
     ap.add_argument("--box-size", type=int, default=24, help="Square box size in pixels around the point")
     ap.add_argument("--image-ext", type=str, default="png", choices=["png", "jpg", "jpeg"], help="Output image extension")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     ap.add_argument("--verbose", action="store_true")
     # MIP options
     ap.add_argument("--mip-img-size", type=int, default=512, help="Final square size (0 = keep original MIP size)")
-    ap.add_argument("--mip-out-name", type=str, default="yolo_dataset", help="Subdirectory under data/ for outputs")
+    ap.add_argument("--mip-out-name", type=str, default="yolo_dataset", help="Base subdirectory under data/ for outputs; when --generate-all-folds, becomes {base}_fold{fold}")
     ap.add_argument(
         "--mip-pos-window",
         type=str,
@@ -100,6 +100,9 @@ def parse_args():
                 "0 uses the exact positive slice without MIP; 'none' saves ALL slices individually (no MIP)."
             ),
     )
+    # YAML outputs
+    ap.add_argument("--yaml-out-dir", type=str, default=str(ROOT / "configs"), help="Directory to write per-fold YOLO YAMLs")
+    ap.add_argument("--yaml-name-template", type=str, default="yolo_fold{fold}.yaml", help="YAML filename template with {fold}")
     return ap.parse_args()
 
 
@@ -155,10 +158,10 @@ def load_series_slices_selected(paths: List[Path], selected_indices: List[int] |
     return slices
 
 
-def main():
-    args = parse_args()
+def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
+    """Generate dataset for a single fold and return (out_base, fold_map)."""
     global rng
-    rng = random.Random(args.seed)
+    root = Path(data_path)
     # Interpret mip-pos-window: 'none' -> None, otherwise int
     raw_win = args.mip_pos_window if isinstance(args.mip_pos_window, str) else str(args.mip_pos_window)
     win: int | None
@@ -170,8 +173,9 @@ def main():
         except Exception:
             win = 0
 
-    root = Path(data_path)
-    out_base = root / args.mip_out_name
+    # Resolve output base for this fold
+    out_dir_name = args.mip_out_name if not hasattr(args, 'generate_all_folds') or not args.generate_all_folds else f"{args.mip_out_name}_fold{val_fold}"
+    out_base = root / out_dir_name
     ensure_yolo_dirs(out_base)
 
     # Ignore known problematic and multi-frame series
@@ -225,14 +229,14 @@ def main():
     total_series = 0
     total_pos = 0
     total_neg = 0
-    print(f"Processing {len(all_series)} series for MIP YOLO dataset...")
+    print(f"Processing {len(all_series)} series for MIP YOLO dataset (val fold = {val_fold})...")
 
     for uid in all_series:
         if uid in ignore_uids:
             if args.verbose:
                 print(f"[SKIP] ignored series {uid}")
             continue
-        split = "val" if folds.get(uid, 0) == args.val_fold else "train"
+        split = "val" if folds.get(uid, 0) == val_fold else "train"
         series_dir = root / "series" / uid
         if not series_dir.exists():
             if args.verbose:
@@ -447,11 +451,71 @@ def main():
 
     print(f"Series processed: {total_series}  (positive label files: {total_pos}, negative: {total_neg})")
     print(f"MIP YOLO dataset root: {out_base}")
+    stats = {}
     for split in ["train", "val"]:
         n_imgs = len(list((out_base / "images" / split).glob("*")))
         n_lbls = len(list((out_base / "labels" / split).glob("*.txt")))
         print(f"{split}: images={n_imgs} labels={n_lbls}")
+        stats[split] = {"images": n_imgs, "labels": n_lbls}
+    return out_base, folds
+
+
+def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path):
+    yaml_dir.mkdir(parents=True, exist_ok=True)
+    # Invert LABELS_TO_IDX to ensure correct index order
+    idx_to_label = {idx: name for name, idx in LABELS_TO_IDX.items()}
+    max_idx = max(idx_to_label.keys()) if idx_to_label else -1
+    names_lines = []
+    for i in range(max_idx + 1):
+        label = idx_to_label.get(i, f"class_{i}")
+        names_lines.append(f"  {i}: {label}")
+    yaml_text = "\n".join(
+        [
+            f"path: {dataset_root}",
+            "train: images/train",
+            "val: images/val",
+            "",
+            "names:",
+            *names_lines,
+            "",
+        ]
+    )
+    with open(yaml_dir / yaml_name, "w") as f:
+        f.write("# Auto-generated by prepare_yolo_dataset_v2.py\n")
+        f.write(yaml_text)
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    rng = random.Random(args.seed)
+    if args.generate_all_folds:
+        # Generate per-fold datasets and YAMLs
+        for f in range(N_FOLDS):
+            out_base, _ = generate_for_fold(f, args)
+            yaml_dir = Path(args.yaml_out_dir)
+            yaml_name = args.yaml_name_template.format(fold=f)
+            write_yolo_yaml(yaml_dir, yaml_name, out_base)
+        print(f"Generated datasets and YAMLs for folds 0..{N_FOLDS-1}.")
+        print(f"YAMLs written under: {args.yaml_out_dir}")
+    else:
+        out_base, _ = generate_for_fold(args.val_fold, args)
+        print("Done. To train, point Ultralytics to a YAML like:")
+        print(f"  path: {out_base}")
+        print("  train: images/train\n  val: images/val")
+
+
+#python3 -m src.prepare_yolo_dataset_v2 \
+#  --generate-all-folds \
+#  --mip-out-name yolo_dataset \
+#  --mip-img-size 512 \
+#  --mip-pos-window 0 \
+#  --yaml-out-dir configs \
+#  --yaml-name-template yolo_fold{fold}.yaml \
+#  --overwrite
+
+#python -m src.prepare_yolo_dataset_v2 \
+#  --val-fold 0 \
+#  --mip-out-name yolo_dataset \
+#  --mip-img-size 512 \
+#  --mip-pos-window 0 \
+#  --overwrite

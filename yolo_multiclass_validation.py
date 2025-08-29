@@ -16,20 +16,19 @@ Notes:
     - Requires ultralytics (YOLOv8/11) and 13-class weights.
     - Use --mip-window > 0 for sliding-window MIPs; 0 for per-slice.
 """
-from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
 import math
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import pydicom
 import cv2
-from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
+from sklearn.metrics import roc_auc_score, average_precision_score
 from tqdm import tqdm
-
+import time
 sys.path.insert(0, "ultralytics-timm")
 from ultralytics import YOLO
 
@@ -44,11 +43,12 @@ N_LOC = len(LOCATION_LABELS)
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Series-level validation for YOLO (13-class)")
-    #ap.add_argument('--weights', type=str, required=True, help='Path to YOLO weights (.pt) with 13 classes')
+    ap.add_argument('--weights', type=str, required=False, default='', help='Path to YOLO weights (.pt) with 13 classes')
     ap.add_argument('--val-fold', type=int, default=0, help='Fold id to evaluate (matches train.csv fold_id)')
     ap.add_argument('--series-limit', type=int, default=0, help='Optional limit on number of validation series (debug)')
     ap.add_argument('--max-slices', type=int, default=0, help='Optional cap on number of slices/windows per series (debug)')
-    ap.add_argument('--save-csv', type=str, default='', help='Optional path to save per-series predictions CSV')
+    ap.add_argument('--save-csv', type=str, default='', help='Optional path to save per-series predictions CSV (deprecated, prefer --out-dir)')
+    ap.add_argument('--out-dir', type=str, default='', help='If set, writes metrics JSON/CSV into this directory')
     ap.add_argument('--batch-size', type=int, default=16, help='Batch size for inference (higher = faster, more VRAM)')
     ap.add_argument('--verbose', action='store_true')
     ap.add_argument('--slice-step', type=int, default=1, help='Process every Nth slice (default=1)')
@@ -56,6 +56,18 @@ def parse_args():
     ap.add_argument('--mip-window', type=int, default=0, help='Half-window (in slices) for MIP; 0 = per-slice mode')
     ap.add_argument('--mip-img-size', type=int, default=0, help='Optional resize of MIP/slice to this square size before inference (0 keeps original)')
     ap.add_argument('--mip-no-overlap', action='store_true', help='Use non-overlapping MIP windows (stride = 2*w+1 instead of slice_step)')
+    # CV
+    ap.add_argument('--cv', action='store_true', help='Run validation across all folds found in train_df.csv/train.csv')
+    ap.add_argument('--folds', type=str, default='', help='Comma-separated fold ids to run (overrides --val-fold when provided)')
+    # Weights & Biases
+    ap.add_argument('--wandb', default=True, action='store_true', help='Log metrics and outputs to Weights & Biases')
+    ap.add_argument('--wandb-project', type=str, default='yolo_aneurysm_locations', help='W&B project name (no slashes)')
+    ap.add_argument('--wandb-entity', type=str, default='', help='W&B entity (team/user)')
+    ap.add_argument('--wandb-run-name', type=str, default='', help='W&B run name (defaults to val_fold{fold})')
+    ap.add_argument('--wandb-group', type=str, default='', help='Optional W&B group')
+    ap.add_argument('--wandb-tags', type=str, default='', help='Comma-separated W&B tags')
+    ap.add_argument('--wandb-mode', type=str, default='online', choices=['online', 'offline'], help='W&B mode (online/offline)')
+    ap.add_argument('--wandb-resume-id', type=str, default='', help='Resume W&B run id (optional)')
     return ap.parse_args()
 
 
@@ -95,28 +107,27 @@ def collect_series_slices(series_dir: Path) -> List[Path]:
     return sorted(series_dir.glob('*.dcm'))
 
 
-def main():
-    args = parse_args()
+def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_id: int) -> Tuple[Dict[str, float], pd.DataFrame]:
+    """Runs validation for a single fold and returns (metrics_dict, per_series_df)."""
+    # Load split
     data_root = Path(data_path)
     series_root = data_root / 'series'
     train_df = pd.read_csv(data_root / 'train_df.csv') if (data_root / 'train_df.csv').exists() else pd.read_csv(data_root / 'train.csv')
     if 'Aneurysm Present' not in train_df.columns:
         raise SystemExit("train_df.csv requires 'Aneurysm Present' column for classification label")
 
-    val_series = train_df[train_df['fold_id'] == args.val_fold]['SeriesInstanceUID'].unique().tolist()
+    val_series = train_df[train_df['fold_id'] == fold_id]['SeriesInstanceUID'].unique().tolist()
     if args.series_limit:
         val_series = val_series[:args.series_limit]
 
-    print(f"Validation fold {args.val_fold}: {len(val_series)} series")
+    print(f"Validation fold {fold_id}: {len(val_series)} series")
     print(f"Processing every {args.slice_step} slice(s); MIP half-window={args.mip_window}")
-    model = YOLO("/home/sersasj/RSNA-IAD-Codebase/runs/yolo_aneurysm_locations/baseline_slice_24bbox2/weights/best.pt")
+    model = YOLO(weights_path)
 
     series_probs: Dict[str, float] = {}
     cls_labels: List[int] = []
     loc_labels: List[np.ndarray] = []
     series_pred_loc_probs: List[np.ndarray] = []
-
-    # Optional summaries
     series_pred_counts: Dict[str, int] = {}
 
     for sid in tqdm(val_series, desc="Validating series", unit="series"):
@@ -176,7 +187,7 @@ def main():
             # Build HU slices and slide MIP
             slices_hu: list[np.ndarray] = []
             shapes_count: Dict[tuple[int, int], int] = {}
-            for dcm_path in dicoms:  # tqdm(dicoms, desc=f"{sid} slices", leave=False, unit="slice"):
+            for dcm_path in dicoms:
                 try:
                     frames = read_dicom_frames_hu(dcm_path)
                 except Exception as e:
@@ -238,7 +249,7 @@ def main():
             flush_batch(batch)
         else:
             # Per-slice inference
-            for dcm_path in dicoms:  # tqdm(dicoms, desc=f"{sid} slices", leave=False, unit="slice"):
+            for dcm_path in dicoms:
                 try:
                     frames = read_dicom_frames_hu(dcm_path)
                 except Exception as e:
@@ -260,7 +271,8 @@ def main():
         series_probs[sid] = max_conf_all
         series_pred_loc_probs.append(per_class_max.copy())
         series_pred_counts[sid] = total_dets
-        print(f"Series {sid} max_conf_any={max_conf_all:.4f} dets={total_dets} (processed {len(dicoms)} slices)")
+        if args.verbose:
+            print(f"Series {sid} max_conf_any={max_conf_all:.4f} dets={total_dets} (processed {len(dicoms)} slices)")
 
         # Labels and metadata for this series
         row = train_df[train_df['SeriesInstanceUID'] == sid].iloc[0]
@@ -278,12 +290,25 @@ def main():
 
     if not series_probs:
         print("No series processed.")
-        return
+        # Return empty metrics and df
+        return {
+            'cls_auc': float('nan'),
+            'cls_ap': float('nan'),
+            'loc_macro_auc': float('nan'),
+            'combined_mean': float('nan'),
+            'mean_num_detections': 0.0,
+            'per_loc_aucs': {name: float('nan') for name in LOCATION_LABELS},
+            'fold_id': fold_id,
+        }, pd.DataFrame()
 
     # Metrics
     y_true = np.array(cls_labels)
     y_scores = np.array([series_probs[sid] for sid in series_probs.keys()])
     cls_auc = roc_auc_score(y_true, y_scores)
+    try:
+        cls_ap = average_precision_score(y_true, y_scores)
+    except Exception:
+        cls_ap = float('nan')
 
     loc_labels_arr = np.stack(loc_labels)
     loc_pred_arr = np.stack(series_pred_loc_probs)
@@ -296,23 +321,199 @@ def main():
         per_loc_aucs.append(auc_i)
     loc_macro_auc = np.nanmean(per_loc_aucs)
 
+    combined_mean = (cls_auc + (loc_macro_auc if not math.isnan(loc_macro_auc) else 0)) / 2
     print(f"Classification AUC (aneurysm present): {cls_auc:.4f}")
+    print(f"Classification AP (PR AUC): {cls_ap:.4f}")
     print(f"Location macro AUC: {loc_macro_auc:.4f}")
-    print(f"Combined (mean) metric: {(cls_auc + (loc_macro_auc if not math.isnan(loc_macro_auc) else 0))/2:.4f}")
+    print(f"Combined (mean) metric: {combined_mean:.4f}")
 
-    if args.save_csv:
-        out_rows = []
-        for idx, sid in enumerate(series_probs.keys()):
-            row = {
-                'SeriesInstanceUID': sid,
-                'aneurysm_prob': series_probs[sid],
-            }
-            probs = series_pred_loc_probs[idx]
-            for i, name in enumerate(LOCATION_LABELS):
-                row[f'loc_prob_{i}'] = float(probs[i])
-            out_rows.append(row)
-        pd.DataFrame(out_rows).to_csv(args.save_csv, index=False)
-        print(f"Saved per-series predictions to {args.save_csv}")
+    # Build per-series dataframe
+    out_rows = []
+    keys = list(series_probs.keys())
+    for idx, sid in enumerate(keys):
+        row_df = train_df[train_df['SeriesInstanceUID'] == sid]
+        label = int(row_df['Aneurysm Present'].iloc[0]) if not row_df.empty else 0
+        row = {
+            'SeriesInstanceUID': sid,
+            'aneurysm_prob': float(series_probs[sid]),
+            'label_aneurysm': label,
+            'num_detections': int(series_pred_counts.get(sid, 0)),
+        }
+        probs = series_pred_loc_probs[idx]
+        for i, name in enumerate(LOCATION_LABELS):
+            row[f'loc_prob_{i}'] = float(probs[i])
+            # add label if present
+            if name in row_df.columns:
+                try:
+                    row[f'loc_label_{i}'] = float(row_df[name].iloc[0])
+                except Exception:
+                    row[f'loc_label_{i}'] = 0.0
+        out_rows.append(row)
+    per_series_df = pd.DataFrame(out_rows)
+
+    metrics = {
+        'fold_id': fold_id,
+        'cls_auc': float(cls_auc),
+        'cls_ap': float(cls_ap) if not (isinstance(cls_ap, float) and math.isnan(cls_ap)) else float('nan'),
+        'loc_macro_auc': float(loc_macro_auc) if not math.isnan(loc_macro_auc) else float('nan'),
+        'combined_mean': float(combined_mean) if not math.isnan(combined_mean) else float('nan'),
+        'mean_num_detections': float(np.mean(list(series_pred_counts.values())) if series_pred_counts else 0.0),
+        'per_loc_aucs': {LOCATION_LABELS[i]: (float(per_loc_aucs[i]) if not math.isnan(per_loc_aucs[i]) else float('nan')) for i in range(N_LOC)},
+        'num_series': int(len(keys)),
+    }
+    return metrics, per_series_df
+
+
+def _maybe_init_wandb(args: argparse.Namespace, fold_id: int, weights_path: str):
+    if not getattr(args, 'wandb', False):
+        return None
+    try:
+        import wandb  # type: ignore
+    except Exception as e:
+        print(f"W&B not available: {e}. Install with 'pip install wandb' or disable --wandb.")
+        return None
+    if wandb.run is not None:
+        return wandb
+    run_name = args.wandb_run_name or f"val_fold{fold_id}"
+    tags = [t.strip() for t in (args.wandb_tags.split(',') if args.wandb_tags else []) if t.strip()]
+    # Basic config for traceability
+    config = {
+        'weights_path': weights_path,
+        'val_fold': fold_id,
+        'slice_step': args.slice_step,
+        'mip_window': args.mip_window,
+        'mip_img_size': args.mip_img_size,
+        'mip_no_overlap': args.mip_no_overlap,
+        'batch_size': args.batch_size,
+        'series_limit': args.series_limit,
+        'max_slices': args.max_slices,
+    }
+    project = (args.wandb_project or 'rsna_iad').replace('/', '_')
+    wandb.init(
+        project=project,
+        entity=args.wandb_entity or None,
+        name=run_name,
+        group=args.wandb_group or None,
+        tags=tags or None,
+        mode=args.wandb_mode or 'online',
+        id=args.wandb_resume_id or None,
+        resume='allow' if args.wandb_resume_id else None,
+        config=config,
+    )
+    return wandb
+
+
+def main():
+    args = parse_args()
+    # Resolve weights path
+    weights = args.weights.strip()
+    if not weights:
+        # Try to infer a latest best.pt under runs dir if present
+        default = ROOT / 'runs'
+        raise SystemExit('Please provide --weights path to YOLO .pt file')
+
+    # Prepare out dir
+    out_dir: Optional[Path] = None
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine folds to run
+    folds: List[int]
+    if args.cv or args.folds:
+        data_root = Path(data_path)
+        train_df = pd.read_csv(data_root / 'train_df.csv') if (data_root / 'train_df.csv').exists() else pd.read_csv(data_root / 'train.csv')
+        if args.folds:
+            folds = [int(x) for x in args.folds.split(',') if x.strip() != '']
+        else:
+            folds = sorted(int(x) for x in pd.unique(train_df['fold_id']))
+    else:
+        folds = [int(args.val_fold)]
+
+    all_fold_metrics: List[Dict[str, float]] = []
+    for f in folds:
+        fold_out_dir = out_dir / f'fold_{f}' if out_dir else None
+        if fold_out_dir:
+            fold_out_dir.mkdir(parents=True, exist_ok=True)
+        # Init W&B per-fold (separate runs per fold to mirror training)
+        wandb = _maybe_init_wandb(args, f, weights)
+        metrics, per_series_df = _run_validation_for_fold(args, weights, f)
+        all_fold_metrics.append(metrics)
+        # Save fold artifacts
+        if fold_out_dir:
+            # Per-series CSV
+            per_series_csv = fold_out_dir / 'per_series_predictions.csv'
+            per_series_df.to_csv(per_series_csv, index=False)
+            # Metrics JSON and per-class CSV
+            import json
+            with open(fold_out_dir / 'metrics.json', 'w') as fjs:
+                json.dump(metrics, fjs, indent=2)
+            per_loc_items = list(metrics['per_loc_aucs'].items()) if isinstance(metrics.get('per_loc_aucs'), dict) else []
+            if per_loc_items:
+                pd.DataFrame(per_loc_items, columns=['location', 'auc']).to_csv(fold_out_dir / 'per_location_auc.csv', index=False)
+
+        # W&B logging of metrics and tables
+        if wandb is not None:
+            try:
+                # Scalars
+                scalars = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+                wandb.log(scalars)
+                # Per-location AUCs as a table
+                if isinstance(metrics.get('per_loc_aucs'), dict) and metrics['per_loc_aucs']:
+                    loc_df = pd.DataFrame(list(metrics['per_loc_aucs'].items()), columns=['location', 'auc'])
+                    wandb.log({'per_location_auc_table': wandb.Table(dataframe=loc_df)})
+                # Upload per-series predictions as a table and as artifact
+                if not per_series_df.empty:
+                    wandb.log({'per_series_predictions': wandb.Table(dataframe=per_series_df)})
+                # Also store as artifact files if available
+                if fold_out_dir:
+                    art = wandb.Artifact(name=f"val_fold{f}_artifacts", type='validation')
+                    if (fold_out_dir / 'metrics.json').exists():
+                        art.add_file(str(fold_out_dir / 'metrics.json'))
+                    if (fold_out_dir / 'per_series_predictions.csv').exists():
+                        art.add_file(str(fold_out_dir / 'per_series_predictions.csv'))
+                    if (fold_out_dir / 'per_location_auc.csv').exists():
+                        art.add_file(str(fold_out_dir / 'per_location_auc.csv'))
+                    wandb.log_artifact(art)
+            finally:
+                # End run after each fold
+                try:
+                    import wandb as _wandb  # type: ignore
+                    if _wandb.run is not None:
+                        _wandb.finish()
+                except Exception:
+                    pass
+
+    # CV summary
+    if out_dir and len(all_fold_metrics) > 1:
+        # Aggregate simple means across folds for scalar metrics
+        agg_keys = ['cls_auc', 'cls_ap', 'loc_macro_auc', 'combined_mean', 'mean_num_detections']
+        summary = {'num_folds': len(all_fold_metrics)}
+        for k in agg_keys:
+            vals = [m[k] for m in all_fold_metrics if isinstance(m.get(k), (int, float)) and not math.isnan(m.get(k))]
+            summary[f'mean_{k}'] = float(np.mean(vals)) if vals else float('nan')
+        # Per-location AUCS mean
+        loc_aucs_df_rows = []
+        for m in all_fold_metrics:
+            if isinstance(m.get('per_loc_aucs'), dict):
+                loc_aucs_df_rows.append(pd.Series(m['per_loc_aucs']))
+        if loc_aucs_df_rows:
+            loc_aucs_df = pd.DataFrame(loc_aucs_df_rows)
+            summary_per_loc = loc_aucs_df.mean(skipna=True).to_dict()
+            # Save per-location mean CSV
+            pd.DataFrame(list(summary_per_loc.items()), columns=['location', 'mean_auc']).to_csv(out_dir / 'cv_per_location_mean_auc.csv', index=False)
+            summary['per_loc_mean_auc'] = {k: (float(v) if not pd.isna(v) else float('nan')) for k, v in summary_per_loc.items()}
+    # Save summary JSON
+        import json
+        with open(out_dir / 'cv_summary.json', 'w') as fjs:
+            json.dump(summary, fjs, indent=2)
+
+    # Back-compat: --save-csv if requested and no out_dir
+    if args.save_csv and not args.out_dir and all_fold_metrics:
+        # Only for the last fold run
+        metrics, per_series_df = all_fold_metrics[-1], None
+        # We didn't retain per_series_df here; encourage using out_dir.
+        print('Tip: prefer --out-dir to save structured outputs per fold.')
 
 
 if __name__ == '__main__':
@@ -324,3 +525,22 @@ if __name__ == '__main__':
 #Classification AUC (aneurysm present): 0.6960
 #Location macro AUC: 0.7659
 #Combined (mean) metric: 0.7309
+
+
+
+
+#Baseline yolo11l 24bbox slice-based
+#/home/sersasj/RSNA-IAD-Codebase/runs/yolo_aneurysm_locations/baseline_slice_24bbox2/weights/best.pt
+#Classification AUC (aneurysm present): 0.6992
+#Location macro AUC: 0.7517
+#Combined (mean) metric: 0.7255
+
+#Baseline yolo11n 24bbox slice-based + mosaic + mixup
+#Classification AUC (aneurysm present): 0.7084
+#Location macro AUC: 0.7570
+#Combined (mean) metric: 0.7327
+
+#Baseline yolo11s 24bbox slice-based + mosaic + mixup
+#Classification AUC (aneurysm present): 0.7189
+#Location macro AUC: 0.7840
+#Combined (mean) metric: 0.7514
