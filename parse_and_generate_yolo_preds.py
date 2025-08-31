@@ -71,7 +71,7 @@ def eval_one_series(slices, loc, models, uid):
                 c3k2_feat = features['C3K2'].cpu().numpy()
                 all_features.append(c3k2_feat)
 
-                for r in results:
+                for z_idx, r in enumerate(results):
                     if r is None or r.boxes is None or r.boxes.conf is None or len(r.boxes) == 0:
                         continue
                     try:
@@ -88,7 +88,7 @@ def eval_one_series(slices, loc, models, uid):
                             x_center = (x1 + x2) / 2
                             y_center = (y1 + y2) / 2
 
-                            ensemble_locations.append([round(z_idxes[j]),  # depth
+                            ensemble_locations.append([round(z_idxes[z_idx]),  # depth
                                                        round(y_center),  # height
                                                        round(x_center),  # width
                                                        float(c),  # confidence
