@@ -15,7 +15,7 @@ class LitTimmClassifier(pl.LightningModule):
         self.loc_loss_fn = torch.nn.BCEWithLogitsLoss()
         self.cls_loss_fn = torch.nn.BCEWithLogitsLoss()
 
-        self.num_classes = self.cfg.model.num_classes
+        self.num_classes = self.cfg.params.num_classes
 
         self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
         self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
@@ -31,8 +31,8 @@ class LitTimmClassifier(pl.LightningModule):
     def training_step(self, batch, _):
         x, cls_labels, loc_labels = batch
 
-        pred_cls, pred_locs =self(x)
-        pred_cls = pred_cls.squeeze()
+        preds =self(x)
+        pred_cls, pred_locs = preds[:,0], preds[:, 1:]
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
         cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
@@ -57,30 +57,18 @@ class LitTimmClassifier(pl.LightningModule):
         return loss
 
     def validation_step(self, sample, batch_idx):
-        x,cls_labels, loc_labels = sample
+        x, cls_labels, loc_labels = sample
 
-        x = x.squeeze(dim=0)
-
-        preds_cls = []
-        preds_loc = []
-        for i in range(0, x.shape[0], 32):
-            pred_cls, pred_loc =self(x[i:i+32])
-            preds_cls.append(pred_cls)
-            preds_loc.append(pred_loc)
-
-        preds_cls = torch.vstack(preds_cls)
-        preds_loc = torch.vstack(preds_loc)
-
-        final_cls_prob = preds_cls.max(dim=0).values
-        final_loc_prob = preds_loc.max(dim=0, keepdim=True).values
+        preds =self(x)
+        pred_cls, pred_locs = preds[:,0], preds[:, 1:]
        
-        loc_loss = self.loc_loss_fn(final_loc_prob, loc_labels)
-        cls_loss = self.cls_loss_fn(final_cls_prob, cls_labels.float())
+        loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
+        cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
   
         loss = (cls_loss + loc_loss) / 2
        
-        self.val_loc_auroc.update(final_loc_prob, loc_labels.long())
-        self.val_cls_auroc.update(final_cls_prob, cls_labels.long())
+        self.val_loc_auroc.update(pred_locs, loc_labels.long())
+        self.val_cls_auroc.update(pred_cls, cls_labels.long())
       
         self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
         # Log the metric object. Lightning computes and logs it at epoch end.

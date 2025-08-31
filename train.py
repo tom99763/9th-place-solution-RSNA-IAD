@@ -2,13 +2,12 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 
-import torchvision
-from src.trainers.crop_classification import LitWindowedMIP
-from src.rsna_datasets.crop_classification import WindowedMIPDataModule
+from src.trainers.cnn_25D import *
+from src.rsna_datasets.cnn_25D import *
 from src.model import MultiBackboneModel
 
 import pytorch_lightning as pl
-
+import timm
 
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
 def train(cfg: DictConfig) -> None:
@@ -20,19 +19,27 @@ def train(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
 
     pl.seed_everything(cfg.seed)
-    datamodule = WindowedMIPDataModule(cfg)
+    datamodule = NpzDataModule(cfg)
 
     model = MultiBackboneModel(
-        model_name="efficientnet_b2",
-        in_chans=4,
-        img_size=256,
+        model_name="efficientnet_b0",
+        in_chans=16,
+        img_size=512,
         num_classes=14,
         drop_rate=0.3,
         drop_path_rate=0.2,
         pretrained=True
     )
+    # model = timm.create_model(
+    #     model_name="efficientnet_b2",
+    #     pretrained=True,
+    #     in_chans=16,
+    #     drop_rate=0.3,
+    #     drop_path_rate=0.2,
+    #     num_classes=14
+    # ) 
 
-    pl_model = LitWindowedMIP(model, cfg)
+    pl_model = LitTimmClassifier(model, cfg)
 
     ckpt_callback = pl.callbacks.ModelCheckpoint(
                           monitor="val_loss"
@@ -60,8 +67,8 @@ def train(cfg: DictConfig) -> None:
     # fig = lr_find_results.plot(suggest=True)
     # fig.show()
 
-    # trainer.fit(pl_model, datamodule=datamodule)
-    trainer.validate(pl_model, datamodule=datamodule, ckpt_path="./models/windowed_mip_classification-epoch=03-val_loss=0.9985_fold_id=0.ckpt")
+    trainer.fit(pl_model, datamodule=datamodule)
+    # trainer.validate(pl_model, datamodule=datamodule, ckpt_path="./models/25D_classification-epoch=04-val_loss=0.3963_fold_id=0.ckpt")
 
 if __name__ == "__main__":
     train()

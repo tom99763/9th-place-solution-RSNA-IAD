@@ -1,0 +1,10 @@
+
+data_path: ./data
+
+cores: 12
+n_folds: 5
+
+volume:
+  depth: 128
+  height: 512
+  width: 512

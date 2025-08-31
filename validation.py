@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 torch.set_float32_matmul_precision('medium')
 
+from src.model import MultiBackboneModel
 
 def create_mip(volume):
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape((1,3,1,1))
@@ -50,29 +51,13 @@ def create_rgb_slices(volume):
 
 
 @torch.no_grad()
-def eval_one_series(volume, model, modality):
+def eval_one_series(volume, model):
 
-    if "MR" in modality:
-        volume = create_mip(volume)
-    else:
-        volume = create_rgb_slices(volume)
     volume = torch.from_numpy(volume).cuda()
-  
-    pred_cls = []
-    pred_locs = []
-
     with torch.cuda.amp.autocast():
-        for batch_idx in range(0,volume.shape[0], 64):
-            pc,pl = model(volume[batch_idx:batch_idx+64])
-            pred_cls.append(pc)
-            pred_locs.append(pl)
+        preds = model(volume.unsqueeze(0)).sigmoid()
 
-    pred_cls = torch.vstack(pred_cls)
-    pred_locs = torch.vstack(pred_locs)
-
-    pred_cls = pred_cls.squeeze()
-
-    return pred_cls.max().sigmoid().item(), pred_locs.max(dim=0).values.sigmoid().cpu().numpy()
+    return preds[:, 0].cpu().squeeze().numpy(), preds[:, 1:].squeeze().cpu().numpy()
 
 
 class LitTimmClassifier(pl.LightningModule):
@@ -95,29 +80,30 @@ def validation(cfg: DictConfig) -> None:
 
     pl.seed_everything(cfg.seed)
 
-    model_cta = instantiate(cfg.model, pretrained=False)
-    model_ckpt_name="efficient_b2_depth_slice_cta-epoch=19-val_loss=0.1551_fold_id=0"
+    model = MultiBackboneModel(
+        model_name="efficientnet_b2",
+        in_chans=16,
+        img_size=512,
+        num_classes=14,
+        drop_rate=0.3,
+        drop_path_rate=0.2,
+        pretrained=True
+    )
+    
+    model_ckpt_name="25D_classification-epoch=04-val_loss=0.3963_fold_id=0"
     # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
     # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
     # return
 
    
-    model_cta.load_state_dict(torch.load(f"{model_ckpt_name}.pth"))
-    model_cta.cuda().eval()
+    model.load_state_dict(torch.load(f"{model_ckpt_name}.pth"))
+    model.cuda().eval()
+ 
 
-    model_mr = instantiate(cfg.model, pretrained=False)
-    model_ckpt_name="efficient_b2_mip_MR_modality-epoch=17-val_loss=0.3458_fold_id=0"
-    # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
-    # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
-    # return
-
-    model_mr.load_state_dict(torch.load(f"{model_ckpt_name}.pth"))
-    model_mr.cuda().eval()
-
-    data_path = Path(cfg.data_dir)
+    data_path = Path(cfg.params.data_dir)
     df = pd.read_csv(data_path / "train_df.csv")
     
-    val_uids = list(df[(df["fold_id"] == cfg.fold_id) & (df["Modality"].isin(cfg.modality))]["SeriesInstanceUID"])
+    val_uids = list(df[(df["fold_id"] == cfg.fold_id)]["SeriesInstanceUID"])
    
     cls_labels = []
     loc_labels = []
@@ -135,33 +121,29 @@ def validation(cfg: DictConfig) -> None:
         cls_labels.append(rowdf["Aneurysm Present"].iloc[0])
         loc_labels.append(loc_label)
 
-        with np.load(f"./data/processed/slices/{uid}.npz") as data:
+        with np.load(f"./data/processed/series/{uid}.npz") as data:
             volume = data['vol'].astype(np.float32)
-
-            modality = rowdf["Modality"].iloc[0]
-            model = model_mr if "MR" in modality else model_cta
-            cls_prob, loc_probs =  eval_one_series(volume, model, modality)
-
+            volume /= 255.0
+            
+            cls_prob, loc_probs =  eval_one_series(volume[24:40], model)
             pred_cls_probs.append(cls_prob)
             pred_loc_probs.append(loc_probs)
 
     cls_labels = np.array(cls_labels)
     pred_cls_probs = np.array(pred_cls_probs)
 
+    print(f"{cls_labels.shape=}, {pred_cls_probs.shape=}")
+
     loc_labels = np.stack(loc_labels)
     pred_loc_probs = np.stack(pred_loc_probs)
 
-    np.savez("labels.npz", cls_probs=pred_cls_probs, loc_probs=pred_loc_probs)
-
-    pred_loc_probs = np.nan_to_num(pred_loc_probs, nan=0.1)
-    pred_cls_probs = np.nan_to_num(pred_cls_probs, nan=0.1)
+    print(f"{loc_labels.shape=}, {pred_loc_probs.shape=}")
 
     loc_auc_macro = roc_auc_score(loc_labels, pred_loc_probs, average="micro")
     cls_auc = roc_auc_score(cls_labels, pred_cls_probs)
 
     print(f"Fold: {cfg.fold_id}, cls_auc: {cls_auc}, loc_auc_macro: {loc_auc_macro}, cv: {(cls_auc + loc_auc_macro) / 2}")
 
-        
 
 if __name__ == "__main__":
 
