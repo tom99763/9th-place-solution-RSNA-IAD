@@ -1,4 +1,5 @@
 import os.path
+import sys
 
 import torch
 import numpy as np
@@ -228,9 +229,12 @@ def main():
     print(f"Loaded {len(models)} models on single GPU")
 
     label_df = load_labels(root)
+    train_df = pd.read_csv(root/'train_df.csv')
 
-    uids = label_df[~label_df.SeriesInstanceUID.isin(ignore_uids)].SeriesInstanceUID.unique().tolist()
-    print(len(uids))
+    pos_uids = label_df[~label_df.SeriesInstanceUID.isin(ignore_uids)].SeriesInstanceUID.unique().tolist()
+    neg_uids = train_df[train_df['Aneurysm Present']==0].SeriesInstanceUID.unique().tolist()
+    uids = pos_uids + neg_uids
+    print(f'#pos: {len(pos_uids)}--#neg:{len(neg_uids)}--#total:{len(uids)}')
 
     if not os.path.exists(root/'extract_data'):
         os.makedirs(root/'extract_data')
@@ -239,14 +243,13 @@ def main():
         print(uid)
         if not os.path.exists(root /f'extract_data/{uid}'):
             os.makedirs(root / f'extract_data/{uid}')
-
+        else:
+            continue
+        all_slices, dcm_list = load_slices(root / f'series/{uid}')
         loc = label_df[label_df.SeriesInstanceUID == uid][['y', 'x']].values
-        #sop_id = label_df[label_df.SeriesInstanceUID == uid].SOPInstanceUID.iloc[0]
-        all_slices, dcm_list = load_slices(root/f'series/{uid}') #output
-        #z = dcm_list.index(sop_id)
-        #z = np.array([z]).repeat(loc.shape[0])
-        z = label_df[label_df.SeriesInstanceUID == uid].SOPInstanceUID.map(lambda x: dcm_list.index(x)).values
-        loc = np.concatenate([z[:, None], loc], axis=-1)
+        if len(loc)!=0:
+            z = label_df[label_df.SeriesInstanceUID == uid].SOPInstanceUID.map(lambda x: dcm_list.index(x)).values
+            loc = np.concatenate([z[:, None], loc], axis=-1)
         eval_one_series(all_slices, loc, models, uid)
 
 if __name__ == '__main__':

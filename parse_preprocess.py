@@ -280,12 +280,15 @@ def feat_labeling(points, feat, extract_feat, locs, vol_size, thr=10, thr_sim=0.
     :param thr_sim: similarity threshold
     :return: merged label array (N,)
     '''
+    # initialize all labels as zeros
+    merged_label = np.zeros(points.shape[0], dtype='float32')
+
+    if len(locs)==0:
+        return merged_label
+
     _, h, w = vol_size
     fd, fh, fw = feat.shape[0], feat.shape[2], feat.shape[3]
     extract_feat = extract_feat / np.linalg.norm(extract_feat, axis=-1, keepdims=True)
-
-    # initialize all labels as zeros
-    merged_label = np.zeros(points.shape[0], dtype='float32')
 
     for loc in locs:
         tz, ty, tx = loc.astype('int32')
