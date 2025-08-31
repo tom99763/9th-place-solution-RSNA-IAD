@@ -2,6 +2,38 @@ import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.nn.models import GraphSAGE, GAT
+import torch.nn as nn
+import torch
+from torch_geometric.nn import LayerNorm
+import torch.nn.functional as F
+
+class GraphModel(nn.Module):
+    def __init__(self, hidden_channels=256, num_layers=8, jk='lstm',
+                 walk_length=8, use_pe=True, dropout=0.3):
+        super().__init__()
+        self.gnn = GraphSAGE(64 + walk_length if use_pe else 64,
+                             num_layers= num_layers,
+                             hidden_channels=hidden_channels,
+                             out_channels=1,
+                             jk=jk,
+                             dropout=dropout,
+                             norm=LayerNorm(hidden_channels),
+                             )
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        edge_index = edge_index.cuda()
+        batch = batch.cuda()
+
+        if edge_index.shape[0] == 0:
+            edge_index = torch.tensor([[0, 0]]).T.cuda()
+
+        x = x.cuda()
+        logits = self.gnn(x, edge_index, batch=batch)
+        return logits
+
 
 
 class MultiBackboneModel(nn.Module):
