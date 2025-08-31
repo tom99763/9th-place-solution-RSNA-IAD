@@ -1,3 +1,5 @@
+import os.path
+
 import torch
 import numpy as np
 import pandas as pd
@@ -5,6 +7,7 @@ from tqdm import tqdm
 from parse_preprocess import *
 import torch
 from torch_cluster import knn_graph
+from typing import Dict, List, Tuple, Set
 
 # Optimization settings
 torch.set_float32_matmul_precision('medium')
@@ -12,6 +15,8 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cuda.matmul.allow_tf32 = True  # Allow TF32 on Ampere GPUs
 torch.backends.cudnn.allow_tf32 = True
+
+root = Path('./src/data')
 
 def load_models():
     """Load all models on single GPU (cuda:0)"""
@@ -123,21 +128,21 @@ def eval_one_series(slices, loc, models, uid):
     edge_index_k10 = knn_graph(torch.from_numpy(points), k=10, loop=False)
     edge_index_k15 = knn_graph(torch.from_numpy(points), k=15, loop=False)
 
-    np.save(f'./extract_data/{uid}/{uid}_edge_index_k5.npy', edge_index_k5)
-    np.save(f'./extract_data/{uid}/{uid}_edge_index_k10.npy', edge_index_k10)
-    np.save(f'./extract_data/{uid}/{uid}_edge_index_k15.npy', edge_index_k15)
+    np.save(root/f'extract_data/{uid}/{uid}_edge_index_k5.npy', edge_index_k5)
+    np.save(root/f'extract_data/{uid}/{uid}_edge_index_k10.npy', edge_index_k10)
+    np.save(root/f'extract_data/{uid}/{uid}_edge_index_k15.npy', edge_index_k15)
 
     # delaunay_graph
     edge_index_del = delaunay_graph(torch.from_numpy(points))
-    np.save(f'./extract_data/{uid}/{uid}_edge_index_delaunay.npy', edge_index_del)
+    np.save(root/f'extract_data/{uid}/{uid}_edge_index_delaunay.npy', edge_index_del)
 
     print('del edges:', edge_index_del.shape)
     print(points.shape, extract_feat.shape, dist_label.shape)
     print('label sum:', dist_label.sum())
 
-    np.save(f'./extract_data/{uid}/{uid}_points.npy', points)
-    np.save(f'./extract_data/{uid}/{uid}_extract_feat.npy', extract_feat)
-    np.save(f'./extract_data/{uid}/{uid}_label.npy', dist_label)
+    np.save(root/f'extract_data/{uid}/{uid}_points.npy', points)
+    np.save(root/f'extract_data/{uid}/{uid}_extract_feat.npy', extract_feat)
+    np.save(root/f'extract_data/{uid}/{uid}_label.npy', dist_label)
 
     del all_features
     del all_detections
@@ -158,12 +163,67 @@ def load_labels(root: Path) -> pd.DataFrame:
     label_df["SOPInstanceUID"] = label_df["SOPInstanceUID"].astype(str)
     return label_df
 
+def load_slices(series_path):
+    series_path = Path(series_path)
+    dicom_files = collect_series_slices(series_path)
+
+    # Parallel DICOM processing
+    all_slices: List[np.ndarray] = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_file = {executor.submit(process_dicom_file, dcm_path): dcm_path
+                          for dcm_path in dicom_files}
+
+        for future in as_completed(future_to_file):
+            try:
+                slices = future.result()
+                all_slices.extend(slices)
+            except Exception as e:
+                dcm_path = future_to_file[future]
+                print(f"Failed processing {dcm_path.name}: {e}")
+
+    dcm_list = list(map(lambda x: x.stem, dicom_files))
+    return all_slices, dcm_list
+
 
 def main():
-    label_df = load_labels(Path('./src/data'))
+
+    ignore_uids: Set[str] = set(
+        [
+            "1.2.826.0.1.3680043.8.498.11145695452143851764832708867797988068",
+            "1.2.826.0.1.3680043.8.498.35204126697881966597435252550544407444",
+            "1.2.826.0.1.3680043.8.498.87480891990277582946346790136781912242",
+        ]
+    )
+    mf_path = root / "multiframe_dicoms.csv"
+    if mf_path.exists():
+        try:
+            mf_df = pd.read_csv(mf_path)
+            if "SeriesInstanceUID" in mf_df.columns:
+                ignore_uids.update(mf_df["SeriesInstanceUID"].astype(str).tolist())
+        except Exception:
+            pass
+
     models = load_models()
     print(f"Loaded {len(models)} models on single GPU")
 
+    label_df = load_labels(root)
+
+    uids = label_df[~label_df.SeriesInstanceUID.isin(ignore_uids)].SeriesInstanceUID.values.tolist()
+
+    if not os.path.exists(root/'extract_data'):
+        os.makedirs(root/'extract_data')
+
+    for uid in uids:
+        if not os.path.exists(root / 'extract_data'):
+            os.makedirs(root / f'extract_data/{uid}')
+
+        loc = label_df[label_df.SeriesInstanceUID == uid][['y', 'x']].values
+        sop_id = label_df[label_df.SeriesInstanceUID == uid].SOPInstanceUID.iloc[0]
+        all_slices, dcm_list = load_slices(root/f'series/{uid}') #output
+        z = dcm_list.index(sop_id)
+        z = np.array([z]).repeat(loc.shape[0])
+        loc = np.concatenate([z[:, None], loc], axis=-1)
+        eval_one_series(all_slices, loc, models, uid)
 
 if __name__ == '__main__':
     main()

@@ -33,7 +33,7 @@ class DATA_CONFIG:
 # Model configurations - Add your models here
 MODEL_CONFIGS = [
     {
-        "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold02/weights/best.pt",
+        "path": "./models/best.pt",
         "fold": "0",
         "weight": 1.0,
         "name": "YOLOv11n_fold0"
