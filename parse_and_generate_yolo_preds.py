@@ -169,19 +169,17 @@ def load_slices(series_path):
     series_path = Path(series_path)
     dicom_files = collect_series_slices(series_path)
 
-    # Parallel DICOM processing
-    all_slices: List[np.ndarray] = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_file = {executor.submit(process_dicom_file, dcm_path): dcm_path
-                          for dcm_path in dicom_files}
+        results = list(executor.map(process_dicom_file, dicom_files))
 
-        for future in as_completed(future_to_file):
-            try:
-                slices = future.result()
-                all_slices.extend(slices)
-            except Exception as e:
-                dcm_path = future_to_file[future]
-                print(f"Failed processing {dcm_path.name}: {e}")
+    # Remove failed entries
+    results = [r for r in results if r is not None]
+
+    # Sort by z-position (anatomical order)
+    results.sort(key=lambda x: x[0])
+
+    # Flatten into single list of slices
+    all_slices: List[np.ndarray] = [s for _, slices in results for s in slices]
 
     dcm_list = list(map(lambda x: x.stem, dicom_files))
     return all_slices, dcm_list
