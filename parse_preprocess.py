@@ -2,14 +2,10 @@ import torch
 import numpy as np
 import pandas as pd
 import random
-
 import polars as pl
-
 from pathlib import Path
-
 import ast
 import pydicom
-
 from pathlib import Path
 import os
 import cv2
@@ -24,37 +20,15 @@ import queue
 import shutil
 import gc
 import time
-from torch_geometric.nn import LayerNorm
-import torch.nn.functional as F
-import torchvision.transforms as transforms
-from torch_geometric.nn.conv import TransformerConv
-from torch_geometric.data import Data
-from torch_cluster import knn_graph
-from torch_geometric.nn import radius_graph
-from torch_geometric.transforms import AddRandomWalkPE
 from scipy.spatial import Delaunay
 
-class MODEL_CONIFG_1:
-    num_layers = 8
-    hidden_channels = 256
-    pos_weight = 8
-    jk = 'lstm'
-    dropout = 0.3
-    conf = 0.04
-    graph_augment = False
-    use_pe = True
-    walk_length = 8
-
-class MODEL_CONIFG_2:
-    num_layers = 8
-    hidden_channels = 256
-    pos_weight = 8
-    jk = 'lstm'
-    dropout = 0.3
-    conf = 0.05
-    graph_augment = False
-    use_pe = True
-    walk_length = 8
+class DATA_CONFIG:
+    radius = 30
+    num_samples = 20
+    thr = 10
+    thr_sim = 0.25
+    order = 1
+    alpha = 5
 
 # Model configurations - Add your models here
 MODEL_CONFIGS = [
@@ -282,26 +256,53 @@ def delaunay_graph(x):
     edge_index = torch.tensor(list(edges), dtype=torch.long).t()
     return edge_index
 
-transform_1 = AddRandomWalkPE(walk_length=MODEL_CONIFG_1.walk_length, attr_name=None)
-transform_2 = AddRandomWalkPE(walk_length=MODEL_CONIFG_2.walk_length, attr_name=None)
+# transform_1 = AddRandomWalkPE(walk_length=MODEL_CONIFG_1.walk_length, attr_name=None)
+# transform_2 = AddRandomWalkPE(walk_length=MODEL_CONIFG_2.walk_length, attr_name=None)
 
-def extract_tomo(all_locations, all_features, vol_size, k_neibs = 15, radius = 30,  num_samples = 10):
-    points = sample_uniform_3d_ball(all_locations, vol_size, radius, num_samples)
+
+def feat_labeling(points, feat, extract_feat, loc, vol_size, thr = 10, thr_sim=0.5):
+    '''
+    :param points: sampled points
+    :param feat:
+    :param extract_feat: features from yolo
+    :param loc: ground truth location
+    :param vol_size: volume of CT or MR
+    :param thr: radius threshold
+    :param thr_sim: similarity threshold
+    :return:
+    '''
+    _, h, w = vol_size
+    tz, ty, tx = loc.astype('int32')
+    fd, fh, fw = feat.shape[0], feat.shape[2], feat.shape[3]
+    z = tz.astype('int32')
+    y = ((ty/h) * fh).astype('int32')
+    x = ((tx/w) * fw).astype('int32')
+    #sim
+    extract_feat = extract_feat / np.linalg.norm(extract_feat, axis=-1, keepdims=True)
+    target_feat = feat[z, :, y, x][None, :]
+    target_feat = target_feat / np.linalg.norm(target_feat, axis=-1, keepdims=True)
+    sim = extract_feat @ target_feat.T
+    bool1 = sim[:, 0]>thr_sim
+
+    #dist
+    dist = np.linalg.norm(points - loc[None, :], axis=-1) #(N, 3)
+    bool2 = dist<thr
+
+    #label
+    label = np.array(bool1 & bool2, dtype='float32')
+    return label
+
+
+
+def extract_tomo(all_locations, all_features, vol_size, loc):
+    points = sample_uniform_3d_ball(all_locations, vol_size, DATA_CONFIG.radius, DATA_CONFIG.num_samples)
     extract_feat = assign_feat(points, all_features, vol_size)
+
     #convert to torch
     points = torch.from_numpy(points)
     extract_feat = torch.from_numpy(extract_feat)
-    batch = torch.zeros(points.shape[0], dtype=torch.int64)
 
-    #multi-graph
-    edge_index_1 = knn_graph(points, k=k_neibs, loop=False)
-    edge_index_2 = delaunay_graph(points)
-    data1= Data(points = points, x = extract_feat, edge_index = edge_index_1, batch = batch)
-    data2= Data(points = points, x = extract_feat, edge_index = edge_index_2, batch = batch)
-
-    if MODEL_CONIFG_1.use_pe:
-        data1 = transform_1(data1)
-
-    if MODEL_CONIFG_2.use_pe:
-        data2 = transform_2(data2)
-    return data1, data2
+    #assign label
+    dist_label = feat_labeling(points, all_features, extract_feat, loc, vol_size,
+                               thr=DATA_CONFIG.thr, thr_sim=DATA_CONFIG.thr_sim)
+    return points, extract_feat, dist_label

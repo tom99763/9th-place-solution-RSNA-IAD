@@ -4,6 +4,7 @@ import pandas as pd
 from tqdm import tqdm
 from parse_preprocess import *
 import torch
+from torch_cluster import knn_graph
 
 # Optimization settings
 torch.set_float32_matmul_precision('medium')
@@ -31,8 +32,10 @@ def load_models():
     return models
 
 
+
+
 @torch.no_grad()
-def eval_one_series(slices, models):
+def eval_one_series(slices, loc, models, uid):
     ensemble_cls_preds = []
     ensemble_loc_preds = []
     ensemble_locations = []
@@ -109,16 +112,55 @@ def eval_one_series(slices, models):
 
     all_detections = np.array(ensemble_locations)
     all_locations = all_detections[:, :3]
-    all_preds = all_detections[:, 3:-1]
-    all_model_idx = all_detections[:, -1][:, None]
+    #all_preds = all_detections[:, 3:-1]
+    #all_model_idx = all_detections[:, -1][:, None]
     all_features = np.concatenate(all_features, axis=0)
     vol_size = (len(slices), slices[0].shape[0], slices[0].shape[1])
-    data1, data2 = extract_tomo(all_locations, all_features, vol_size)
-    return data1, data2
+    points, extract_feat, dist_label = extract_tomo(all_locations, all_features, vol_size, loc)
+
+    # knn graph
+    edge_index_k5 = knn_graph(torch.from_numpy(points), k=5, loop=False)
+    edge_index_k10 = knn_graph(torch.from_numpy(points), k=10, loop=False)
+    edge_index_k15 = knn_graph(torch.from_numpy(points), k=15, loop=False)
+
+    np.save(f'./extract_data/{uid}/{uid}_edge_index_k5.npy', edge_index_k5)
+    np.save(f'./extract_data/{uid}/{uid}_edge_index_k10.npy', edge_index_k10)
+    np.save(f'./extract_data/{uid}/{uid}_edge_index_k15.npy', edge_index_k15)
+
+    # delaunay_graph
+    edge_index_del = delaunay_graph(torch.from_numpy(points))
+    np.save(f'./extract_data/{uid}/{uid}_edge_index_delaunay.npy', edge_index_del)
+
+    print('del edges:', edge_index_del.shape)
+    print(points.shape, extract_feat.shape, dist_label.shape)
+    print('label sum:', dist_label.sum())
+
+    np.save(f'./extract_data/{uid}/{uid}_points.npy', points)
+    np.save(f'./extract_data/{uid}/{uid}_extract_feat.npy', extract_feat)
+    np.save(f'./extract_data/{uid}/{uid}_label.npy', dist_label)
+
+    del all_features
+    del all_detections
+    del ensemble_locations
+    del ensemble_cls_preds
+    del ensemble_loc_preds
+
+    gc.collect()
+
+
+def load_labels(root: Path) -> pd.DataFrame:
+    label_df = pd.read_csv(root / "train_localizers.csv")
+    if "x" not in label_df.columns or "y" not in label_df.columns:
+        label_df["x"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["x"])  # type: ignore[arg-type]
+        label_df["y"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["y"])  # type: ignore[arg-type]
+    # Standardize dtypes
+    label_df["SeriesInstanceUID"] = label_df["SeriesInstanceUID"].astype(str)
+    label_df["SOPInstanceUID"] = label_df["SOPInstanceUID"].astype(str)
+    return label_df
 
 
 def main():
-    # Load all models
+    label_df = load_labels(Path('./src/data'))
     models = load_models()
     print(f"Loaded {len(models)} models on single GPU")
 
