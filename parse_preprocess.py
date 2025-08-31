@@ -96,8 +96,74 @@ LABELS = sorted(list(LABELS_TO_IDX.keys()))
 LABEL_COLS = LABELS + ['Aneurysm Present']
 
 
-# Collect all DICOM files in a series directory
+def read_dicom_frames_hu(path: Path) -> List[Tuple[float, np.ndarray]]:
+    """Read DICOM file and return list of (slice_position, HU frame)"""
+    ds = pydicom.dcmread(str(path), force=True)
+    pix = ds.pixel_array
+    slope = float(getattr(ds, 'RescaleSlope', 1.0))
+    intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+
+    # Compute slice location using orientation + position
+    try:
+        orientation = np.array(ds.ImageOrientationPatient).reshape(2, 3)
+        row_cos, col_cos = orientation
+        normal = np.cross(row_cos, col_cos)  # slice normal vector
+        position = np.array(ds.ImagePositionPatient)
+        slice_loc = float(np.dot(position, normal))  # projection along normal
+    except Exception:
+        # Fallback: SliceLocation / InstanceNumber
+        slice_loc = float(getattr(ds, "SliceLocation", getattr(ds, "InstanceNumber", 0.0)))
+
+    frames: List[Tuple[float, np.ndarray]] = []
+
+    if pix.ndim == 2:
+        img = pix.astype(np.float32)
+        frames.append((slice_loc, img * slope + intercept))
+    elif pix.ndim == 3:
+        # RGB or multi-frame
+        if pix.shape[-1] == 3 and pix.shape[0] != 3:
+            try:
+                gray = cv2.cvtColor(pix.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+            except Exception:
+                gray = pix[..., 0].astype(np.float32)
+            frames.append((slice_loc, gray * slope + intercept))
+        else:
+            for i in range(pix.shape[0]):
+                frm = pix[i].astype(np.float32)
+                # tiny offset ensures consistent ordering for multi-frame
+                frames.append((slice_loc + i * 1e-3, frm * slope + intercept))
+    return frames
+
+
+def min_max_normalize(img: np.ndarray) -> np.ndarray:
+    """Min-max normalization to 0-255 with optional flipping"""
+    mn, mx = float(img.min()), float(img.max())
+    if mx - mn < 1e-6:
+        norm = np.zeros_like(img, dtype=np.uint8)
+    else:
+        norm = (img - mn) / (mx - mn)
+        norm = (norm * 255.0).clip(0, 255).astype(np.uint8)
+    return norm
+
+
+def process_dicom_file(dcm_path: Path) -> List[Tuple[float, np.ndarray]]:
+    """Process single DICOM file -> list of (slice_loc, image) tuples"""
+    try:
+        frames = read_dicom_frames_hu(dcm_path)
+        processed_slices = []
+        for loc, f in frames:
+            img_u8 = min_max_normalize(f)
+            if img_u8.ndim == 2:
+                img_u8 = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
+            processed_slices.append((loc, img_u8))
+        return processed_slices
+    except Exception as e:
+        print(f"Failed processing {dcm_path.name}: {e}")
+        return []
+
+
 def collect_series_slices(series_dir: Path) -> List[Path]:
+    """Collect all DICOM files in a series directory (recursively)."""
     dcm_paths: List[Path] = []
     try:
         for root, _, files in os.walk(series_dir):
@@ -109,56 +175,21 @@ def collect_series_slices(series_dir: Path) -> List[Path]:
     return dcm_paths
 
 
-def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
-    """Read DICOM file and return HU frames (with slope/intercept conversion)."""
-    ds = pydicom.dcmread(str(path), force=True)
-    pix = ds.pixel_array
-    slope = float(getattr(ds, 'RescaleSlope', 1.0))
-    intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
-    frames: List[np.ndarray] = []
-
-    if pix.ndim == 2:
-        img = pix.astype(np.float32)
-        frames.append(img * slope + intercept)
-    elif pix.ndim == 3:
-        if pix.shape[-1] == 3 and pix.shape[0] != 3:  # RGB
-            try:
-                gray = cv2.cvtColor(pix.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
-            except Exception:
-                gray = pix[..., 0].astype(np.float32)
-            frames.append(gray * slope + intercept)
-        else:  # multi-frame
-            for i in range(pix.shape[0]):
-                frm = pix[i].astype(np.float32)
-                frames.append(frm * slope + intercept)
-    return frames
-
-
-def min_max_normalize(img: np.ndarray) -> np.ndarray:
-    """Min-max normalization to 0–255 uint8."""
-    mn, mx = float(img.min()), float(img.max())
-    if mx - mn < 1e-6:
-        return np.zeros_like(img, dtype=np.uint8)
-    norm = (img - mn) / (mx - mn)
-    return (norm * 255.0).clip(0, 255).astype(np.uint8)
-
-
-def process_dicom_file(dcm_path: Path):
-    """Read + normalize + return slices with z-position for ordering."""
+def slice_sort_key(path: Path) -> float:
+    """Compute a robust slice sort key (orientation + position) for a single DICOM file"""
     try:
-        ds = pydicom.dcmread(str(dcm_path), force=True)
-        z = float(ds.ImagePositionPatient[2]) if "ImagePositionPatient" in ds else int(getattr(ds, "InstanceNumber", 0))
-        frames = read_dicom_frames_hu(dcm_path)
-        processed_slices = []
-        for f in frames:
-            img_u8 = min_max_normalize(f)
-            if img_u8.ndim == 2:
-                img_u8 = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
-            processed_slices.append(img_u8)
-        return z, processed_slices
-    except Exception as e:
-        print(f"Failed processing {dcm_path.name}: {e}")
-        return None
+        ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        orientation = np.array(ds.ImageOrientationPatient).reshape(2, 3)
+        row_cos, col_cos = orientation
+        normal = np.cross(row_cos, col_cos)
+        position = np.array(ds.ImagePositionPatient)
+        return float(np.dot(position, normal))
+    except Exception:
+        # fallback
+        try:
+            return float(getattr(ds, "SliceLocation", getattr(ds, "InstanceNumber", 0.0)))
+        except:
+            return 0.0
 
 
 def get_feature_map(model):
@@ -169,30 +200,6 @@ def get_feature_map(model):
         return hook
     model.model.model[16].register_forward_hook(make_hook("C3K2"))
     return features
-
-
-def delaunay_graph(x):
-    points = x.cpu().numpy()  # assuming x is a tensor of shape [num_points, dims]
-    tri = Delaunay(points)
-    edges = set()
-
-    for simplex in tri.simplices:
-        for i in range(len(simplex)):
-            for j in range(i + 1, len(simplex)):
-                edges.add(tuple(sorted((simplex[i], simplex[j]))))
-
-    edge_index = torch.tensor(list(edges), dtype=torch.long).t()
-    return edge_index
-
-
-def assign_feat(x, feat, tomo_id, vol_size):
-    d, h, w = vol_size
-    fd, fh, fw = feat.shape[0], feat.shape[2], feat.shape[3]
-    z = x[:, 0].astype('int32')
-    y = ((x[:, 1]/h) * fh).astype('int32')
-    x = ((x[:, 2]/w) * fw).astype('int32')
-    extract_feat = feat[z, :, y, x]
-    return extract_feat
 
 
 def sample_uniform_3d_ball(points, vol_size, radius=30, num_samples=10):

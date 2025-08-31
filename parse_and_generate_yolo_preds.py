@@ -18,6 +18,21 @@ torch.backends.cudnn.allow_tf32 = True
 
 root = Path('./src/data')
 
+def set_seed(seed: int = 42):
+    # Python built-in RNG
+    random.seed(seed)
+
+    # NumPy
+    np.random.seed(seed)
+
+    # PyTorch
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # Make CuDNN deterministic (slower but reproducible)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 def load_models():
     """Load all models on single GPU (cuda:0)"""
     models = []
@@ -41,6 +56,7 @@ def load_models():
 
 @torch.no_grad()
 def eval_one_series(slices, loc, models, uid):
+    set_seed()
     ensemble_cls_preds = []
     ensemble_loc_preds = []
     ensemble_locations = []
@@ -165,28 +181,33 @@ def load_labels(root: Path) -> pd.DataFrame:
     label_df["SOPInstanceUID"] = label_df["SOPInstanceUID"].astype(str)
     return label_df
 
-def load_slices(series_path):
+
+def load_slices(series_path: Path):
+    """Load and consistently sort DICOM slices and filenames by orientation+position"""
     series_path = Path(series_path)
     dicom_files = collect_series_slices(series_path)
+
+    # Sort DICOM files by orientation+position before processing
+    dicom_files.sort(key=slice_sort_key)
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         results = list(executor.map(process_dicom_file, dicom_files))
 
-    # Remove failed entries
-    results = [r for r in results if r is not None]
+    # Flatten into (loc, img)
+    all_slices_with_loc = [item for sublist in results for item in sublist]
 
-    # Sort by z-position (anatomical order)
-    results.sort(key=lambda x: x[0])
+    # Already sorted by dicom_files order, but double-check (safe)
+    all_slices_with_loc.sort(key=lambda x: x[0])
 
-    # Flatten into single list of slices
-    all_slices: List[np.ndarray] = [s for _, slices in results for s in slices]
+    # Extract just the images
+    all_slices = [img for _, img in all_slices_with_loc]
 
-    dcm_list = list(map(lambda x: x.stem, dicom_files))
+    # Now dicom_files matches the sorted slices
+    dcm_list = [f.stem for f in dicom_files]
     return all_slices, dcm_list
 
 
 def main():
-
     ignore_uids: Set[str] = set(
         [
             "1.2.826.0.1.3680043.8.498.11145695452143851764832708867797988068",
@@ -215,6 +236,7 @@ def main():
         os.makedirs(root/'extract_data')
 
     for uid in uids:
+        print(uid)
         if not os.path.exists(root /f'extract_data/{uid}'):
             os.makedirs(root / f'extract_data/{uid}')
 
