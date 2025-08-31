@@ -229,7 +229,7 @@ def main():
 
     label_df = load_labels(root)
 
-    uids = label_df[~label_df.SeriesInstanceUID.isin(ignore_uids)].SeriesInstanceUID.unique().values.tolist()
+    uids = label_df[~label_df.SeriesInstanceUID.isin(ignore_uids)].SeriesInstanceUID.unique().tolist()
     print(len(uids))
 
     if not os.path.exists(root/'extract_data'):
