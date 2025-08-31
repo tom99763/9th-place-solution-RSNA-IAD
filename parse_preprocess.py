@@ -25,7 +25,7 @@ from scipy.spatial import Delaunay
 class DATA_CONFIG:
     radius = 30
     num_samples = 20
-    thr = 10
+    thr = 20
     thr_sim = 0.25
     order = 1
     alpha = 5
@@ -260,37 +260,47 @@ def delaunay_graph(x):
 # transform_2 = AddRandomWalkPE(walk_length=MODEL_CONIFG_2.walk_length, attr_name=None)
 
 
-def feat_labeling(points, feat, extract_feat, loc, vol_size, thr = 10, thr_sim=0.5):
+def feat_labeling(points, feat, extract_feat, locs, vol_size, thr=10, thr_sim=0.25):
     '''
     :param points: sampled points
     :param feat:
     :param extract_feat: features from yolo
-    :param loc: ground truth location
+    :param locs: list of ground truth locations
     :param vol_size: volume of CT or MR
     :param thr: radius threshold
     :param thr_sim: similarity threshold
-    :return:
+    :return: merged label array (N,)
     '''
     _, h, w = vol_size
-    tz, ty, tx = loc.astype('int32')
     fd, fh, fw = feat.shape[0], feat.shape[2], feat.shape[3]
-    z = tz.astype('int32')
-    y = ((ty/h) * fh).astype('int32')
-    x = ((tx/w) * fw).astype('int32')
-    #sim
     extract_feat = extract_feat / np.linalg.norm(extract_feat, axis=-1, keepdims=True)
-    target_feat = feat[z, :, y, x][None, :]
-    target_feat = target_feat / np.linalg.norm(target_feat, axis=-1, keepdims=True)
-    sim = extract_feat @ target_feat.T
-    bool1 = sim[:, 0]>thr_sim
 
-    #dist
-    dist = np.linalg.norm(points - loc[None, :], axis=-1) #(N, 3)
-    bool2 = dist<thr
+    # initialize all labels as zeros
+    merged_label = np.zeros(points.shape[0], dtype='float32')
 
-    #label
-    label = np.array(bool1 & bool2, dtype='float32')
-    return label
+    for loc in locs:
+        tz, ty, tx = loc.astype('int32')
+        z = tz.astype('int32')
+        y = ((ty/h) * fh).astype('int32')
+        x = ((tx/w) * fw).astype('int32')
+
+        # similarity
+        target_feat = feat[z, :, y, x][None, :]
+        target_feat = target_feat / np.linalg.norm(target_feat, axis=-1, keepdims=True)
+        sim = extract_feat @ target_feat.T
+        bool1 = sim[:, 0] > thr_sim
+
+        # distance
+        dist = np.linalg.norm(points - loc[None, :], axis=-1)  # (N, 3)
+        bool2 = dist < thr
+
+        # combine
+        label = np.array(bool1 & bool2, dtype='float32')
+
+        # merge labels (OR across locs)
+        merged_label = np.maximum(merged_label, label)
+
+    return merged_label
 
 
 
