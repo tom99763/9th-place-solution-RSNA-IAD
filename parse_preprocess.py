@@ -22,6 +22,8 @@ import gc
 import time
 from scipy.spatial import Delaunay
 
+conf_yolo = 0.05
+
 class DATA_CONFIG:
     radius = 30
     num_samples = 20

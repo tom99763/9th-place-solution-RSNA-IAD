@@ -66,7 +66,7 @@ def eval_one_series(slices, loc, models, uid):
                     verbose=False,
                     batch=len(batch_slices),
                     device="cuda:0",
-                    conf=0.01
+                    conf=conf_yolo
                 )
                 c3k2_feat = features['C3K2'].cpu().numpy()
                 all_features.append(c3k2_feat)
@@ -219,10 +219,11 @@ def main():
             os.makedirs(root / f'extract_data/{uid}')
 
         loc = label_df[label_df.SeriesInstanceUID == uid][['y', 'x']].values
-        sop_id = label_df[label_df.SeriesInstanceUID == uid].SOPInstanceUID.iloc[0]
+        #sop_id = label_df[label_df.SeriesInstanceUID == uid].SOPInstanceUID.iloc[0]
         all_slices, dcm_list = load_slices(root/f'series/{uid}') #output
-        z = dcm_list.index(sop_id)
-        z = np.array([z]).repeat(loc.shape[0])
+        #z = dcm_list.index(sop_id)
+        #z = np.array([z]).repeat(loc.shape[0])
+        z = label_df[label_df.SeriesInstanceUID == uid].SOPInstanceUID.map(lambda x: dcm_list.index(x)).values
         loc = np.concatenate([z[:, None], loc], axis=-1)
         eval_one_series(all_slices, loc, models, uid)
 
