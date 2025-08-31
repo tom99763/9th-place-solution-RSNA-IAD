@@ -89,8 +89,8 @@ def eval_one_series(slices, loc, models, uid):
                             y_center = (y1 + y2) / 2
 
                             ensemble_locations.append([round(z_idxes[j]),  # depth
-                                                       round(y_center),  # height
-                                                       round(x_center),  # width
+                                                       round(x_center),  # height
+                                                       round(y_center),  # width
                                                        float(c),  # confidence
                                                        k,  # class
                                                        model_idx,
@@ -218,7 +218,7 @@ def main():
         if not os.path.exists(root /f'extract_data/{uid}'):
             os.makedirs(root / f'extract_data/{uid}')
 
-        loc = label_df[label_df.SeriesInstanceUID == uid][['y', 'x']].values
+        loc = label_df[label_df.SeriesInstanceUID == uid][['x', 'y']].values
         #sop_id = label_df[label_df.SeriesInstanceUID == uid].SOPInstanceUID.iloc[0]
         all_slices, dcm_list = load_slices(root/f'series/{uid}') #output
         #z = dcm_list.index(sop_id)
