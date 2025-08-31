@@ -22,7 +22,7 @@ import gc
 import time
 from scipy.spatial import Delaunay
 
-conf_yolo = 0.05
+conf_yolo = 0.01
 
 class DATA_CONFIG:
     radius = 30

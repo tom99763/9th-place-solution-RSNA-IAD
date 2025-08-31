@@ -114,6 +114,8 @@ def eval_one_series(slices, loc, models, uid):
             ensemble_cls_preds.append(0.1 * weight)
             ensemble_loc_preds.append(np.ones(len(LABELS)) * 0.1 * weight)
             total_weight += weight
+    if len(ensemble_locations) == 0:
+        return
 
     all_detections = np.array(ensemble_locations)
     all_locations = all_detections[:, :3]
@@ -218,7 +220,7 @@ def main():
         if not os.path.exists(root /f'extract_data/{uid}'):
             os.makedirs(root / f'extract_data/{uid}')
 
-        loc = label_df[label_df.SeriesInstanceUID == uid][['x', 'y']].values
+        loc = label_df[label_df.SeriesInstanceUID == uid][['y', 'x']].values
         #sop_id = label_df[label_df.SeriesInstanceUID == uid].SOPInstanceUID.iloc[0]
         all_slices, dcm_list = load_slices(root/f'series/{uid}') #output
         #z = dcm_list.index(sop_id)
