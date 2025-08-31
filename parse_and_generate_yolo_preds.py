@@ -209,12 +209,13 @@ def main():
     label_df = load_labels(root)
 
     uids = label_df[~label_df.SeriesInstanceUID.isin(ignore_uids)].SeriesInstanceUID.values.tolist()
+    print(len(uids))
 
     if not os.path.exists(root/'extract_data'):
         os.makedirs(root/'extract_data')
 
     for uid in uids:
-        if not os.path.exists(root / 'extract_data'):
+        if not os.path.exists(root /f'extract_data/{uid}'):
             os.makedirs(root / f'extract_data/{uid}')
 
         loc = label_df[label_df.SeriesInstanceUID == uid][['y', 'x']].values

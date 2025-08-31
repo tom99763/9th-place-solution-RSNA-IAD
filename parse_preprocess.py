@@ -309,8 +309,8 @@ def extract_tomo(all_locations, all_features, vol_size, loc):
     extract_feat = assign_feat(points, all_features, vol_size)
 
     #convert to torch
-    points = torch.from_numpy(points)
-    extract_feat = torch.from_numpy(extract_feat)
+    #points = torch.from_numpy(points)
+    #extract_feat = torch.from_numpy(extract_feat)
 
     #assign label
     dist_label = feat_labeling(points, all_features, extract_feat, loc, vol_size,
