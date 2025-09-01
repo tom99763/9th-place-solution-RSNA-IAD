@@ -15,7 +15,7 @@ class GraphModel(nn.Module):
                              out_channels=1,
                              jk=jk,
                              dropout=dropout,
-                             norm=LayerNorm(hidden_channels),
+                             #norm=LayerNorm(hidden_channels),
                              )
 
     def forward(self, data):
