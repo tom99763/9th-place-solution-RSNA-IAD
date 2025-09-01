@@ -43,6 +43,8 @@ class GNNClassifier(pl.LightningModule):
         opt.step()
 
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        del node_logits, pred_cls
+        torch.cuda.empty_cache()
         return loss
 
     def validation_step(self, data, _):
@@ -55,13 +57,10 @@ class GNNClassifier(pl.LightningModule):
         # Loss
         loss = self.node_loss_fn(node_logits[:, 0], node_labels)
 
-        # --- Graph-level metrics ---
-        self.val_cls_auroc.update(pred_cls, cls_labels.long())
-
-        # --- Node-level metrics ---
-        self.val_node_auroc.update(node_logits, node_labels.long())
-        self.val_node_acc.update(torch.sigmoid(node_logits[:, 0]), node_labels.int())
-        self.val_node_f1.update(torch.sigmoid(node_logits[:, 0]), node_labels.int())
+        self.val_cls_auroc.update(pred_cls.detach(), cls_labels.long())
+        self.val_node_auroc.update(node_logits.detach(), node_labels.long())
+        self.val_node_acc.update(torch.sigmoid(node_logits[:, 0].detach()), node_labels.int())
+        self.val_node_f1.update(torch.sigmoid(node_logits[:, 0].detach()), node_labels.int())
 
         # log loss per-batch
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)

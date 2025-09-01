@@ -36,10 +36,10 @@ class GraphDataset(Dataset):
         else:
             raise Exception('invalid graph type')
 
-        points = torch.from_numpy(np.load(point_path).astype('float32'))
-        feat = torch.from_numpy(np.load(feat_path).astype('float32'))
-        edge_index = torch.from_numpy(np.load(edge_path))
-        labels = torch.from_numpy(np.load(label_path))
+        points = torch.from_numpy(np.load(point_path, mmap_mode="r").astype('float32'))
+        feat = torch.from_numpy(np.load(feat_path, mmap_mode="r").astype('float32'))
+        edge_index = torch.from_numpy(np.load(edge_path, mmap_mode="r"))
+        labels = torch.from_numpy(np.load(label_path, mmap_mode="r"))
         cls_labels = labels.max()
 
         # build data
