@@ -1,4 +1,6 @@
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-08-28T14:35:31.836580Z","iopub.execute_input":"2025-08-28T14:35:31.836882Z","iopub.status.idle":"2025-08-28T14:35:32.182084Z","shell.execute_reply.started":"2025-08-28T14:35:31.836855Z","shell.execute_reply":"2025-08-28T14:35:32.181243Z"}}
+
+
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-08-29T13:01:07.034281Z","iopub.execute_input":"2025-08-29T13:01:07.034574Z","iopub.status.idle":"2025-08-29T13:01:12.873825Z","shell.execute_reply.started":"2025-08-29T13:01:07.034554Z","shell.execute_reply":"2025-08-29T13:01:12.873075Z"}}
 import torch
 import numpy as np
 import pandas as pd
@@ -123,8 +125,7 @@ def collect_series_slices(series_dir: Path) -> List[Path]:
     dcm_paths.sort()
     return dcm_paths
 
-# Model configurations - Add your models here
-MODEL_CONFIGS = [
+MODEL_CONFIGS_ANEURYSM = [
     {
         "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold02/weights/best.pt",
         "fold": "0",
@@ -136,65 +137,38 @@ MODEL_CONFIGS = [
         "fold": "1",
         "weight": 1.0,
         "name": "YOLOv11n_fold1"
-    },
+    },  
     {
         "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold22/weights/best.pt",
         "fold": "2",
         "weight": 1.0,
         "name": "YOLOv11n_fold2"
-    },
-    {
-        "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold32/weights/best.pt",
-        "fold": "3",
-        "weight": 1.0,
-        "name": "YOLOv11n_fold3"
-    },
-    {
-        "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold42/weights/best.pt",
-        "fold": "4",
-        "weight": 1.0,
-        "name": "YOLOv11n_fold4"
     }
 ]
-
-# For local testing, use these paths instead
-LOCAL_MODEL_CONFIGS = [
+MODEL_CONFIGS_LOCATION = [
     {
-        "path": "runs/yolo_aneurysm_locations/cv_y11n_fold02/weights/best.pt",
+        "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold02/weights/best.pt",
         "fold": "0",
         "weight": 1.0,
-        "name": "YOLOv11n_fold02"
+        "name": "YOLOv11n_fold0"
     },
     {
-        "path": "runs/yolo_aneurysm_locations/cv_y11n_fold03/weights/best.pt",
+        "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold12/weights/best.pt",
         "fold": "1",
         "weight": 1.0,
-        "name": "YOLOv11n_fold03"
-    },
+        "name": "YOLOv11n_fold1"
+    },  
     {
-        "path": "runs/yolo_aneurysm_locations/cv_y11n_fold05/weights/best.pt",
+        "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold22/weights/best.pt",
         "fold": "2",
         "weight": 1.0,
-        "name": "YOLOv11n_fold05"
-    },
-    {
-        "path": "runs/yolo_aneurysm_locations/cv_y11n_fold06/weights/best.pt",
-        "fold": "3",
-        "weight": 1.0,
-        "name": "YOLOv11n_fold06"
+        "name": "YOLOv11n_fold2"
     }
 ]
-
-def load_models():
+def load_models(model_configs):
     """Load all models on single GPU (cuda:0)"""
-    # Detect if running locally (not on Kaggle)
-    is_local = not os.path.exists('/kaggle')
-    
-    configs = LOCAL_MODEL_CONFIGS if is_local else MODEL_CONFIGS
-    print(f"Loading models for {'local' if is_local else 'Kaggle'} environment")
-    
     models = []
-    for config in configs:
+    for config in model_configs:
         print(f"Loading model: {config['name']} on cuda:0")
         
         model = YOLO(config["path"])
@@ -210,78 +184,161 @@ def load_models():
     return models
 
 # Load all models
-models = load_models()
-print(f"Loaded {len(models)} models on single GPU")
+models_aneurysm= load_models(MODEL_CONFIGS_ANEURYSM)
+models_loc = load_models(MODEL_CONFIGS_LOCATION)
+print(f"Loaded {len(models_aneurysm)} models on single GPU")
+print(f"Loaded {len(models_loc)} models on single GPU")
 
 @torch.no_grad()
 def eval_one_series_ensemble(slices: List[np.ndarray]):
-    """Run inference using all models on single GPU"""
+    """Two-stage inference on single GPU:
+    1) Predict all slices with models_aneurysm, get top-3 slice indices by ensemble prob.
+    2) Run models_loc on those top-3 slices.
+    Final per-class prob = min(aneurysm_prob, localization_prob).
+    Aneurysm prob = average of each aneurysm model's max slice confidence.
+    Returns (aneurysm_prob, per_class_probs[13]).
+    """
     if not slices:
-        return 0.1, np.ones(len(LABELS)) * 0.1
-    
-    ensemble_cls_preds = []
-    ensemble_loc_preds = []
-    total_weight = 0.0
-    
-    for model_dict in models:
-        model = model_dict["model"]
-        weight = model_dict["weight"]
-        
+        return 0.1, np.ones(len(LABELS), dtype=np.float32) * 0.1
+
+    num_slices = len(slices)
+
+    # Stage 1: Aneurysm presence per-slice using ensemble of aneurysm models
+    per_slice_accum = np.zeros(num_slices, dtype=np.float32)
+    cls_total_weight = 0.0
+    per_model_maxes: List[float] = []
+
+    for m in models_aneurysm:
+        model = m["model"]
+        weight = float(m.get("weight", 1.0))
+
         try:
-            max_conf_all = 0.0
-            per_class_max = np.zeros(len(LABELS), dtype=np.float32)
-            
-            # Process in batches
-            for i in range(0, len(slices), BATCH_SIZE):
-                batch_slices = slices[i:i+BATCH_SIZE]
-                
+            # Collect max conf per slice for this model
+            per_slice_max = np.zeros(num_slices, dtype=np.float32)
+
+            for i in range(0, num_slices, BATCH_SIZE):
+                batch = slices[i:i + BATCH_SIZE]
                 results = model.predict(
-                    batch_slices, 
-                    verbose=False, 
-                    batch=len(batch_slices), 
-                    device="cuda:0", 
-                    conf=0.01
+                    batch,
+                    verbose=False,
+                    batch=len(batch),
+                    device="cuda:0",
+                    conf=0.01,
                 )
-                
-                for r in results:
-                    if r is None or r.boxes is None or r.boxes.conf is None or len(r.boxes) == 0:
+
+                # Map each result to a slice index (offset by i)
+                for j, r in enumerate(results):
+                    idx = i + j
+                    if r is None or r.boxes is None or getattr(r.boxes, "conf", None) is None or len(r.boxes) == 0:
                         continue
                     try:
-                        confs = r.boxes.conf
-                        clses = r.boxes.cls
-                        for j in range(len(confs)):
-                            c = float(confs[j].item())
-                            k = int(clses[j].item())
-                            if c > max_conf_all:
-                                max_conf_all = c
-                            if 0 <= k < len(LABELS) and c > per_class_max[k]:
-                                per_class_max[k] = c
+                        # Max confidence over all detections = aneurysm presence prob for the slice
+                        per_slice_max[idx] = float(r.boxes.conf.max().item())
                     except Exception:
-                        try:
-                            batch_max = float(r.boxes.conf.max().item())
-                            if batch_max > max_conf_all:
-                                max_conf_all = batch_max
-                        except Exception:
-                            pass
-            
-            ensemble_cls_preds.append(max_conf_all * weight)
-            ensemble_loc_preds.append(per_class_max * weight)
-            total_weight += weight
-            
+                        # If anything odd, keep zero
+                        pass
+
+            # Record per-model max slice confidence
+            try:
+                per_model_maxes.append(float(per_slice_max.max().item()))
+            except Exception:
+                per_model_maxes.append(0.1)
+
+            per_slice_accum += per_slice_max * weight
+            cls_total_weight += weight
         except Exception as e:
-            print(f"Error in model {model_dict['name']}: {e}")
-            ensemble_cls_preds.append(0.1 * weight)
-            ensemble_loc_preds.append(np.ones(len(LABELS)) * 0.1 * weight)
-            total_weight += weight
-    
-    if total_weight > 0:
-        final_cls_pred = sum(ensemble_cls_preds) / total_weight
-        final_loc_preds = sum(ensemble_loc_preds) / total_weight
+            print(f"Error in aneurysm model {m.get('name','unknown')}: {e}")
+            # Add a low-confidence fallback for this model to keep weights aligned
+            per_slice_accum += (np.ones(num_slices, dtype=np.float32) * 0.1) * weight
+            cls_total_weight += weight
+            per_model_maxes.append(0.1)
+
+    if cls_total_weight <= 0:
+        # Fallback if no models produced output
+        per_slice_probs = np.ones(num_slices, dtype=np.float32) * 0.1
     else:
-        final_cls_pred = 0.1
-        final_loc_preds = np.ones(len(LABELS)) * 0.1
-    
-    return final_cls_pred, final_loc_preds
+        per_slice_probs = per_slice_accum / cls_total_weight
+
+    # Final aneurysm probability as average of per-model maximum slice confidences
+    if per_model_maxes:
+        aneurysm_prob = float(np.mean(per_model_maxes))
+    else:
+        aneurysm_prob = 0.1
+
+    # Pick top-K slice indices by aneurysm prob
+    top_k = min(3, num_slices)
+    if top_k == 0:
+        return aneurysm_prob if aneurysm_prob > 0 else 0.1, np.ones(len(LABELS), dtype=np.float32) * 0.1
+
+    top_indices = np.argsort(-per_slice_probs)[:top_k]
+    top_slices = [slices[idx] for idx in top_indices]
+
+    # Stage 2: Localization per-class over the top slices using ensemble of location models
+    loc_total_weight = 0.0
+    per_class_accum = np.zeros(len(LABELS), dtype=np.float32)
+
+    for m in models_loc:
+        model = m["model"]
+        weight = float(m.get("weight", 1.0))
+        try:
+            # Per-slice per-class maxima for this model
+            per_slice_per_class = []  # list of arrays shape [num_classes]
+
+            # Usually only up to 3 images, but keep batching generic
+            for i in range(0, len(top_slices), BATCH_SIZE):
+                batch = top_slices[i:i + BATCH_SIZE]
+                results = model.predict(
+                    batch,
+                    verbose=False,
+                    batch=len(batch),
+                    device="cuda:0",
+                    conf=0.01,
+                )
+                for r in results:
+                    cls_vec = np.zeros(len(LABELS), dtype=np.float32)
+                    if r is not None and r.boxes is not None and getattr(r.boxes, "conf", None) is not None and len(r.boxes) > 0:
+                        try:
+                            confs = r.boxes.conf
+                            clses = r.boxes.cls
+                            for j in range(len(confs)):
+                                c = float(confs[j].item())
+                                k = int(clses[j].item())
+                                if 0 <= k < len(LABELS) and c > cls_vec[k]:
+                                    cls_vec[k] = c
+                        except Exception:
+                            try:
+                                # If class info missing, fall back to presence only (no per-class boost)
+                                max_c = float(r.boxes.conf.max().item())
+                                if max_c > 0:
+                                    cls_vec[:] = np.maximum(cls_vec, 0)
+                            except Exception:
+                                pass
+                    per_slice_per_class.append(cls_vec)
+
+            if per_slice_per_class:
+                # Aggregate over top slices by max per class
+                per_slice_stack = np.stack(per_slice_per_class, axis=0)  # [K, C]
+                per_class_max_over_slices = per_slice_stack.max(axis=0)  # [C]
+            else:
+                per_class_max_over_slices = np.zeros(len(LABELS), dtype=np.float32)
+
+            per_class_accum += per_class_max_over_slices * weight
+            loc_total_weight += weight
+
+        except Exception as e:
+            print(f"Error in location model {m.get('name','unknown')}: {e}")
+            per_class_accum += (np.ones(len(LABELS), dtype=np.float32) * 0.1) * weight
+            loc_total_weight += weight
+
+    if loc_total_weight <= 0:
+        loc_probs = np.ones(len(LABELS), dtype=np.float32) * 0.1
+    else:
+        loc_probs = per_class_accum / loc_total_weight
+
+    # Final rule: per-class probability = min(aneurysm_prob, localization_prob)
+    final_loc_probs = np.minimum(loc_probs, aneurysm_prob).astype(np.float32)
+
+    return float(aneurysm_prob), final_loc_probs
 
 def _predict_inner(series_path):
     """Internal prediction logic with parallel preprocessing and single GPU inference"""
@@ -358,7 +415,7 @@ def predict(series_path: str):
 
 
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-08-28T14:35:32.183269Z","iopub.execute_input":"2025-08-28T14:35:32.183587Z","iopub.status.idle":"2025-08-28T14:36:01.359904Z","shell.execute_reply.started":"2025-08-28T14:35:32.183561Z","shell.execute_reply":"2025-08-28T14:36:01.358946Z"}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-08-29T13:01:34.980013Z","iopub.execute_input":"2025-08-29T13:01:34.980422Z","iopub.status.idle":"2025-08-29T13:01:35.171471Z","shell.execute_reply.started":"2025-08-29T13:01:34.980402Z","shell.execute_reply":"2025-08-29T13:01:35.170342Z"},"jupyter":{"outputs_hidden":false}}
 # Main execution
 if __name__ == "__main__":
     st = time.time()
@@ -372,7 +429,13 @@ if __name__ == "__main__":
         inference_server.run_local_gateway()
         
         submission_df = pl.read_parquet('/kaggle/working/submission.parquet')
-        # Optional: print head instead of display to avoid dependency on notebook environment
-        display(submission_df)
+        # Optional: display if available, else print
+        try:
+            from IPython.display import display as _display  # type: ignore
+            _display(submission_df)
+        except Exception:
+            print(submission_df)
     
     print(f"Total time: {time.time() - st}")
+
+# %% [code] {"jupyter":{"outputs_hidden":false}}

@@ -1,18 +1,23 @@
-"""Validate a single-class YOLO aneurysm detector at series level.
+"""Validate a single-class YOLO aneurysm detector at series level with two-step localization.
 
 Preprocessing:
     - DICOM -> HU -> per-slice min-max -> uint8 grayscale for YOLO (auto BGR conversion on call)
 
+Two-step process:
+    1. Run binary model on all slices to detect aneurysm presence (max confidence across slices)
+    2. If present, run localization model on top 3 slices by confidence to predict location
+
 Series score:
-    - Probability = max detection confidence across all processed slices/MIP windows in a series
+    - Classification: Probability = max detection confidence across all processed slices
+    - Location: Max confidence per class across top 3 slices (0 if no aneurysm detected)
 
 Outputs:
     - Prints classification AUC (aneurysm present)
-    - Prints location macro AUC (degenerate ~0.5; constant probs)
+    - Prints location macro AUC
     - Optional CSV with per-series probabilities
 
 Notes:
-    - Requires ultralytics (YOLOv8/11). Single-class model assumed.
+    - Requires ultralytics (YOLOv8/11). Binary model for presence, multiclass for location.
     - Use --mip-window > 0 to validate on sliding-window MIPs instead of raw slices.
 """
 import argparse
@@ -128,14 +133,15 @@ def main():
 
     print(f"Validation fold {args.val_fold}: {len(val_series)} series")
     print(f"Processing every {args.slice_step} slice(s)")
-    model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_binary/cv_y11s_positive_only_pretrain_hard_negatives_fold0/weights/best.pt"
+    model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_binary/cv_y11s_positive_only_pretrain_hard_negatives_fold1/weights/best.pt"
+    loc_model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11n_with_mix_up_mosaic_fold1/weights/best.pt"
     model = YOLO(model_path)
+    loc_model = YOLO(loc_model_path)
 
     series_probs: Dict[str, float] = {}
     scores_list: List[float] = []
     cls_labels: List[int] = []
     loc_labels: List[np.ndarray] = []
-    const_loc_probs = np.full(N_LOC, 0.5, dtype=np.float32)
     series_pred_loc_probs: List[np.ndarray] = []
 
     # For confidence comparison
@@ -167,6 +173,8 @@ def main():
         max_conf = 0.0
         total_dets = 0
         batch: list[np.ndarray] = []
+        all_imgs: list[np.ndarray] = []
+        slice_confs: list[float] = []
         
         def flush_batch(batch_imgs: list[np.ndarray]):
             nonlocal max_conf, total_dets
@@ -174,10 +182,14 @@ def main():
                 return
             # Ultralytics can take list/np.array. Provide list for variable shapes (should be consistent though).
             results = model.predict(batch_imgs, verbose=False, conf=0.01)
-            for r in results:
+            start_idx = len(all_imgs) - len(batch_imgs)
+            for i, r in enumerate(results):
+                idx = start_idx + i
                 if not r or r.boxes is None or r.boxes.conf is None or len(r.boxes) == 0:
+                    slice_confs[idx] = 0.0
                     continue
                 batch_max = float(r.boxes.conf.max().item())
+                slice_confs[idx] = batch_max
                 if batch_max > max_conf:
                     max_conf = batch_max
                 # Count detections (single-class)
@@ -198,11 +210,34 @@ def main():
                 img_uint8 = min_max_normalize(f)
                 if img_uint8.ndim == 2:
                     img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
+                all_imgs.append(img_uint8)
+                slice_confs.append(0.0)  # placeholder
                 batch.append(img_uint8)
                 if len(batch) >= args.batch_size:
                     flush_batch(batch)
                     batch.clear()
         flush_batch(batch)
+        
+        # Update max_conf from slice_confs
+        if slice_confs:
+            max_conf = max(slice_confs)
+        
+        # Two-step: if aneurysm present, run localization on top 3 slices
+        loc_probs = np.zeros(N_LOC, dtype=np.float32)
+        if max_conf > 0 and len(slice_confs) > 0:
+            # Get top 3 slices by confidence
+            sorted_indices = sorted(range(len(slice_confs)), key=lambda i: slice_confs[i], reverse=True)[:3]
+            top_imgs = [all_imgs[i] for i in sorted_indices]
+            # Run localization model
+            loc_results = loc_model.predict(top_imgs, verbose=False, conf=0.01)
+            for r in loc_results:
+                if r and r.boxes and len(r.boxes) > 0:
+                    for box in r.boxes:
+                        cls = int(box.cls.item())
+                        conf = float(box.conf.item())
+                        if conf > loc_probs[cls]:
+                            loc_probs[cls] = conf
+        
         series_probs[sid] = max_conf
         scores_list.append(max_conf)
         series_pred_counts[sid] = total_dets
@@ -218,10 +253,23 @@ def main():
             current_y_true = np.array(cls_labels)
             current_y_scores = np.array(scores_list)
             try:
-                partial_auc = roc_auc_score(current_y_true, current_y_scores)
-                print(f"Partial AUC (FPR <= 0.1) after {len(cls_labels)} series: {partial_auc:.4f}")
+                partial_cls_auc = roc_auc_score(current_y_true, current_y_scores)
+                print(f"Partial Classification AUC (FPR <= 0.1) after {len(cls_labels)} series: {partial_cls_auc:.4f}")
             except ValueError as e:
-                print(f"Could not compute partial AUC after {len(cls_labels)} series: {e}")
+                print(f"Could not compute partial classification AUC after {len(cls_labels)} series: {e}")
+            
+            # Compute partial location macro AUC
+            current_loc_labels_arr = np.stack(loc_labels)
+            current_loc_pred_arr = np.stack(series_pred_loc_probs)
+            per_loc_aucs = []
+            for i in range(N_LOC):
+                try:
+                    auc_i = roc_auc_score(current_loc_labels_arr[:, i], current_loc_pred_arr[:, i])
+                except ValueError:
+                    auc_i = float('nan')
+                per_loc_aucs.append(auc_i)
+            partial_loc_macro_auc = np.nanmean(per_loc_aucs)
+            print(f"Partial Location Macro AUC after {len(cls_labels)} series: {partial_loc_macro_auc:.4f}")
         series_true_labels[sid] = label
         # Build location label vector (13) if present; else zeros
         loc_vec = np.zeros(N_LOC, dtype=np.float32)
@@ -237,7 +285,7 @@ def main():
         if missing_loc_cols and args.verbose:
             print("Warning: Some location columns missing in train_df; filled with 0")
         loc_labels.append(loc_vec)
-        series_pred_loc_probs.append(const_loc_probs.copy())
+        series_pred_loc_probs.append(loc_probs)
 
         # Collect confidences and modality for comparison
         modality = 'Unknown'
@@ -359,19 +407,20 @@ def main():
     loc_macro_auc = np.nanmean(per_loc_aucs)
 
     print(f"Classification AUC (aneurysm present): {cls_auc:.4f}")
-    print(f"Location macro AUC (constant 0.5 baseline): {loc_macro_auc:.4f}")
+    print(f"Location macro AUC: {loc_macro_auc:.4f}")
     print(f"Combined (mean) CV metric: {(cls_auc + (loc_macro_auc if not math.isnan(loc_macro_auc) else 0))/2:.4f}")
 
     if args.save_csv:
         out_rows = []
-        for sid, prob in series_probs.items():
+        for i, (sid, prob) in enumerate(series_probs.items()):
+            loc_probs_for_series = series_pred_loc_probs[i]
             out_rows.append({
                 'SeriesInstanceUID': sid,
                 'aneurysm_prob': prob,
                 'true_label': series_true_labels.get(sid, None),
                 'modality': series_modalities.get(sid, ''),
                 'num_detections': series_pred_counts.get(sid, 0),
-                **{f'loc_prob_{i}': 0.5 for i in range(N_LOC)}
+                **{f'loc_prob_{j}': loc_probs_for_series[j] for j in range(N_LOC)}
             })
         pd.DataFrame(out_rows).to_csv(args.save_csv, index=False)
         print(f"Saved per-series predictions to {args.save_csv}")

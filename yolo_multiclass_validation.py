@@ -2,6 +2,7 @@
 
 Preprocessing:
     - DICOM -> HU -> per-slice min-max -> uint8 (BGR for YOLO inference)
+    - BGR mode: stacks 3 consecutive slices [i-1, i, i+1] as 3-channel images
 
 Series scores:
     - Aneurysm Present = max detection confidence across ALL 13 classes over processed slices/MIP windows
@@ -14,7 +15,7 @@ Outputs:
 
 Notes:
     - Requires ultralytics (YOLOv8/11) and 13-class weights.
-    - Use --mip-window > 0 for sliding-window MIPs; 0 for per-slice.
+    - Use --mip-window > 0 for sliding-window MIPs; 0 for per-slice; --bgr-mode for 3-slice stacking.
 """
 import argparse
 from pathlib import Path
@@ -67,6 +68,8 @@ def parse_args():
     ap.add_argument('--wandb-group', type=str, default='', help='Optional W&B group')
     ap.add_argument('--wandb-tags', type=str, default='', help='Comma-separated W&B tags')
     ap.add_argument('--wandb-mode', type=str, default='online', choices=['online', 'offline'], help='W&B mode (online/offline)')
+    ap.add_argument('--bgr-mode', action='store_true', help='Use BGR mode (3-channel images from stacked slices)')
+    ap.add_argument('--bgr-non-overlapping', action='store_true', help='Use non-overlapping 3-slice windows in BGR mode (e.g., [1,2,3],[4,5,6],[7,8,9])')
     ap.add_argument('--wandb-resume-id', type=str, default='', help='Resume W&B run id (optional)')
     return ap.parse_args()
 
@@ -241,11 +244,109 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                 mip_u8 = min_max_normalize(mip_hu)
                 if args.mip_img_size > 0 and (mip_u8.shape[0] != args.mip_img_size or mip_u8.shape[1] != args.mip_img_size):
                     mip_u8 = cv2.resize(mip_u8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
-                mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2BGR)
+                mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2BGR) if mip_u8.ndim == 2 else mip_u8
                 batch.append(mip_rgb)
                 if len(batch) >= args.batch_size:
                     flush_batch(batch)
                     batch.clear()
+            flush_batch(batch)
+        elif getattr(args, 'bgr_mode', False):
+            # BGR mode: stack 3 consecutive slices as channels
+            slices_hu: list[np.ndarray] = []
+            for dcm_path in dicoms:
+                try:
+                    frames = read_dicom_frames_hu(dcm_path)
+                except Exception as e:
+                    if args.verbose:
+                        print(f"[SKIP] {dcm_path.name}: {e}")
+                    continue
+                for f in frames:
+                    f = f.astype(np.float32)
+                    slices_hu.append(f)
+
+            if len(slices_hu) < 3:
+                # Not enough slices for BGR mode, skip this series
+                series_probs[sid] = 0.0
+                series_pred_loc_probs.append(np.zeros(N_LOC, dtype=np.float32))
+                series_pred_counts[sid] = 0
+                continue
+
+            if getattr(args, 'bgr_non_overlapping', False):
+                # Non-overlapping 3-slice windows: [0,1,2], [3,4,5], [6,7,8], etc.
+                window_starts = list(range(0, len(slices_hu) - 2, 3))  # Start every 3 slices, ensure we have at least 3 slices
+                if args.max_slices and len(window_starts) > args.max_slices:
+                    window_starts = window_starts[:args.max_slices]
+                
+                for start_idx in window_starts:
+                    # Get exactly 3 consecutive slices: [start_idx, start_idx+1, start_idx+2]
+                    slice_indices_3 = [start_idx, start_idx + 1, start_idx + 2]
+                    
+                    # Load and normalize the 3 slices
+                    processed_slices = []
+                    target_shape = slices_hu[0].shape
+                    for idx in slice_indices_3:
+                        slice_hu = slices_hu[idx]
+                        # Resize if needed to match target shape
+                        if slice_hu.shape != target_shape:
+                            slice_hu = cv2.resize(slice_hu, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
+                        slice_u8 = min_max_normalize(slice_hu)
+                        processed_slices.append(slice_u8)
+
+                    # Stack as 3-channel image
+                    bgr_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
+
+                    # Resize if needed
+                    if args.mip_img_size > 0 and (bgr_img.shape[0] != args.mip_img_size or bgr_img.shape[1] != args.mip_img_size):
+                        bgr_img = cv2.resize(bgr_img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+
+                    batch.append(bgr_img)
+                    if len(batch) >= args.batch_size:
+                        flush_batch(batch)
+                        batch.clear()
+            else:
+                # Original overlapping BGR mode: [i-1,i,i+1] for each i
+                step = max(1, args.slice_step)
+                slice_indices = list(range(0, len(slices_hu), step))
+                if args.max_slices and len(slice_indices) > args.max_slices:
+                    slice_indices = slice_indices[:args.max_slices]
+
+                for i in slice_indices:
+                    # Get 3 consecutive slices: [i-1, i, i+1], handling boundaries
+                    slice_indices_3 = []
+                    for offset in [-1, 0, 1]:
+                        idx = i + offset
+                        if 0 <= idx < len(slices_hu):
+                            slice_indices_3.append(idx)
+                        else:
+                            # For boundary cases, duplicate the center slice
+                            slice_indices_3.append(i)
+
+                    # Ensure we have exactly 3 slices
+                    while len(slice_indices_3) < 3:
+                        slice_indices_3.append(i)
+
+                    # Load and normalize the 3 slices
+                    processed_slices = []
+                    target_shape = slices_hu[0].shape
+                    for idx in slice_indices_3[:3]:
+                        slice_hu = slices_hu[idx]
+                        # Resize if needed to match target shape
+                        if slice_hu.shape != target_shape:
+                            slice_hu = cv2.resize(slice_hu, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
+                        slice_u8 = min_max_normalize(slice_hu)
+                        processed_slices.append(slice_u8)
+
+                    # Stack as 3-channel image
+                    bgr_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
+
+                    # Resize if needed
+                    if args.mip_img_size > 0 and (bgr_img.shape[0] != args.mip_img_size or bgr_img.shape[1] != args.mip_img_size):
+                        bgr_img = cv2.resize(bgr_img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+
+                    batch.append(bgr_img)
+                    if len(batch) >= args.batch_size:
+                        flush_batch(batch)
+                        batch.clear()
             flush_batch(batch)
         else:
             # Per-slice inference
@@ -321,11 +422,27 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
         per_loc_aucs.append(auc_i)
     loc_macro_auc = np.nanmean(per_loc_aucs)
 
+    # Compute competition-style weighted metric
+    # Competition weights: 13 for aneurysm present, 1 for each location
+    aneurysm_weight = 13
+    location_weight = 1
+    total_weights = aneurysm_weight + location_weight * N_LOC  # 13 + 13 = 26
+
+    valid_loc_aucs = [auc for auc in per_loc_aucs if not math.isnan(auc)]
+    if valid_loc_aucs:
+        weighted_sum = aneurysm_weight * cls_auc + location_weight * sum(valid_loc_aucs)
+        competition_score = weighted_sum / total_weights
+    else:
+        competition_score = cls_auc  # fallback if no location AUCs
+
+    # For backward compatibility, also compute the simple average
     combined_mean = (cls_auc + (loc_macro_auc if not math.isnan(loc_macro_auc) else 0)) / 2
+
     print(f"Classification AUC (aneurysm present): {cls_auc:.4f}")
     print(f"Classification AP (PR AUC): {cls_ap:.4f}")
     print(f"Location macro AUC: {loc_macro_auc:.4f}")
-    print(f"Combined (mean) metric: {combined_mean:.4f}")
+    print(f"Competition score (weighted): {competition_score:.4f}")
+    print(f"Combined (mean) metric: {combined_mean:.4f}")  # Should be same as competition_score
 
     # Build per-series dataframe
     out_rows = []
@@ -356,6 +473,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
         'cls_auc': float(cls_auc),
         'cls_ap': float(cls_ap) if not (isinstance(cls_ap, float) and math.isnan(cls_ap)) else float('nan'),
         'loc_macro_auc': float(loc_macro_auc) if not math.isnan(loc_macro_auc) else float('nan'),
+        'competition_score': float(competition_score) if not math.isnan(competition_score) else float('nan'),
         'combined_mean': float(combined_mean) if not math.isnan(combined_mean) else float('nan'),
         'mean_num_detections': float(np.mean(list(series_pred_counts.values())) if series_pred_counts else 0.0),
         'per_loc_aucs': {LOCATION_LABELS[i]: (float(per_loc_aucs[i]) if not math.isnan(per_loc_aucs[i]) else float('nan')) for i in range(N_LOC)},
@@ -384,6 +502,8 @@ def _maybe_init_wandb(args: argparse.Namespace, fold_id: int, weights_path: str)
         'mip_window': args.mip_window,
         'mip_img_size': args.mip_img_size,
         'mip_no_overlap': args.mip_no_overlap,
+        'bgr_mode': args.bgr_mode,
+        'bgr_non_overlapping': args.bgr_non_overlapping,
         'batch_size': args.batch_size,
         'series_limit': args.series_limit,
         'max_slices': args.max_slices,
@@ -487,7 +607,7 @@ def main():
     # CV summary
     if out_dir and len(all_fold_metrics) > 1:
         # Aggregate simple means across folds for scalar metrics
-        agg_keys = ['cls_auc', 'cls_ap', 'loc_macro_auc', 'combined_mean', 'mean_num_detections']
+        agg_keys = ['cls_auc', 'cls_ap', 'loc_macro_auc', 'competition_score', 'combined_mean', 'mean_num_detections']
         summary = {'num_folds': len(all_fold_metrics)}
         for k in agg_keys:
             vals = [m[k] for m in all_fold_metrics if isinstance(m.get(k), (int, float)) and not math.isnan(m.get(k))]

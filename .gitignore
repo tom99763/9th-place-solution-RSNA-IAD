@@ -26,4 +26,5 @@ pycache/
 CLAUDE.md
 ultralytics-timm/
 yolo_aneurysm_locations/
+yolo_aneurysm_binary/
 *.pt
