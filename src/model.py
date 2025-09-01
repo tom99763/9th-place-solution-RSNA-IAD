@@ -1,9 +1,6 @@
 import timm
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn.models import GraphSAGE, GAT
-import torch.nn as nn
+from torch_geometric.nn.models import GraphSAGE
 import torch
 from torch_geometric.nn import LayerNorm
 import torch.nn.functional as F

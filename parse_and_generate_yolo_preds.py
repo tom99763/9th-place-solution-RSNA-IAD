@@ -73,7 +73,7 @@ def eval_one_series(slices, loc, models, uid):
             per_class_max = np.zeros(len(LABELS), dtype=np.float32)
 
             # Process in batches
-            for i in tqdm(range(0, len(slices), BATCH_SIZE)):
+            for i in range(0, len(slices), BATCH_SIZE):
                 batch_slices = slices[i:i + BATCH_SIZE]
                 z_idxes = [i + batch_idx for batch_idx in range(len(batch_slices))]
 
@@ -239,7 +239,7 @@ def main():
     if not os.path.exists(root/'extract_data'):
         os.makedirs(root/'extract_data')
 
-    for uid in uids:
+    for uid in tqdm(uids):
         print(uid)
         if not os.path.exists(root /f'extract_data/{uid}'):
             os.makedirs(root / f'extract_data/{uid}')
