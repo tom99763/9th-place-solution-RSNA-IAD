@@ -2,7 +2,7 @@ import timm
 import torch.nn as nn
 from torch_geometric.nn.models import GraphSAGE
 import torch
-from torch_geometric.nn import LayerNorm
+from torch_geometric.nn import LayerNorm, global_max_pool
 import torch.nn.functional as F
 
 class GraphModel(nn.Module):
@@ -29,7 +29,8 @@ class GraphModel(nn.Module):
 
         x = x.cuda()
         logits = self.gnn(x, edge_index, batch=batch)
-        return logits
+        cls_logits = global_max_pool(logits, batch)
+        return logits, cls_logits
 
 
 

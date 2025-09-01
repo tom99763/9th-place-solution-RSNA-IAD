@@ -1,14 +1,21 @@
 # conf/config.yaml
 # These are some base parameters for the experiment
-project_name: "rsna-intracranial-aneurysm-detection"
+project_name: "rsna-iad-yolo-gnn"
 
-data_dir: ./data/processed
+data_dir: ./src/data
 seed: 42
 fold_id: 0
 
-batch_size: 4  
-num_workers: 1  
-experiment: naive_efficientnet_v2_cls
+batch_size: 16
+num_workers: 4
+experiment: knn_graph_15_pe_8
+
+#model config
+pos_weight: 8
+walk_length: 8
+k_neibs: 15
+graph_type: knn_graph
+use_pe: true
 
 # Balanced sampling configuration
 use_balanced_sampling: true  # Set to true to enable balanced pos/neg sampling
@@ -26,7 +33,7 @@ wandb:
 # The 'defaults' list tells Hydra which configs to load by default.
 # It will look for 'lightgbm.yaml' inside the 'model' sub-directory.
 defaults:
-  - model: MultiBackboneModel
+  - model: GraphModel
   - optimizer: AdamW
   - trainer: default
   - _self_
