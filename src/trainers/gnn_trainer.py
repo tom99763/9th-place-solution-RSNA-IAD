@@ -42,7 +42,7 @@ class GNNClassifier(pl.LightningModule):
         cls_labels = cls_labels.view_as(pred_cls)
 
         # Loss (only node loss here, could add cls loss if you want multitask)
-        loss = self.node_loss_fn(node_logits, node_labels)
+        loss = self.node_loss_fn(node_logits[:, 0], node_labels)
 
         # --- Graph-level metrics ---
         self.train_cls_auroc.update(pred_cls, cls_labels.long())
@@ -75,15 +75,15 @@ class GNNClassifier(pl.LightningModule):
         cls_labels = cls_labels.view_as(pred_cls)
 
         # Loss
-        loss = self.node_loss_fn(node_logits, node_labels)
+        loss = self.node_loss_fn(node_logits[:, 0], node_labels)
 
         # --- Graph-level metrics ---
         self.val_cls_auroc.update(pred_cls, cls_labels.long())
 
         # --- Node-level metrics ---
         self.val_node_auroc.update(node_logits, node_labels.long())
-        self.val_node_acc.update(torch.sigmoid(node_logits), node_labels.int())
-        self.val_node_f1.update(torch.sigmoid(node_logits), node_labels.int())
+        self.val_node_acc.update(torch.sigmoid(node_logits[:, 0]), node_labels.int())
+        self.val_node_f1.update(torch.sigmoid(node_logits[:, 0]), node_labels.int())
 
         # Logging
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
