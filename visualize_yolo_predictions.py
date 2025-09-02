@@ -34,7 +34,7 @@ def parse_args():
     ap = argparse.ArgumentParser(description="Visualize YOLO predictions on tomogram slices")
     ap.add_argument('--series-id', type=str, required=True, help='SeriesInstanceUID to visualize')
     ap.add_argument('--model-path', type=str, 
-                    default="/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_binary/cv_y11s_positive_only_pretrain_hard_negatives_fold0/weights/best.pt",
+                    default="/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_binary/fold0_run_fold0/weights/best.pt",
                     help='Path to YOLO weights (.pt)')
     ap.add_argument('--conf-threshold', type=float, default=0.1, help='Confidence threshold for displaying boxes')
     ap.add_argument('--max-slices', type=int, default=0, help='Limit number of slices to display (0=all)')

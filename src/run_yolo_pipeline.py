@@ -29,23 +29,25 @@ ROOT = Path(__file__).resolve().parents[1]
 def parse_args():
     ap = argparse.ArgumentParser(description='Train and validate YOLO aneurysm pipeline')
     ap.add_argument('--data', type=str, default='configs/yolo_aneurysm_locations.yaml', help='Dataset YAML path')
-    ap.add_argument('--model', type=str, default='/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_binary/cv_y11s_positive_only_fold2/weights/best.pt', help='Pretrained checkpoint or model config')
-    ap.add_argument('--epochs', type=int, default=100)
+    ap.add_argument('--model', type=str, default='yolo11l.pt', help='Pretrained checkpoint or model config')
+    ap.add_argument('--epochs', type=int, default=130)
     ap.add_argument('--img', type=int, default=512)
     ap.add_argument('--batch', type=int, default=16)
     ap.add_argument('--device', type=str, default='')
     ap.add_argument('--project', type=str, default='yolo_aneurysm_locations')
-    ap.add_argument('--name', type=str, default='exp')
+    ap.add_argument('--name', type=str, default='exp-2-folds')
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--freeze', type=int, default=0)
     ap.add_argument('--patience', type=int, default=150)
     ap.add_argument('--exist-ok', action='store_true')
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--data-fold-template', type=str, default='', help='YAML template with {fold} placeholder for per-fold datasets (required)')
-    ap.add_argument('--mixup', type=float, default=0.2, help='Mixup augmentation ratio (0.0 = no mixup)')
-    ap.add_argument('--mosaic', type=float, default=0.2, help='Mosaic augmentation ratio (0.0 = no mosaic)')
-    ap.add_argument('--fliplr', type=float, default=0.5, help='Horizontal flip augmentation ratio (0.0 = no flip)')
-    ap.add_argument('--flipud', type=float, default=0.5, help='Vertical flip augmentation ratio (0.0 = no flip)')
+    ap.add_argument('--mixup', type=float, default=0.4, help='Mixup augmentation ratio (0.0 = no mixup)')
+    ap.add_argument('--mosaic', type=float, default=0.5, help='Mosaic augmentation ratio (0.0 = no mosaic)')
+    ap.add_argument('--fliplr', type=float, default=0.0, help='Horizontal flip augmentation ratio (0.0 = no flip)')
+    ap.add_argument('--flipud', type=float, default=0.0, help='Vertical flip augmentation ratio (0.0 = no flip)')
+    ap.add_argument('--dropout', type=float, default=0.3, help='Dropout rate (0.0 = no dropout)')
+    ap.add_argument('--close-mosaic', type=int, default=0, help='Close mosaic boxes (0=disabled, 10=remove_last_10_epochs)')
 
     # Validation settings
     ap.add_argument('--folds', type=str, default='0', help='Comma-separated fold IDs to validate (e.g., 0 or 0,1,2,3,4)')
@@ -152,6 +154,7 @@ def run():
             mosaic=args.mosaic,
             fliplr=args.fliplr,
             flipud=args.flipud,
+            dropout=args.dropout,
         )
         save_dir = Path(results.save_dir)
         weights_path = save_dir / 'weights' / 'best.pt'

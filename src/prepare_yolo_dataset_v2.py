@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from configs.data_config import data_path, N_FOLDS, SEED, LABELS_TO_IDX  # type: ignore
 
-
+N_FOLDS = 5
 rng = random.Random(SEED)
 
 
@@ -91,26 +91,26 @@ def parse_args():
     ap.add_argument("--verbose", action="store_true")
     # Image/output options (kept name for backward compatibility)
     ap.add_argument("--mip-img-size", type=int, default=512, help="Final square image size for saved samples (0 = keep original)")
-    ap.add_argument("--mip-out-name", type=str, default="yolo_dataset_hard_negative_fold_0", help="Base subdirectory under data/ for outputs; when --generate-all-folds, becomes {base}_fold{fold}")
+    ap.add_argument("--mip-out-name", type=str, default="yolo_dataset", help="Base subdirectory under data/ for outputs; when --generate-all-folds, becomes {base}_fold{fold}")
     # Labeling scheme
     ap.add_argument(
         "--label-scheme",
         type=str,
         choices=["locations", "aneurysm_present"],
-        default="aneurysm_present",
+        default="locations",
         help="Use location-specific classes (from LABELS_TO_IDX) or single binary class 'aneurysm_present'",
     )
     # Negative sampling controls
     ap.add_argument(
         "--neg-per-series",
         type=int,
-        default=3,
+        default=1,
         help="Number of negative slices to sample per series without positives (fallback when pos-neg-ratio=0).",
     )
     ap.add_argument(
         "--pos-neg-ratio",
         type=float,
-        default=3.0,
+        default=0,
         help=(
             "Negatives per positive for positive series (sampled from the same series). "
             "E.g., 2.0 adds ~2 negative slices for each positive slice (capped by available slices)."
@@ -124,7 +124,7 @@ def parse_args():
     ap.add_argument(
         "--adjacent-offset",
         type=int,
-        default=2,
+        default=0,
         help="Offset for adjacent negative slices (default: ±2 slices from positive)",
     )
     # YAML outputs
@@ -155,6 +155,12 @@ def load_folds(root: Path) -> Dict[str, int]:
     ):
         for uid in series_df.loc[test_idx, "SeriesInstanceUID"].tolist():
             fold_map[uid] = i
+    
+    # Update train_df.csv with the new folds
+    df["fold_id"] = df["SeriesInstanceUID"].astype(str).map(fold_map)
+    df.to_csv(df_path, index=False)
+    print(f"Updated {df_path} with new fold_id column based on N_FOLDS={N_FOLDS}")
+    
     return fold_map
 
 
@@ -480,7 +486,7 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
 def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_scheme: str):
     yaml_dir.mkdir(parents=True, exist_ok=True)
     # Make paths relative to the workspace root
-    relative_path = dataset_root.relative_to(ROOT)
+    relative_path = dataset_root.resolve().relative_to(ROOT)
     # Names section depends on labeling scheme
     names_lines: List[str] = []
     if label_scheme == "aneurysm_present":
@@ -536,4 +542,19 @@ if __name__ == "__main__":
 
 #python3 -m src.prepare_yolo_dataset_v2 --val-fold 1 --mip-out-name yolo_dataset_hard_negative_fold_1 --label-scheme aneurysm_present --yaml-out-dir configs --yaml-name-template yolo_bin_fold1_hard_negatives.yaml --overwrite --neg-per-series 3 --pos-neg-ratio 3.0 --use-adjacent-negativ
 #es --adjacent-offset 2 --mip-img-size 512 --image-ext png --verbose
+
+
+#python3 -m src.prepare_yolo_dataset_v2 \
+#  --generate-all-folds \
+#  --mip-out-name yolo_dataset_positive_adj_neg \
+#  --mip-img-size 512 \
+#  --label-scheme aneurysm_present \
+#  --use-adjacent-negatives \
+#  --adjacent-offset 2 \
+#  --neg-per-series 0 \
+#  --pos-neg-ratio 0 \
+#  --yaml-out-dir configs \
+#  --yaml-name-template yolo_bin_fold{fold}.yaml \
+#  --overwrite \
+#  --verbose
 

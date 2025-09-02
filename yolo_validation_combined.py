@@ -67,7 +67,7 @@ N_LOC = len(LOCATION_LABELS)
 def parse_args():
     ap = argparse.ArgumentParser(description="Series-level validation for YOLO aneurysm detector")
     #ap.add_argument('--weights', type=str, required=True, help='Path to YOLO weights (.pt)')
-    ap.add_argument('--val-fold', type=int, default=0, help='Fold id to evaluate (matches train.csv fold_id)')
+    ap.add_argument('--val-fold', type=int, default=1, help='Fold id to evaluate (matches train.csv fold_id)')
     ap.add_argument('--series-limit', type=int, default=0, help='Optional limit on number of validation series (debug)')
     ap.add_argument('--max-slices', type=int, default=0, help='Optional cap on number of slices per series (debug)')
     ap.add_argument('--save-csv', type=str, default='', help='Optional path to save per-series predictions CSV')
@@ -122,6 +122,7 @@ def collect_series_slices(series_dir: Path) -> List[Path]:
 def main():
     args = parse_args()
     data_root = Path(data_path)
+    import time
     series_root = data_root / 'series'
     train_df = pd.read_csv(data_root / 'train_df.csv') if (data_root / 'train_df.csv').exists() else pd.read_csv(data_root / 'train.csv')
     if 'Aneurysm Present' not in train_df.columns:
@@ -133,8 +134,8 @@ def main():
 
     print(f"Validation fold {args.val_fold}: {len(val_series)} series")
     print(f"Processing every {args.slice_step} slice(s)")
-    model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_binary/cv_y11s_positive_only_pretrain_hard_negatives_fold1/weights/best.pt"
-    loc_model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11n_with_mix_up_mosaic_fold1/weights/best.pt"
+    model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_binary/cv_y11s_positive_only_pretrain_hard_negatives_fold22/weights/best.pt"
+    loc_model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11n_with_mix_up_mosaic_fold2/weights/best.pt"
     model = YOLO(model_path)
     loc_model = YOLO(loc_model_path)
 

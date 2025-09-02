@@ -128,7 +128,7 @@ def main():
 
     print(f"Validation fold {args.val_fold}: {len(val_series)} series")
     print(f"Processing every {args.slice_step} slice(s)")
-    model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_binary/cv_y11s_positive_only_pretrain_hard_negatives_fold0/weights/best.pt"
+    model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_binary/fold0_run_fold0/weights/best.pt"
     model = YOLO(model_path)
 
     series_probs: Dict[str, float] = {}

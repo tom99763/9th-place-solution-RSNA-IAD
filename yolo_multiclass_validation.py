@@ -45,7 +45,7 @@ N_LOC = len(LOCATION_LABELS)
 def parse_args():
     ap = argparse.ArgumentParser(description="Series-level validation for YOLO (13-class)")
     ap.add_argument('--weights', type=str, required=False, default='', help='Path to YOLO weights (.pt) with 13 classes')
-    ap.add_argument('--val-fold', type=int, default=0, help='Fold id to evaluate (matches train.csv fold_id)')
+    ap.add_argument('--val-fold', type=int, default=1, help='Fold id to evaluate (matches train.csv fold_id)')
     ap.add_argument('--series-limit', type=int, default=0, help='Optional limit on number of validation series (debug)')
     ap.add_argument('--max-slices', type=int, default=0, help='Optional cap on number of slices/windows per series (debug)')
     ap.add_argument('--save-csv', type=str, default='', help='Optional path to save per-series predictions CSV (deprecated, prefer --out-dir)')
@@ -61,7 +61,7 @@ def parse_args():
     ap.add_argument('--cv', action='store_true', help='Run validation across all folds found in train_df.csv/train.csv')
     ap.add_argument('--folds', type=str, default='', help='Comma-separated fold ids to run (overrides --val-fold when provided)')
     # Weights & Biases
-    ap.add_argument('--wandb', default=True, action='store_true', help='Log metrics and outputs to Weights & Biases')
+    ap.add_argument('--wandb', default=False, action='store_true', help='Log metrics and outputs to Weights & Biases')
     ap.add_argument('--wandb-project', type=str, default='yolo_aneurysm_locations', help='W&B project name (no slashes)')
     ap.add_argument('--wandb-entity', type=str, default='', help='W&B entity (team/user)')
     ap.add_argument('--wandb-run-name', type=str, default='', help='W&B run name (defaults to val_fold{fold})')
