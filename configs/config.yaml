@@ -8,14 +8,14 @@ fold_id: 0
 
 batch_size: 4
 num_workers: 4
-experiment: knn_graph_no_pe_6l_128
+experiment: knn_graph_pe_4_4l_128
 
 #model config
 pos_weight: 8
-walk_length: 6
+walk_length: 4
 k_neibs: 15
 graph_type: knn_graph
-use_pe: false
+use_pe: true
 
 # Balanced sampling configuration
 use_balanced_sampling: true  # Set to true to enable balanced pos/neg sampling

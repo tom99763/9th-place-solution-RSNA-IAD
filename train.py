@@ -34,7 +34,7 @@ def train(cfg: DictConfig) -> None:
     )
 
     ckpt_callback = pl.callbacks.ModelCheckpoint(
-        monitor="val_node_auroc"
+        monitor="val_cls_auroc"
         , mode="max"
         , dirpath="./models"
         , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_loss:.4f}-{val_loc_auroc:.4f}'
