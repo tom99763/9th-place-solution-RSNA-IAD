@@ -8,10 +8,10 @@ fold_id: 0
 
 batch_size: 4
 num_workers: 4
-experiment: knn_graph_pe_4_4l_128
+experiment: knn_graph_k15_pe_4_4l_128
 
 #model config
-pos_weight: 8
+pos_weight: 4
 walk_length: 4
 k_neibs: 15
 graph_type: knn_graph
