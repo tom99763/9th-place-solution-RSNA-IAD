@@ -105,9 +105,9 @@ def eval_one_series(slices, loc, models, uid):
                             x_center = (x1 + x2) / 2
                             y_center = (y1 + y2) / 2
 
-                            ensemble_locations.append([round(z_idxes[z_idx]),  # depth
-                                                       round(y_center),  # height
-                                                       round(x_center),  # width
+                            ensemble_locations.append([round(z_idxes[z_idx]) + 1e-5 * model_idx,  # depth
+                                                       round(y_center) + 1e-5 * model_idx,  # height
+                                                       round(x_center) + 1e-5 * model_idx,  # width
                                                        float(c),  # confidence
                                                        k,  # class
                                                        model_idx,

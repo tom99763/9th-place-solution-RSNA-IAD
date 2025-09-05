@@ -2,6 +2,6 @@ _target_: src.model.GraphModel
 use_pe: true
 walk_length: 4
 num_layers: 4
-hidden_channels: 128
+hidden_channels: 256
 jk: 'lstm'
 dropout: 0.3

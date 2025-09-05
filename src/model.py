@@ -9,7 +9,7 @@ class GraphModel(nn.Module):
     def __init__(self, hidden_channels=256, num_layers=8, jk='lstm',
                  walk_length=8, use_pe=True, dropout=0.3):
         super().__init__()
-        self.gnn = GraphSAGE(64 + walk_length if use_pe else 64,
+        self.gnn = GraphSAGE(256 + walk_length if use_pe else 256,
                              num_layers= num_layers,
                              hidden_channels=hidden_channels,
                              out_channels=1,
