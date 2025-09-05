@@ -35,35 +35,23 @@ class DATA_CONFIG:
 # Model configurations - Add your models here
 MODEL_CONFIGS = [
     {
-        "path": "./models/best.pt",
+        "path": "./models/yolo/yolo11m_fold0.pt",
         "fold": "0",
         "weight": 1.0,
         "name": "YOLOv11n_fold0"
     },
-    # {
-    #     "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold12/weights/best.pt",
-    #     "fold": "1",
-    #     "weight": 1.0,
-    #     "name": "YOLOv11n_fold1"
-    # },
-    # {
-    #     "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold22/weights/best.pt",
-    #     "fold": "2",
-    #     "weight": 1.0,
-    #     "name": "YOLOv11n_fold2"
-    # }
-    # {
-    #    "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold32/weights/best.pt",
-    #    "fold": "3",
-    #    "weight": 1.0,
-    #    "name": "YOLOv11n_fold3"
-    # },
-    # {
-    #    "path": "/kaggle/input/rsna-sergio-models/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold42/weights/best.pt",
-    #    "fold": "4",
-    #    "weight": 1.0,
-    #    "name": "YOLOv11n_fold4"
-    # }
+{
+        "path": "./models/yolo/yolo11m_fold1.pt",
+        "fold": "1",
+        "weight": 1.0,
+        "name": "YOLOv11n_fold1"
+    },
+{
+        "path": "./models/yolo/yolo11m_fold2.pt",
+        "fold": "2",
+        "weight": 1.0,
+        "name": "YOLOv11n_fold2"
+    },
 ]
 
 # Constants
