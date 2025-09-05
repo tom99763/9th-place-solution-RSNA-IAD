@@ -22,13 +22,13 @@ import gc
 import time
 from scipy.spatial import Delaunay
 
-conf_yolo = 0.01
+conf_yolo = 0.2
 
 class DATA_CONFIG:
-    radius = 30
+    radius = 20
     num_samples = 20
     thr = 20
-    thr_sim = 0.25
+    thr_sim = 0.5
     order = 1
     alpha = 5
 
