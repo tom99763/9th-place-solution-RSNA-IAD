@@ -37,7 +37,7 @@ def train(cfg: DictConfig) -> None:
         monitor="val_cls_auroc"
         , mode="max"
         , dirpath="./models"
-        , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_loss:.4f}-{val_loc_auroc:.4f}'
+        , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_loss:.4f}'
                                          '-{val_cls_auroc:.4f}' + \
                    f"fold_id={cfg.fold_id}"
         , save_top_k = 2
