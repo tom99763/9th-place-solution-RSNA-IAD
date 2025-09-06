@@ -7,11 +7,17 @@ fold_id: 0
 
 params:
   data_dir: ./data/processed
-  num_classes: 13
+  num_classes: 14
   img_height: 512
   img_width: 512
-  batch_size: 16
-  num_workers: 16
+  batch_size: 12
+  num_workers: 12
+  use_mip: False
+
+  depth:
+    mr: [32,96]
+    ct: [32,96]
+
 
 # The 'defaults' list tells Hydra which configs to load by default.
 # It will look for 'lightgbm.yaml' inside the 'model' sub-directory.
@@ -19,4 +25,5 @@ defaults:
   - preprocess: default
   - optimizer: AdamW
   - trainer: default
+  - model: timm
   - _self_

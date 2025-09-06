@@ -10,3 +10,4 @@ rsna-iad-modelzoo/
 *.npz
 *.pth
 notebooks/all_slices_grid/
+src/vesselfm/wandb/

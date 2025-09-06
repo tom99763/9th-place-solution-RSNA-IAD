@@ -1,0 +1,19 @@
+[2025-08-31 18:02:50,568][__main__][INFO] - Train dataset size mapped to 141 samples
+[2025-08-31 18:02:50,568][__main__][INFO] - Val dataset size: 36
+[2025-08-31 18:02:50,680][module][INFO] - Dataset name: rsna
+[2025-08-31 18:03:05,870][__main__][INFO] - Train dataset size mapped to 141 samples
+[2025-08-31 18:03:05,871][__main__][INFO] - Val dataset size: 36
+[2025-08-31 18:03:05,979][module][INFO] - Dataset name: rsna
+[2025-08-31 18:03:07,143][__main__][INFO] - Starting training
+[2025-08-31 18:06:39,230][__main__][INFO] - Train dataset size mapped to 141 samples
+[2025-08-31 18:06:39,231][__main__][INFO] - Val dataset size: 36
+[2025-08-31 18:06:39,339][module][INFO] - Dataset name: rsna
+[2025-08-31 18:06:40,466][__main__][INFO] - Starting training
+[2025-08-31 19:27:16,441][__main__][INFO] - Train dataset size mapped to 141 samples
+[2025-08-31 19:27:16,442][__main__][INFO] - Val dataset size: 36
+[2025-08-31 19:27:16,549][module][INFO] - Dataset name: rsna
+[2025-08-31 19:27:19,704][__main__][INFO] - Starting training
+[2025-08-31 20:24:11,582][__main__][INFO] - Train dataset size mapped to 141 samples
+[2025-08-31 20:24:11,583][__main__][INFO] - Val dataset size: 36
+[2025-08-31 20:24:11,691][module][INFO] - Dataset name: rsna
+[2025-08-31 20:24:14,936][__main__][INFO] - Starting training

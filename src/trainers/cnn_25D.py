@@ -3,6 +3,7 @@ import pytorch_lightning as pl
 import torchmetrics
 from hydra.utils import instantiate
 
+
 torch.set_float32_matmul_precision('medium')
 
 class LitTimmClassifier(pl.LightningModule):
@@ -17,21 +18,21 @@ class LitTimmClassifier(pl.LightningModule):
 
         self.num_classes = self.cfg.params.num_classes
 
-        self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
-        self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes)
+        self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes - 1)
+        self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes - 1)
 
         self.train_cls_auroc = torchmetrics.AUROC(task="binary")
         self.val_cls_auroc = torchmetrics.AUROC(task="binary")
-        self.automatic_optimization = False
-
 
     def forward(self, x):
         return self.model(x)
 
     def training_step(self, batch, _):
-        x, cls_labels, loc_labels = batch
+        x, labels = batch
 
-        preds =self(x)
+        preds = self(x)
+
+        cls_labels, loc_labels = labels[:, 0], labels[:, 1:]
         pred_cls, pred_locs = preds[:,0], preds[:, 1:]
 
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
@@ -48,18 +49,19 @@ class LitTimmClassifier(pl.LightningModule):
         self.log('train_cls_auroc', self.train_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
 
         
-        # Manual backward pass
-        opt = self.optimizers()
-        opt.zero_grad()
-        self.manual_backward(loss)
-        opt.step()
+        # # Manual backward pass
+        # opt = self.optimizers()
+        # opt.zero_grad()
+        # self.manual_backward(loss)
+        # opt.step()
 
         return loss
 
     def validation_step(self, sample, batch_idx):
-        x, cls_labels, loc_labels = sample
-
+        x, labels = sample
         preds =self(x)
+
+        cls_labels, loc_labels = labels[:, 0], labels[:, 1:]
         pred_cls, pred_locs = preds[:,0], preds[:, 1:]
        
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
@@ -76,13 +78,6 @@ class LitTimmClassifier(pl.LightningModule):
         self.log('val_cls_auroc', self.val_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
-    def on_train_epoch_end(self):
-        sch = self.lr_schedulers()
-
-        # If the selected scheduler is a ReduceLROnPlateau scheduler.
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
-            sch.step(self.trainer.callback_metrics["val_loss"])
-
     def on_train_epoch_start(self):
         self.train_loc_auroc.reset()
         self.train_cls_auroc.reset()
@@ -93,6 +88,17 @@ class LitTimmClassifier(pl.LightningModule):
     
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
-        
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=4)
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+
+        frequency = 10
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=self.cfg.trainer.max_steps / frequency,
+            eta_min=0.0
+        )
+        return { "optimizer": optimizer
+                , "lr_scheduler": {
+                        "scheduler": scheduler,
+                        "interval": "step",
+                        "frequency": frequency
+                    }
+                }

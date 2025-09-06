@@ -2,7 +2,6 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import pandas as pd
-import random
 
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
@@ -10,6 +9,7 @@ import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 from pathlib import Path
 from configs.data_config import *
+
 torch.set_float32_matmul_precision('medium')
 
 class NpzVolumeSliceDataset(Dataset):
@@ -30,7 +30,8 @@ class NpzVolumeSliceDataset(Dataset):
         self.transform = transform
 
         self.mode = mode
-        self.depth = 32
+        self.depth_mr = self.cfg.params.depth.mr
+        self.depth_ct = self.cfg.params.depth.ct
 
     def __len__(self):
         return len(self.uids)
@@ -40,26 +41,51 @@ class NpzVolumeSliceDataset(Dataset):
         uid = self.uids[idx]
         rowdf = self.train_df[self.train_df["SeriesInstanceUID"] == uid]
         labeldf = self.label_df[self.label_df["SeriesInstanceUID"] == uid]
+        modality = rowdf["Modality"].iloc[0]
 
         with np.load(self.data_path / "series" / f"{uid}.npz") as data:
             volume = data['vol'].astype(np.float32)
             volume /= 255.0
 
-
-        loc_labels = np.zeros(self.num_classes)
-        label = 0
+        labels = np.zeros(self.num_classes)
 
         if int(rowdf["Aneurysm Present"].iloc[0]) == 1:
-            label = 1
-            class_idxs = [LABELS_TO_IDX[loc] for loc in labeldf["location"].tolist()]
-            loc_labels[class_idxs] = 1
+            labels[0] = 1
+            class_idxs = [LABELS_TO_IDX[loc] + 1 for loc in labeldf["location"].tolist()]
+            labels[class_idxs] = 1
 
-        volume = volume[24:40].transpose(1,2,0)
+
+
+        if "CT" not in modality:
+            volume = volume[self.depth_mr[0]:self.depth_mr[1]]
+        else:
+            volume = volume[self.depth_ct[0]:self.depth_ct[1]]
+
+        if self.cfg.params.use_mip:
+            volume = volume.max(axis=0, keepdims=True)
+
+        volume = volume.transpose(1,2,0)
+
         if self.transform:
             # BxDxHxW
             volume = self.transform(image=volume)["image"]
 
-        return volume, label, loc_labels
+        return volume, labels
+
+        # loc_labels = np.zeros(self.num_classes)
+        # label = 0
+        #
+        # if int(rowdf["Aneurysm Present"].iloc[0]) == 1:
+        #     label = 1
+        #     class_idxs = [LABELS_TO_IDX[loc] for loc in labeldf["location"].tolist()]
+        #     loc_labels[class_idxs] = 1
+        #
+        # volume = volume[self.start_idx:self.end_idx].transpose(1,2,0)
+        # if self.transform:
+        #     # BxDxHxW
+        #     volume = self.transform(image=volume)["image"]
+        #
+        # return volume, label, loc_labels
            
 
 class NpzDataModule(pl.LightningDataModule):
