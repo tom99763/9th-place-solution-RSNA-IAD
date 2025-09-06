@@ -8,7 +8,7 @@ fold_id: 0
 
 batch_size: 4
 num_workers: 4
-experiment: knn_graph_k15_no_pe_8l_256_fold0
+experiment: knn_graph_k15_no_pe_4l_256_fold0
 
 #model config
 pos_weight: 8
