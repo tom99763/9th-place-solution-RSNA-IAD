@@ -42,11 +42,11 @@ def parse_args():
     ap.add_argument('--exist-ok', action='store_true')
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--data-fold-template', type=str, default='', help='YAML template with {fold} placeholder for per-fold datasets (required)')
-    ap.add_argument('--mixup', type=float, default=0.4, help='Mixup augmentation ratio (0.0 = no mixup)')
-    ap.add_argument('--mosaic', type=float, default=0.5, help='Mosaic augmentation ratio (0.0 = no mosaic)')
+    ap.add_argument('--mixup', type=float, default=0.2, help='Mixup augmentation ratio (0.0 = no mixup)')
+    ap.add_argument('--mosaic', type=float, default=0.2, help='Mosaic augmentation ratio (0.0 = no mosaic)')
     ap.add_argument('--fliplr', type=float, default=0.0, help='Horizontal flip augmentation ratio (0.0 = no flip)')
     ap.add_argument('--flipud', type=float, default=0.0, help='Vertical flip augmentation ratio (0.0 = no flip)')
-    ap.add_argument('--dropout', type=float, default=0.3, help='Dropout rate (0.0 = no dropout)')
+    ap.add_argument('--dropout', type=float, default=0.0, help='Dropout rate (0.0 = no dropout)')
     ap.add_argument('--close-mosaic', type=int, default=0, help='Close mosaic boxes (0=disabled, 10=remove_last_10_epochs)')
 
     # Validation settings
@@ -164,42 +164,42 @@ def run():
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Validate this fold with its own weights
-        #cmd = [
-        #    sys.executable,
-        #    str(val_script),
-        #    '--weights', str(weights_path),
-        #    '--val-fold', str(f),
-        #    '--out-dir', str(out_dir),
-        #    '--batch-size', str(args.val_batch),
-        #    '--slice-step', str(args.slice_step),
-        #    '--mip-window', str(args.mip_window),
-        #    '--mip-img-size', str(args.mip_img_size),
-        #]
-        #if args.mip_no_overlap:
-        #    cmd.append('--mip-no-overlap')
-        #if args.max_slices:
-        #    cmd += ['--max-slices', str(args.max_slices)]
-        #if args.series_limit:
-        #    cmd += ['--series-limit', str(args.series_limit)]
-        #if args.bgr_mode:
-        #    cmd.append('--bgr-mode')
-        ## Try to attach validation logging to the same W&B run as training
-        #wandb_info = _get_wandb_resume_info(save_dir)
-        #if wandb_info or args.val_wandb or args.wandb_project:
-        #    cmd.append('--wandb')
-        #    run_name = f"{args.name}_fold{f}_val"
-        #    if wandb_info:
-        #        if wandb_info.get('project'):
-        #            cmd += ['--wandb-project', wandb_info['project']]
-        #        if wandb_info.get('entity'):
-        #            cmd += ['--wandb-entity', wandb_info['entity']]
-        #        if wandb_info.get('group'):
-        #            cmd += ['--wandb-group', wandb_info['group']]
-        #        if wandb_info.get('id'):
-        #            cmd += ['--wandb-resume-id', wandb_info['id']]
+        cmd = [
+            sys.executable,
+            str(val_script),
+            '--weights', str(weights_path),
+            '--val-fold', str(f),
+            '--out-dir', str(out_dir),
+            '--batch-size', str(args.val_batch),
+            '--slice-step', str(args.slice_step),
+            '--mip-window', str(args.mip_window),
+            '--mip-img-size', str(args.mip_img_size),
+        ]
+        if args.mip_no_overlap:
+            cmd.append('--mip-no-overlap')
+        if args.max_slices:
+            cmd += ['--max-slices', str(args.max_slices)]
+        if args.series_limit:
+            cmd += ['--series-limit', str(args.series_limit)]
+        if args.bgr_mode:
+            cmd.append('--bgr-mode')
+        # Try to attach validation logging to the same W&B run as training
+        wandb_info = _get_wandb_resume_info(save_dir)
+        if wandb_info or args.val_wandb or args.wandb_project:
+            cmd.append('--wandb')
+            run_name = f"{args.name}_fold{f}_val"
+            if wandb_info:
+                if wandb_info.get('project'):
+                    cmd += ['--wandb-project', wandb_info['project']]
+                if wandb_info.get('entity'):
+                    cmd += ['--wandb-entity', wandb_info['entity']]
+                if wandb_info.get('group'):
+                    cmd += ['--wandb-group', wandb_info['group']]
+                if wandb_info.get('id'):
+                    cmd += ['--wandb-resume-id', wandb_info['id']]
 #
-        #print('Running validation:', ' '.join(cmd))
-        #subprocess.run(cmd, check=True)
+        print('Running validation:', ' '.join(cmd))
+        subprocess.run(cmd, check=True)
 
 
 if __name__ == '__main__':
@@ -211,9 +211,8 @@ if __name__ == '__main__':
 #--data-fold-template configs/yolo_fold{fold}.yaml   --folds 0,1,2,3,4   --slice-step 1 --mip-wi
 #ndow 0   --val-batch 16
 
-#python3 -m src.run_yolo_pipeline --model yolo11s.pt --epochs 100 --img 512 --batch 16 --project yolo_aneurysm_locations --name cv_y11s_with_mix_up_mosaic --data-fold-template configs/yolo_fold{fold}.yaml --folds 0,1,2,3,4 --slice-step 1 --mip-window 0   --val-batch 16
+#python3 -m src.run_yolo_pipeline --model yolo11s.pt --epochs 100 --img 512 --batch 16 --project yolo_aneurysm_locations --name cv_y11s_with_mix_up_mosaic --data-fold-template configs/yolo_fold{fold}.yaml --folds 0 --slice-step 1 --mip-window 0   --val-batch 16
 #python3 -m src.run_yolo_pipeline --model yolo11s.pt --epochs 100 --img 512 --batch 16 --project yolo_aneurysm_locations --name cv_y11s_bgr_mode --data-fold-template configs/yolo_fold{fold}.yaml --folds 0,1,2,3,4 --bgr-mode --val-batch 16
-
 #python3 -m src.run_yolo_pipeline \
 #  --model yolo11n.pt \
 #  --epochs 100 \
