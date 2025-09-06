@@ -30,7 +30,7 @@ def train(cfg: DictConfig) -> None:
         project=cfg.project_name,
         name=cfg.experiment,
         config=OmegaConf.to_container(cfg),
-        offline=False,
+        offline=True,
     )
 
     ckpt_callback = pl.callbacks.ModelCheckpoint(
