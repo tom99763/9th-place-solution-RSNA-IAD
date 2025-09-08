@@ -11,49 +11,59 @@ warnings.filterwarnings("ignore")
 torch.set_float32_matmul_precision('medium')
 
 
+
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
-def train(cfg: DictConfig) -> None:
+def run(cfg: DictConfig) -> None:
     """
-    Your main training function.
-    The 'cfg' object contains all your configuration.
+    Train sequentially over folds 0..4.
     """
-    print("✨ Configuration for this run: ✨")
-    print(OmegaConf.to_yaml(cfg))
+    for fold_id in range(1, 5):
+        print(f"\n🚀 Starting training for fold {fold_id}...\n")
 
-    pl.seed_everything(cfg.seed)
-    datamodule = GraphDataModule(cfg)
+        # override fold_id in config
+        cfg.fold_id = fold_id
 
-    model = instantiate(cfg.model)
-    pl_model = GNNClassifier(model, cfg)
+        # seed everything
+        pl.seed_everything(cfg.seed)
 
-    wnb_logger = WandbLogger(
-        project=cfg.project_name,
-        name=cfg.experiment,
-        config=OmegaConf.to_container(cfg),
-        offline=True,
-    )
+        # datamodule
+        datamodule = GraphDataModule(cfg)
 
-    ckpt_callback = pl.callbacks.ModelCheckpoint(
-        monitor="val_cls_auroc"
-        , mode="max"
-        , dirpath="./models"
-        , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_loss:.4f}'
-                                         '-{val_cls_auroc:.4f}' + \
-                   f"fold_id={cfg.fold_id}"
-        , save_top_k = 2
-        , save_last = True
-    )
+        # model
+        model = instantiate(cfg.model)
+        pl_model = GNNClassifier(model, cfg)
 
-    lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
+        # logger
+        wnb_logger = WandbLogger(
+            project=cfg.project_name,
+            name=f"{cfg.experiment}_fold{fold_id}",
+            config=OmegaConf.to_container(cfg),
+            offline=True,
+        )
 
-    trainer = pl.Trainer(
-        **cfg.trainer,
-        logger= wnb_logger,   #pl.loggers.TensorBoardLogger("logs/", name=cfg.experiment),
-        callbacks=[lr_monitor, ckpt_callback]
-    )
-    wnb_logger.watch(model, log="all", log_freq=20)
-    #trainer.validate(pl_model, datamodule=datamodule)
-    trainer.fit(pl_model, datamodule=datamodule)
+        # callbacks
+        ckpt_callback = pl.callbacks.ModelCheckpoint(
+            monitor="val_cls_auroc",
+            mode="max",
+            dirpath="./models",
+            filename=f"{cfg.experiment}-fold{fold_id}"
+                     + "-{epoch:02d}-{val_loss:.4f}-{val_cls_auroc:.4f}",
+            save_top_k=2,
+            save_last=True,
+        )
+        lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="epoch")
+
+        # trainer
+        trainer = pl.Trainer(
+            **cfg.trainer,
+            logger=wnb_logger,
+            callbacks=[lr_monitor, ckpt_callback],
+        )
+        wnb_logger.watch(model, log="all", log_freq=20)
+
+        # training
+        trainer.fit(pl_model, datamodule=datamodule)
+
 
 if __name__ == "__main__":
-    train()
+    run()

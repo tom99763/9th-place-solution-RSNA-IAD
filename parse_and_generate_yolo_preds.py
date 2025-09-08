@@ -53,68 +53,57 @@ def load_models():
     return models
 
 
-
-
 @torch.no_grad()
 def eval_one_series(slices, loc, models, uid):
     set_seed()
-    ensemble_cls_preds = []
-    ensemble_loc_preds = []
-    ensemble_locations = []
-    all_features = []
+    ensemble_cls_preds, ensemble_loc_preds, ensemble_locations = [], [], []
+    all_points, all_feats, all_feat_maps = [], [], []
     total_weight = 0.0
 
     for model_idx, model_dict in enumerate(models):
-        model = model_dict["model"]
-        weight = model_dict["weight"]
+        model, weight = model_dict["model"], model_dict["weight"]
 
         try:
             max_conf_all = 0.0
             per_class_max = np.zeros(len(LABELS), dtype=np.float32)
 
-            # Process in batches
+            # Process slices in batches
             for i in range(0, len(slices), BATCH_SIZE):
                 batch_slices = slices[i:i + BATCH_SIZE]
                 z_idxes = [i + batch_idx for batch_idx in range(len(batch_slices))]
 
                 features = get_feature_map(model)
-                results = model.predict(
-                    batch_slices,
-                    verbose=False,
-                    batch=len(batch_slices),
-                    device="cuda:0",
-                    conf=conf_yolo
-                )
-                c3k2_feat = features['C3K2'].cpu().numpy()
-                all_features.append(c3k2_feat)
+                with torch.autocast(device_type="cuda", dtype=torch.float32):
+                    results = model.predict(
+                        batch_slices,
+                        verbose=False,
+                        batch=len(batch_slices),
+                        device="cuda:0",
+                        conf=conf_yolo
+                    )
 
+                c3k2_feat = features['C3K2']
+                all_feat_maps.append(c3k2_feat.cpu())
+
+                # Collect all valid detections first
+                det_points = []
                 for z_idx, r in enumerate(results):
                     if r is None or r.boxes is None or r.boxes.conf is None or len(r.boxes) == 0:
                         continue
                     try:
-                        confs = r.boxes.conf
-                        clses = r.boxes.cls
+                        confs, clses = r.boxes.conf, r.boxes.cls
                         for j in range(len(confs)):
-                            c = float(confs[j].item())
-                            k = int(clses[j].item())
+                            c, k = float(confs[j].item()), int(clses[j].item())
                             if c > max_conf_all:
                                 max_conf_all = c
                             if 0 <= k < len(LABELS) and c > per_class_max[k]:
                                 per_class_max[k] = c
                             x1, y1, x2, y2 = r.boxes.xyxy[j].cpu().numpy()
-                            x_center = (x1 + x2) / 2
-                            y_center = (y1 + y2) / 2
-
-                            ensemble_locations.append([round(z_idxes[z_idx]) + 1e-5 * model_idx,  # depth
-                                                       round(y_center) + 1e-5 * model_idx,  # height
-                                                       round(x_center) + 1e-5 * model_idx,  # width
-                                                       float(c),  # confidence
-                                                       k,  # class
-                                                       model_idx,
-                                                       ])
-
-                    except Exception as e:
-                        print(e)
+                            x_center, y_center = (x1 + x2) / 2, (y1 + y2) / 2
+                            point = np.array([round(z_idxes[z_idx]), round(y_center), round(x_center)])
+                            det_points.append(point)
+                            ensemble_locations.append([*point, float(c), k, model_idx])
+                    except Exception:
                         try:
                             batch_max = float(r.boxes.conf.max().item())
                             if batch_max > max_conf_all:
@@ -122,6 +111,34 @@ def eval_one_series(slices, loc, models, uid):
                         except Exception:
                             pass
 
+                # 🔑 Process detections in vectorized fashion
+                if len(det_points) > 0:
+                    det_points = np.array(det_points)
+                    vol_size = (len(slices), slices[0].shape[0], slices[0].shape[1])
+
+                    sampled_points = sample_uniform_3d_ball(
+                        det_points, vol_size,
+                        radius=DATA_CONFIG.radius,
+                        num_samples=DATA_CONFIG.num_samples
+                    )
+                    sampled_points_t = torch.from_numpy(sampled_points).float()
+
+                    # Extract features for all sampled points at once
+                    sampled_feats = assign_feat(sampled_points_t, c3k2_feat, vol_size)
+
+                    all_points.append(sampled_points_t)
+                    all_feats.append(sampled_feats.cpu())
+
+                # ✅ Free memory immediately
+                del c3k2_feat
+                features.clear()
+                torch.cuda.empty_cache()
+
+            ensemble_cls_preds.append(max_conf_all)
+            ensemble_loc_preds.append(per_class_max * weight)
+            total_weight += weight
+
+            # Append weighted predictions
             ensemble_cls_preds.append(max_conf_all * weight)
             ensemble_loc_preds.append(per_class_max * weight)
             total_weight += weight
@@ -131,46 +148,42 @@ def eval_one_series(slices, loc, models, uid):
             ensemble_cls_preds.append(0.1 * weight)
             ensemble_loc_preds.append(np.ones(len(LABELS)) * 0.1 * weight)
             total_weight += weight
-    if len(ensemble_locations) == 0:
-        return
 
-    all_detections = np.array(ensemble_locations)
-    all_locations = all_detections[:, :3]
-    #all_preds = all_detections[:, 3:-1]
-    #all_model_idx = all_detections[:, -1][:, None]
-    all_features = np.concatenate(all_features, axis=0)
-    vol_size = (len(slices), slices[0].shape[0], slices[0].shape[1])
-    points, extract_feat, dist_label = extract_tomo(all_locations, all_features, vol_size, loc)
+    # Build graph data if any detections exist
+    if len(all_points)!=0:
+        all_points = torch.cat(all_points, dim=0)
+        all_feats = torch.cat(all_feats, dim=0)
+        all_feat_maps = torch.cat(all_feat_maps, dim=0)
+        points_np = all_points.numpy()
 
-    # knn graph
-    edge_index_k5 = knn_graph(torch.from_numpy(points), k=5, loop=False)
-    edge_index_k10 = knn_graph(torch.from_numpy(points), k=10, loop=False)
-    edge_index_k15 = knn_graph(torch.from_numpy(points), k=15, loop=False)
+        # Assign labels for each sampled point
+        _, extract_feat, dist_label = extract_tomo(points_np, all_feats.numpy(), all_feat_maps.numpy(), vol_size, loc)
 
-    np.save(root/f'extract_data/{uid}/{uid}_edge_index_k5.npy', edge_index_k5)
-    np.save(root/f'extract_data/{uid}/{uid}_edge_index_k10.npy', edge_index_k10)
-    np.save(root/f'extract_data/{uid}/{uid}_edge_index_k15.npy', edge_index_k15)
+        # Save points, features, labels
+        np.save(root/f'extract_data/{uid}/{uid}_points.npy', points_np)
+        np.save(root/f'extract_data/{uid}/{uid}_extract_feat.npy', extract_feat)
+        np.save(root/f'extract_data/{uid}/{uid}_label.npy', dist_label)
 
-    # delaunay_graph
-    edge_index_del = delaunay_graph(torch.from_numpy(points))
-    np.save(root/f'extract_data/{uid}/{uid}_edge_index_delaunay.npy', edge_index_del)
+        # KNN graphs
+        for k in [5, 10, 15]:
+            edge_index = knn_graph(torch.from_numpy(points_np), k=k, loop=False)
+            np.save(root/f'extract_data/{uid}/{uid}_edge_index_k{k}.npy', edge_index)
 
-    print('del edges:', edge_index_del.shape)
-    print(points.shape, extract_feat.shape, dist_label.shape)
-    print('label sum:', dist_label.sum())
+        # Delaunay graph
+        edge_index_del = delaunay_graph(torch.from_numpy(points_np))
+        np.save(root/f'extract_data/{uid}/{uid}_edge_index_delaunay.npy', edge_index_del)
 
-    np.save(root/f'extract_data/{uid}/{uid}_points.npy', points)
-    np.save(root/f'extract_data/{uid}/{uid}_extract_feat.npy', extract_feat)
-    np.save(root/f'extract_data/{uid}/{uid}_label.npy', dist_label)
+        print('Delaunay edges:', edge_index_del.shape)
+        print('Points, features, labels:', points_np.shape, extract_feat.shape, dist_label.shape)
+        print('Label sum:', dist_label.sum())
 
-    del all_features
-    del all_detections
-    del ensemble_locations
-    del ensemble_cls_preds
-    del ensemble_loc_preds
+    else:
+        print("No points were detected for any model!")
 
+    # Free memory
+    del all_points, all_feats, ensemble_locations, ensemble_cls_preds, ensemble_loc_preds
     gc.collect()
-
+    torch.cuda.empty_cache()
 
 def load_labels(root: Path) -> pd.DataFrame:
     label_df = pd.read_csv(root / "train_localizers.csv")

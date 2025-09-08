@@ -28,7 +28,7 @@ class DATA_CONFIG:
     radius = 20
     num_samples = 20
     thr = 20
-    thr_sim = 0.5
+    thr_sim = 0.25
     order = 1
     alpha = 5
 
@@ -230,15 +230,30 @@ def sample_uniform_3d_ball(points, vol_size, radius=30, num_samples=10):
     return result
 
 
-def assign_feat(x, feat, vol_size):
+# def assign_feat(x, feat, vol_size):
+#     d, h, w = vol_size
+#     fd, fh, fw = feat.shape[0], feat.shape[2], feat.shape[3]
+#     z = x[:, 0].astype('int32')
+#     y = ((x[:, 1]/h) * fh).astype('int32')
+#     x = ((x[:, 2]/w) * fw).astype('int32')
+#     extract_feat = feat[z, :, y, x]
+#     return extract_feat
+
+def assign_feat(points, feat, vol_size):
+    # feat: [D, C, H, W] torch tensor
     d, h, w = vol_size
     fd, fh, fw = feat.shape[0], feat.shape[2], feat.shape[3]
-    z = x[:, 0].astype('int32')
-    y = ((x[:, 1]/h) * fh).astype('int32')
-    x = ((x[:, 2]/w) * fw).astype('int32')
-    extract_feat = feat[z, :, y, x]
-    return extract_feat
 
+    z = points[:, 0].long()
+    y = ((points[:, 1] / h) * fh).long()
+    x = ((points[:, 2] / w) * fw).long()
+
+    # clamp to valid range
+    z = z.clamp(0, fd - 1)
+    y = y.clamp(0, fh - 1)
+    x = x.clamp(0, fw - 1)
+
+    return feat[z, :, y, x]  # [N, C]
 
 def delaunay_graph(x):
     points = x.cpu().numpy()  # assuming x is a tensor of shape [num_points, dims]
@@ -304,9 +319,23 @@ def feat_labeling(points, feat, extract_feat, locs, vol_size, thr=10, thr_sim=0.
 
 
 
-def extract_tomo(all_locations, all_features, vol_size, loc):
-    points = sample_uniform_3d_ball(all_locations, vol_size, DATA_CONFIG.radius, DATA_CONFIG.num_samples)
-    extract_feat = assign_feat(points, all_features, vol_size)
+# def extract_tomo(all_locations, all_features, vol_size, loc):
+#     points = sample_uniform_3d_ball(all_locations, vol_size, DATA_CONFIG.radius, DATA_CONFIG.num_samples)
+#     extract_feat = assign_feat(points, all_features, vol_size)
+#
+#     #convert to torch
+#     #points = torch.from_numpy(points)
+#     #extract_feat = torch.from_numpy(extract_feat)
+#
+#     #assign label
+#     dist_label = feat_labeling(points, all_features, extract_feat, loc, vol_size,
+#                                thr=DATA_CONFIG.thr, thr_sim=DATA_CONFIG.thr_sim)
+#     return points, extract_feat, dist_label
+
+
+def extract_tomo(points, extract_feat, all_features, vol_size, loc):
+    # points = sample_uniform_3d_ball(all_locations, vol_size, DATA_CONFIG.radius, DATA_CONFIG.num_samples)
+    # extract_feat = assign_feat(points, all_features, vol_size)
 
     #convert to torch
     #points = torch.from_numpy(points)
