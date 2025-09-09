@@ -56,11 +56,11 @@ def load_models():
 @torch.no_grad()
 def eval_one_series(slices, loc, models, uid):
     set_seed()
-    ensemble_cls_preds, ensemble_loc_preds, ensemble_locations = [], [], []
-    all_points, all_feats, all_feat_maps = [], [], []
     total_weight = 0.0
+    vol_size = (len(slices), slices[0].shape[0], slices[0].shape[1])
 
     for model_idx, model_dict in enumerate(models):
+        all_detections, all_feat_maps = [], []
         model, weight = model_dict["model"], model_dict["weight"]
 
         try:
@@ -86,7 +86,6 @@ def eval_one_series(slices, loc, models, uid):
                 all_feat_maps.append(c3k2_feat.cpu())
 
                 # Collect all valid detections first
-                det_points = []
                 for z_idx, r in enumerate(results):
                     if r is None or r.boxes is None or r.boxes.conf is None or len(r.boxes) == 0:
                         continue
@@ -101,8 +100,7 @@ def eval_one_series(slices, loc, models, uid):
                             x1, y1, x2, y2 = r.boxes.xyxy[j].cpu().numpy()
                             x_center, y_center = (x1 + x2) / 2, (y1 + y2) / 2
                             point = np.array([round(z_idxes[z_idx]), round(y_center), round(x_center)])
-                            det_points.append(point)
-                            ensemble_locations.append([*point, float(c), k, model_idx])
+                            all_detections.append([*point, float(c), k, model_idx])
                     except Exception:
                         try:
                             batch_max = float(r.boxes.conf.max().item())
@@ -110,80 +108,45 @@ def eval_one_series(slices, loc, models, uid):
                                 max_conf_all = batch_max
                         except Exception:
                             pass
+            if len(all_detections) != 0:
+                all_detections = torch.tensor(all_detections)
+                all_locations = all_detections[:, :3]
+                all_feat_maps = torch.cat(all_feat_maps, dim=0)
 
-                # 🔑 Process detections in vectorized fashion
-                if len(det_points) > 0:
-                    det_points = np.array(det_points)
-                    vol_size = (len(slices), slices[0].shape[0], slices[0].shape[1])
+                # Assign labels for each sampled point
+                points, extract_feat, dist_label = extract_tomo(all_locations.numpy(), all_feat_maps.numpy(),
+                                                           vol_size, loc)
 
-                    sampled_points = sample_uniform_3d_ball(
-                        det_points, vol_size,
-                        radius=DATA_CONFIG.radius,
-                        num_samples=DATA_CONFIG.num_samples
-                    )
-                    sampled_points_t = torch.from_numpy(sampled_points).float()
+                # Save points, features, labels
+                np.save(root / f'extract_data/{uid}/{uid}_points_fold_{model_idx}.npy', points)
+                np.save(root / f'extract_data/{uid}/{uid}_extract_feat_fold_{model_idx}.npy', extract_feat)
+                np.save(root / f'extract_data/{uid}/{uid}_label_fold_{model_idx}.npy', dist_label)
 
-                    # Extract features for all sampled points at once
-                    sampled_feats = assign_feat(sampled_points_t, c3k2_feat, vol_size)
+                # KNN graphs
+                for k in [5, 10, 15]:
+                    edge_index = knn_graph(torch.from_numpy(points), k=k, loop=False)
+                    np.save(root / f'extract_data/{uid}/{uid}_edge_index_k{k}_fold_{model_idx}.npy', edge_index)
 
-                    all_points.append(sampled_points_t)
-                    all_feats.append(sampled_feats.cpu())
+                # Delaunay graph
+                edge_index_del = delaunay_graph(torch.from_numpy(points))
+                np.save(root / f'extract_data/{uid}/{uid}_edge_index_delaunay_fold_{model_idx}.npy', edge_index_del)
 
-                # ✅ Free memory immediately
-                del c3k2_feat
-                features.clear()
-                torch.cuda.empty_cache()
+                print('Delaunay edges:', edge_index_del.shape)
+                print('Points, features, labels:', points.shape, extract_feat.shape, dist_label.shape)
+                print('Label sum:', dist_label.sum())
 
-            ensemble_cls_preds.append(max_conf_all)
-            ensemble_loc_preds.append(per_class_max * weight)
-            total_weight += weight
+            else:
+                print("No points were detected for any model!")
 
-            # Append weighted predictions
-            ensemble_cls_preds.append(max_conf_all * weight)
-            ensemble_loc_preds.append(per_class_max * weight)
-            total_weight += weight
+            del c3k2_feat
+            del all_feat_maps, all_locations
+            features.clear()
+            torch.cuda.empty_cache()
+            gc.collect()
+            torch.cuda.empty_cache()
 
         except Exception as e:
-            print(f"Error in model {model_dict['name']}: {e}")
-            ensemble_cls_preds.append(0.1 * weight)
-            ensemble_loc_preds.append(np.ones(len(LABELS)) * 0.1 * weight)
-            total_weight += weight
-
-    # Build graph data if any detections exist
-    if len(all_points)!=0:
-        all_points = torch.cat(all_points, dim=0)
-        all_feats = torch.cat(all_feats, dim=0)
-        all_feat_maps = torch.cat(all_feat_maps, dim=0)
-        points_np = all_points.numpy()
-
-        # Assign labels for each sampled point
-        _, extract_feat, dist_label = extract_tomo(points_np, all_feats.numpy(), all_feat_maps.numpy(), vol_size, loc)
-
-        # Save points, features, labels
-        np.save(root/f'extract_data/{uid}/{uid}_points.npy', points_np)
-        np.save(root/f'extract_data/{uid}/{uid}_extract_feat.npy', extract_feat)
-        np.save(root/f'extract_data/{uid}/{uid}_label.npy', dist_label)
-
-        # KNN graphs
-        for k in [5, 10, 15]:
-            edge_index = knn_graph(torch.from_numpy(points_np), k=k, loop=False)
-            np.save(root/f'extract_data/{uid}/{uid}_edge_index_k{k}.npy', edge_index)
-
-        # Delaunay graph
-        edge_index_del = delaunay_graph(torch.from_numpy(points_np))
-        np.save(root/f'extract_data/{uid}/{uid}_edge_index_delaunay.npy', edge_index_del)
-
-        print('Delaunay edges:', edge_index_del.shape)
-        print('Points, features, labels:', points_np.shape, extract_feat.shape, dist_label.shape)
-        print('Label sum:', dist_label.sum())
-
-    else:
-        print("No points were detected for any model!")
-
-    # Free memory
-    del all_points, all_feats, ensemble_locations, ensemble_cls_preds, ensemble_loc_preds
-    gc.collect()
-    torch.cuda.empty_cache()
+            print(e)
 
 def load_labels(root: Path) -> pd.DataFrame:
     label_df = pd.read_csv(root / "train_localizers.csv")

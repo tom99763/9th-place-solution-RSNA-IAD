@@ -22,11 +22,11 @@ import gc
 import time
 from scipy.spatial import Delaunay
 
-conf_yolo = 0.2
+conf_yolo = 0.01
 
 class DATA_CONFIG:
     radius = 20
-    num_samples = 20
+    num_samples = 10
     thr = 20
     thr_sim = 0.25
     order = 1
@@ -35,19 +35,19 @@ class DATA_CONFIG:
 # Model configurations - Add your models here
 MODEL_CONFIGS = [
     {
-        "path": "./models/yolo/yolo11m_fold0.pt",
+        "path": "./models/yolo/yolo11n_fold0_no_flip.pt",
         "fold": "0",
         "weight": 1.0,
         "name": "YOLOv11n_fold0"
     },
 {
-        "path": "./models/yolo/yolo11m_fold1.pt",
+        "path": "./models/yolo/yolo11n_fold1_no_flip.pt",
         "fold": "1",
         "weight": 1.0,
         "name": "YOLOv11n_fold1"
     },
 {
-        "path": "./models/yolo/yolo11m_fold2.pt",
+        "path": "./models/yolo/yolo11n_fold2_no_flip.pt",
         "fold": "2",
         "weight": 1.0,
         "name": "YOLOv11n_fold2"
@@ -230,30 +230,14 @@ def sample_uniform_3d_ball(points, vol_size, radius=30, num_samples=10):
     return result
 
 
-# def assign_feat(x, feat, vol_size):
-#     d, h, w = vol_size
-#     fd, fh, fw = feat.shape[0], feat.shape[2], feat.shape[3]
-#     z = x[:, 0].astype('int32')
-#     y = ((x[:, 1]/h) * fh).astype('int32')
-#     x = ((x[:, 2]/w) * fw).astype('int32')
-#     extract_feat = feat[z, :, y, x]
-#     return extract_feat
-
-def assign_feat(points, feat, vol_size):
-    # feat: [D, C, H, W] torch tensor
+def assign_feat(x, feat, vol_size):
     d, h, w = vol_size
     fd, fh, fw = feat.shape[0], feat.shape[2], feat.shape[3]
-
-    z = points[:, 0].long()
-    y = ((points[:, 1] / h) * fh).long()
-    x = ((points[:, 2] / w) * fw).long()
-
-    # clamp to valid range
-    z = z.clamp(0, fd - 1)
-    y = y.clamp(0, fh - 1)
-    x = x.clamp(0, fw - 1)
-
-    return feat[z, :, y, x]  # [N, C]
+    z = x[:, 0].astype('int32')
+    y = ((x[:, 1]/h) * fh).astype('int32')
+    x = ((x[:, 2]/w) * fw).astype('int32')
+    extract_feat = feat[z, :, y, x]
+    return extract_feat
 
 def delaunay_graph(x):
     points = x.cpu().numpy()  # assuming x is a tensor of shape [num_points, dims]
@@ -319,23 +303,9 @@ def feat_labeling(points, feat, extract_feat, locs, vol_size, thr=10, thr_sim=0.
 
 
 
-# def extract_tomo(all_locations, all_features, vol_size, loc):
-#     points = sample_uniform_3d_ball(all_locations, vol_size, DATA_CONFIG.radius, DATA_CONFIG.num_samples)
-#     extract_feat = assign_feat(points, all_features, vol_size)
-#
-#     #convert to torch
-#     #points = torch.from_numpy(points)
-#     #extract_feat = torch.from_numpy(extract_feat)
-#
-#     #assign label
-#     dist_label = feat_labeling(points, all_features, extract_feat, loc, vol_size,
-#                                thr=DATA_CONFIG.thr, thr_sim=DATA_CONFIG.thr_sim)
-#     return points, extract_feat, dist_label
-
-
-def extract_tomo(points, extract_feat, all_features, vol_size, loc):
-    # points = sample_uniform_3d_ball(all_locations, vol_size, DATA_CONFIG.radius, DATA_CONFIG.num_samples)
-    # extract_feat = assign_feat(points, all_features, vol_size)
+def extract_tomo(all_locations, all_features, vol_size, loc):
+    points = sample_uniform_3d_ball(all_locations, vol_size, DATA_CONFIG.radius, DATA_CONFIG.num_samples)
+    extract_feat = assign_feat(points, all_features, vol_size)
 
     #convert to torch
     #points = torch.from_numpy(points)
@@ -345,3 +315,17 @@ def extract_tomo(points, extract_feat, all_features, vol_size, loc):
     dist_label = feat_labeling(points, all_features, extract_feat, loc, vol_size,
                                thr=DATA_CONFIG.thr, thr_sim=DATA_CONFIG.thr_sim)
     return points, extract_feat, dist_label
+
+
+# def extract_tomo(points, extract_feat, all_features, vol_size, loc):
+#     # points = sample_uniform_3d_ball(all_locations, vol_size, DATA_CONFIG.radius, DATA_CONFIG.num_samples)
+#     # extract_feat = assign_feat(points, all_features, vol_size)
+#
+#     #convert to torch
+#     #points = torch.from_numpy(points)
+#     #extract_feat = torch.from_numpy(extract_feat)
+#
+#     #assign label
+#     dist_label = feat_labeling(points, all_features, extract_feat, loc, vol_size,
+#                                thr=DATA_CONFIG.thr, thr_sim=DATA_CONFIG.thr_sim)
+#     return points, extract_feat, dist_label
