@@ -221,11 +221,14 @@ def main():
 
 
     for uid in tqdm(uids):
+        check_exist = 0
         for i in range(len(MODEL_CONFIGS)):
             if not os.path.exists(root / f'extract_data/fold{i}/{uid}'):
                 os.makedirs(root / f'extract_data/fold{i}/{uid}')
             else:
-                continue
+                check_exist+=1
+        if check_exist == 3:
+            continue
         all_slices, dcm_list = load_slices(root / f'series/{uid}')
         loc = label_df[label_df.SeriesInstanceUID == uid][['y', 'x']].values
         if len(loc)!=0:
