@@ -28,3 +28,10 @@ ultralytics-timm/
 yolo_aneurysm_locations/
 yolo_aneurysm_binary/
 *.pt
+
+lightning_logs/
+rsna-iad/
+rsna-iad-multilabel/
+timm_3d/
+
+MedicalNet-master/

@@ -256,3 +256,16 @@ if __name__ == '__main__':
 #  --data-fold-template configs/yolo_bin_fold{fold}_hard_negatives.yaml \
 #  --folds 1 \
 #  --val-batch 16
+
+
+
+#python3 -m src.run_yolo_pipeline \
+#  --model yolo11n.pt \
+#  --epochs 5 \
+#  --img 512 \
+#  --batch 16 \
+#  --project yolo_aneurysm_locations \
+#  --name cv_y11n_mode \
+#  --data-fold-template configs/yolo_fold{fold}.yaml \
+#  --folds 0 \
+#  --val-batch 16
