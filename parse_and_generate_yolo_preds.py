@@ -118,18 +118,18 @@ def eval_one_series(slices, loc, models, uid):
                                                            vol_size, loc)
 
                 # Save points, features, labels
-                np.save(root / f'extract_data/{uid}/{uid}_points_fold_{model_idx}.npy', points)
-                np.save(root / f'extract_data/{uid}/{uid}_extract_feat_fold_{model_idx}.npy', extract_feat)
-                np.save(root / f'extract_data/{uid}/{uid}_label_fold_{model_idx}.npy', dist_label)
+                np.save(root / f'extract_data/fold{model_idx}/{uid}/{uid}_points_fold.npy', points)
+                np.save(root / f'extract_data/fold{model_idx}/{uid}/{uid}_extract_feat_fold.npy', extract_feat)
+                np.save(root / f'extract_data/fold{model_idx}/{uid}/{uid}_label_fold.npy', dist_label)
 
                 # KNN graphs
                 for k in [5, 10, 15]:
                     edge_index = knn_graph(torch.from_numpy(points), k=k, loop=False)
-                    np.save(root / f'extract_data/{uid}/{uid}_edge_index_k{k}_fold_{model_idx}.npy', edge_index)
+                    np.save(root / f'extract_data/fold{model_idx}/{uid}/{uid}_edge_index_k{k}_fold.npy', edge_index)
 
                 # Delaunay graph
                 edge_index_del = delaunay_graph(torch.from_numpy(points))
-                np.save(root / f'extract_data/{uid}/{uid}_edge_index_delaunay_fold_{model_idx}.npy', edge_index_del)
+                np.save(root / f'extract_data/fold{model_idx}/{uid}/{uid}_edge_index_delaunay_fold.npy', edge_index_del)
 
                 print('Delaunay edges:', edge_index_del.shape)
                 print('Points, features, labels:', points.shape, extract_feat.shape, dist_label.shape)
@@ -215,12 +215,17 @@ def main():
     if not os.path.exists(root/'extract_data'):
         os.makedirs(root/'extract_data')
 
+    for i in range(3):
+        if not os.path.exists(root / f'extract_data/fold{i}'):
+            os.makedirs(root / f'extract_data/fold{i}')
+
+
     for uid in tqdm(uids):
-        print(uid)
-        if not os.path.exists(root /f'extract_data/{uid}'):
-            os.makedirs(root / f'extract_data/{uid}')
-        else:
-            continue
+        for i in range(len(MODEL_CONFIGS)):
+            if not os.path.exists(root / f'extract_data/fold{i}/{uid}'):
+                os.makedirs(root / f'extract_data/fold{i}/{uid}')
+            else:
+                continue
         all_slices, dcm_list = load_slices(root / f'series/{uid}')
         loc = label_df[label_df.SeriesInstanceUID == uid][['y', 'x']].values
         if len(loc)!=0:

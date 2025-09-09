@@ -35,19 +35,19 @@ class DATA_CONFIG:
 # Model configurations - Add your models here
 MODEL_CONFIGS = [
     {
-        "path": "./models/yolo/yolo11n_fold0_no_flip.pt",
+        "path": "./models/yolo/yolo11m_fold0.pt",
         "fold": "0",
         "weight": 1.0,
         "name": "YOLOv11n_fold0"
     },
 {
-        "path": "./models/yolo/yolo11n_fold1_no_flip.pt",
+        "path": "./models/yolo/yolo11m_fold1.pt",
         "fold": "1",
         "weight": 1.0,
         "name": "YOLOv11n_fold1"
     },
 {
-        "path": "./models/yolo/yolo11n_fold2_no_flip.pt",
+        "path": "./models/yolo/yolo11m_fold2.pt",
         "fold": "2",
         "weight": 1.0,
         "name": "YOLOv11n_fold2"
