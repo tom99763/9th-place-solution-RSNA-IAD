@@ -17,7 +17,7 @@ def run(cfg: DictConfig) -> None:
     """
     Train sequentially over folds 0..4.
     """
-    for fold_id in range(1, 5):
+    for fold_id in range(3):
         print(f"\n🚀 Starting training for fold {fold_id}...\n")
 
         # override fold_id in config

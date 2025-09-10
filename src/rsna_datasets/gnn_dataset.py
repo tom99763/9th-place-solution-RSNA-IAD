@@ -25,7 +25,7 @@ class GraphDataset(Dataset):
 
     def get(self, idx):
         uid = self.uids[idx]
-        data_path = self.data_path/f'extract_data/{uid}'
+        data_path = self.data_path/f'extract_data/fold{self.cfg.fold_id}/{uid}'
         point_path = os.path.join(data_path, f'{uid}_points.npy')
         feat_path = os.path.join(data_path, f'{uid}_extract_feat.npy')
         label_path = os.path.join(data_path, f'{uid}_label.npy')
@@ -58,7 +58,7 @@ class GraphDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str = None):
         data_path = Path(self.cfg.data_dir)
-        uids = os.listdir(data_path /'extract_data')
+        uids = os.listdir(data_path / f'extract_data/fold{self.cfg.fold_id}')
         df = pd.read_csv(data_path / "train_df.csv")
         df = df[df["SeriesInstanceUID"].isin(uids)].copy()
         train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"]
