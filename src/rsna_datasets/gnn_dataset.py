@@ -26,13 +26,13 @@ class GraphDataset(Dataset):
     def get(self, idx):
         uid = self.uids[idx]
         data_path = self.data_path/f'extract_data/fold{self.cfg.fold_id}/{uid}'
-        point_path = os.path.join(data_path, f'{uid}_points.npy')
-        feat_path = os.path.join(data_path, f'{uid}_extract_feat.npy')
-        label_path = os.path.join(data_path, f'{uid}_label.npy')
+        point_path = os.path.join(data_path, f'{uid}_points_fold.npy')
+        feat_path = os.path.join(data_path, f'{uid}_extract_feat_fold.npy')
+        label_path = os.path.join(data_path, f'{uid}_label_fold.npy')
         if self.cfg.graph_type == 'knn_graph':
-            edge_path = os.path.join(data_path, f'{uid}_edge_index_k{self.cfg.k_neibs}.npy')
+            edge_path = os.path.join(data_path, f'{uid}_edge_index_k{self.cfg.k_neibs}_fold.npy')
         elif self.cfg.graph_type == 'delaunay_graph':
-            edge_path = os.path.join(data_path, f'{uid}_edge_index_delaunay.npy')
+            edge_path = os.path.join(data_path, f'{uid}_edge_index_delaunay_fold.npy')
         else:
             raise Exception('invalid graph type')
 
@@ -58,6 +58,7 @@ class GraphDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str = None):
         data_path = Path(self.cfg.data_dir)
+        print(data_path)
         uids = os.listdir(data_path / f'extract_data/fold{self.cfg.fold_id}')
         df = pd.read_csv(data_path / "train_df.csv")
         df = df[df["SeriesInstanceUID"].isin(uids)].copy()
