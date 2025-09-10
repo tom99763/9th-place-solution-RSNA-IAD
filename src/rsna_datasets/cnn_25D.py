@@ -54,8 +54,6 @@ class NpzVolumeSliceDataset(Dataset):
             class_idxs = [LABELS_TO_IDX[loc] + 1 for loc in labeldf["location"].tolist()]
             labels[class_idxs] = 1
 
-
-
         if "CT" not in modality:
             volume = volume[self.depth_mr[0]:self.depth_mr[1]]
         else:
@@ -71,21 +69,6 @@ class NpzVolumeSliceDataset(Dataset):
             volume = self.transform(image=volume)["image"]
 
         return volume, labels
-
-        # loc_labels = np.zeros(self.num_classes)
-        # label = 0
-        #
-        # if int(rowdf["Aneurysm Present"].iloc[0]) == 1:
-        #     label = 1
-        #     class_idxs = [LABELS_TO_IDX[loc] for loc in labeldf["location"].tolist()]
-        #     loc_labels[class_idxs] = 1
-        #
-        # volume = volume[self.start_idx:self.end_idx].transpose(1,2,0)
-        # if self.transform:
-        #     # BxDxHxW
-        #     volume = self.transform(image=volume)["image"]
-        #
-        # return volume, label, loc_labels
            
 
 class NpzDataModule(pl.LightningDataModule):
@@ -100,15 +83,15 @@ class NpzDataModule(pl.LightningDataModule):
                     scale_limit=0.1,   # zoom in/out 10%
                     rotate_limit=10,   # rotate ±10 degrees
                     border_mode=0,     # constant fill
-                    p=0.2
+                    p=0.25
             ),
             A.RandomBrightnessContrast(
                 brightness_limit=0.1,  # ±10%
                 contrast_limit=0.1,
-                p=0.2
+                p=0.25
             ),
-            A.HorizontalFlip(p=0.25),
-            A.VerticalFlip(p=0.25),
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.5),
             ToTensorV2()
         ])
         self.val_transforms = A.Compose([

@@ -3,20 +3,20 @@
 project_name: "rsna-intracranial-aneurysm-detection"
 experiment: windowed_mip
 seed: 42
-fold_id: 0
+fold_id: 1
 
 params:
   data_dir: ./data/processed
   num_classes: 14
   img_height: 512
   img_width: 512
-  batch_size: 12
-  num_workers: 12
+  batch_size: 16
+  num_workers: 16
   use_mip: False
 
   depth:
-    mr: [32,96]
-    ct: [32,96]
+    mr: [0,32]
+    ct: [0,32]
 
 
 # The 'defaults' list tells Hydra which configs to load by default.

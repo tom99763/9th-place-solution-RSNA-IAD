@@ -44,16 +44,7 @@ class LitTimmClassifier(pl.LightningModule):
         self.train_cls_auroc.update(pred_cls, cls_labels.long())
 
         self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        # Log the metric object. Lightning computes and logs it at epoch end.
-        self.log('train_loc_auroc', self.train_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train_cls_auroc', self.train_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
 
-        
-        # # Manual backward pass
-        # opt = self.optimizers()
-        # opt.zero_grad()
-        # self.manual_backward(loss)
-        # opt.step()
 
         return loss
 
@@ -71,18 +62,28 @@ class LitTimmClassifier(pl.LightningModule):
        
         self.val_loc_auroc.update(pred_locs, loc_labels.long())
         self.val_cls_auroc.update(pred_cls, cls_labels.long())
-      
+
         self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
-        # Log the metric object. Lightning computes and logs it at epoch end.
-        self.log('val_loc_auroc', self.val_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_cls_auroc', self.val_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
+
         return loss
 
-    def on_train_epoch_start(self):
+    def on_train_epoch_end(self):
+        
+        self.log('train_loc_auroc', self.train_loc_auroc.compute(), on_step=False, on_epoch=True, prog_bar=True)
+        self.log('train_cls_auroc', self.train_cls_auroc.compute(), on_step=False, on_epoch=True, prog_bar=True)
         self.train_loc_auroc.reset()
         self.train_cls_auroc.reset()
 
-    def on_validation_epoch_start(self):
+    def on_validation_epoch_end(self):
+        loc_auc = self.val_loc_auroc.compute()
+        cls_auc = self.val_cls_auroc.compute()
+        kaggle_score = (loc_auc + cls_auc) / 2
+
+        self.log("kaggle_score", kaggle_score, prog_bar=True)
+
+        self.log('val_loc_auroc', loc_auc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val_cls_auroc', cls_auc, on_step=False, on_epoch=True, prog_bar=True)
+
         self.val_loc_auroc.reset()
         self.val_cls_auroc.reset()
     

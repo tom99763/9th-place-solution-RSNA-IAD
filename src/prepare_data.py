@@ -44,16 +44,6 @@ def normalize(image):
         return (image - min_val) / (max_val - min_val)
     return image
 
-
-def apply_cta_window(image, window_level=300, window_width=600):
-    """
-    Applies a window to the HU values to highlight blood vessels.
-    """
-    min_val = window_level - window_width // 2
-    max_val = window_level + window_width // 2
-    windowed_image = np.clip(image, min_val, max_val)
-    return windowed_image
-
 def process_dicom(filepath):
     ds = pydicom.dcmread(filepath, force=True)
     img = ds.pixel_array.astype(np.float32)
@@ -95,15 +85,9 @@ def process_dicom_series(uid: str, data_path, cfg):
         for file in files if file.endswith('.dcm')
     ])
 
-    ds = pydicom.dcmread(all_filepaths[0], force=True)
-    modality = ds.get('Modality', '').upper()
-
     slices = parallel_process(all_filepaths, max_workers=cfg.preprocess.cores)
     slices = sorted(slices, key=lambda x: x[0])
     vol = np.array([s[1] for s in slices])
-
-    if modality == "CT":
-        vol = apply_cta_window(vol)
 
     depth,height,width = vol.shape
 

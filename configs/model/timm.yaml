@@ -1,7 +1,7 @@
 _target_: timm.create_model
 model_name: "efficientnet_b2"
 pretrained: True
-in_chans: 64
+in_chans: 32
 drop_rate: 0.3
 drop_path_rate: 0.2
 num_classes: 14

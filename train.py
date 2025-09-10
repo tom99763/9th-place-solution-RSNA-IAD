@@ -22,11 +22,18 @@ def train(cfg: DictConfig) -> None:
 
     pl_model = LitTimmClassifier(model, cfg)
 
-    ckpt_callback = pl.callbacks.ModelCheckpoint(
+    loss_ckpt_callback = pl.callbacks.ModelCheckpoint(
                           monitor="val_loss"
                         , mode="min"
                         , dirpath="./models"
                         , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"_fold_id={cfg.fold_id}"
+                        , save_top_k=2
+                        )
+    kaggle_score_ckpt_callback = pl.callbacks.ModelCheckpoint(
+                          monitor="kaggle_score"
+                        , mode="max"
+                        , dirpath="./models"
+                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{kaggle_score:.4f}'+f"_fold_id={cfg.fold_id}"
                         , save_top_k=2
                         )
 
@@ -35,7 +42,7 @@ def train(cfg: DictConfig) -> None:
     trainer = pl.Trainer(
         **cfg.trainer,
         logger=pl.loggers.TensorBoardLogger("logs/", name=cfg.experiment),
-        callbacks=[lr_monitor, ckpt_callback]
+        callbacks=[lr_monitor, loss_ckpt_callback, kaggle_score_ckpt_callback]
     )
 
     trainer.fit(pl_model, datamodule=datamodule)
