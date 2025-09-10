@@ -57,6 +57,8 @@ def load_models():
 def eval_one_series(slices, loc, models, uid):
     set_seed()
     total_weight = 0.0
+    if len(slices)==0:
+        return 
     vol_size = (len(slices), slices[0].shape[0], slices[0].shape[1])
 
     for model_idx, model_dict in enumerate(models):
