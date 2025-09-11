@@ -45,8 +45,8 @@ def train(cfg: DictConfig) -> None:
         callbacks=[lr_monitor, loss_ckpt_callback, kaggle_score_ckpt_callback]
     )
 
-    trainer.fit(pl_model, datamodule=datamodule)
-    # trainer.validate(pl_model, datamodule=datamodule, ckpt_path="./models/25D_classification-epoch=04-val_loss=0.3963_fold_id=0.ckpt")
+    # trainer.fit(pl_model, datamodule=datamodule)
+    trainer.validate(pl_model, datamodule=datamodule, ckpt_path="./models/ch32_effb2-epoch=08-kaggle_score=0.6675_fold_id=3.ckpt")
 
 if __name__ == "__main__":
     train()

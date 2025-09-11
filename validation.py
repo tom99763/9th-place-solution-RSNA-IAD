@@ -11,7 +11,9 @@ from tqdm import tqdm
 
 torch.set_float32_matmul_precision('medium')
 
-from src.model import MultiBackboneModel
+from src.trainers.cnn_25D import *
+from src.rsna_datasets.cnn_25D import *
+
 
 def create_mip(volume):
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape((1,3,1,1))
@@ -60,18 +62,6 @@ def eval_one_series(volume, model):
     return preds[:, 0].cpu().squeeze().numpy(), preds[:, 1:].squeeze().cpu().numpy()
 
 
-class LitTimmClassifier(pl.LightningModule):
-    def __init__(self, model, cfg):
-        super().__init__()
-        self.save_hyperparameters() # Saves args to checkpoint
-        
-        self.model = model
-        self.cfg = cfg
-
-    def forward(self, x):
-        return self.model(x)
-
-
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
 def validation(cfg: DictConfig) -> None:
 
@@ -80,20 +70,16 @@ def validation(cfg: DictConfig) -> None:
 
     pl.seed_everything(cfg.seed)
 
-    model = MultiBackboneModel(
-        model_name="efficientnet_b2",
-        in_chans=16,
-        img_size=512,
-        num_classes=14,
-        drop_rate=0.3,
-        drop_path_rate=0.2,
-        pretrained=True
-    )
-    
-    model_ckpt_name="25D_classification-epoch=04-val_loss=0.3963_fold_id=0"
-    # pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}.ckpt", model=model)
-    # torch.save(pl_model.model.state_dict(), f"{model_ckpt_name}.pth")
-    # return
+    model = instantiate(cfg.model)
+
+    import os
+
+    for model_ckpt_name in os.listdir("./models"):
+        model_ckpt_name = Path(model_ckpt_name)
+        print(model_ckpt_name.stem)
+        pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}", model=model)
+        torch.save(pl_model.model.state_dict(), f"./rsna-iad-modelzoo/{model_ckpt_name.stem}.pth")
+    return
 
    
     model.load_state_dict(torch.load(f"{model_ckpt_name}.pth"))

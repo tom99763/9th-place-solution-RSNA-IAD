@@ -49,8 +49,10 @@ class LitTimmClassifier(pl.LightningModule):
         return loss
 
     def validation_step(self, sample, batch_idx):
-        x, labels = sample
+        uid, x, labels = sample
+        print(f"{uid}")
         preds =self(x)
+        print(f"{preds.sigmoid()}")
 
         cls_labels, loc_labels = labels[:, 0], labels[:, 1:]
         pred_cls, pred_locs = preds[:,0], preds[:, 1:]

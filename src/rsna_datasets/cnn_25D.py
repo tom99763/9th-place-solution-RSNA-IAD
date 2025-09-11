@@ -68,7 +68,7 @@ class NpzVolumeSliceDataset(Dataset):
             # BxDxHxW
             volume = self.transform(image=volume)["image"]
 
-        return volume, labels
+        return uid, volume, labels
            
 
 class NpzDataModule(pl.LightningDataModule):
@@ -113,6 +113,6 @@ class NpzDataModule(pl.LightningDataModule):
     
     def val_dataloader(self):
         return DataLoader(self.val_dataset
-                          , batch_size=self.cfg.params.batch_size
-                          , num_workers=self.cfg.params.num_workers
+                          , batch_size=1
+                          , num_workers=1
                           , pin_memory=True)
