@@ -1,0 +1,26 @@
+{
+  "fold": 0,
+  "individual_results": [
+    {
+      "plane": "axial",
+      "status": "failed",
+      "auc": 0.0
+    },
+    {
+      "plane": "coronal",
+      "status": "failed",
+      "auc": 0.0
+    },
+    {
+      "plane": "sagittal",
+      "status": "failed",
+      "auc": 0.0
+    }
+  ],
+  "ensemble_result": {
+    "status": "failed",
+    "ensemble_auc": 0.0
+  },
+  "mean_individual_auc": 0.0,
+  "successful_planes": 0
+}

@@ -5,6 +5,8 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import pytorch_lightning as pl
 from monai.networks.nets import UNet
+from monai.networks.nets import DynUNet
+
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 from monai.transforms import (
@@ -13,6 +15,7 @@ from monai.transforms import (
     NormalizeIntensityd,
     Orientationd,
     RandCropByPosNegLabeld,
+    RandSpatialCropd,
     EnsureTyped,
     Activations,
     AsDiscrete,
@@ -71,13 +74,15 @@ class UNetModel(pl.LightningModule):
     def __init__(self, lr: float = 1e-4, pos_weight: float = 3.0):
         super().__init__()
         self.save_hyperparameters()
-        self.model = UNet(
+        self.model = DynUNet(
             spatial_dims=3,
             in_channels=1,
-            out_channels=1,  # Binary segmentation
-            channels=(32, 64, 128, 256),
-            strides=(2, 2, 1),
-            num_res_units=1,
+            out_channels=1,
+            kernel_size=[3, 3, 3, 3],
+            strides=[1, 2, 2, 2],
+            upsample_kernel_size=[2, 2, 2],
+            filters=[32, 64, 128, 256],  # This is your "channels" equivalent
+            dropout=0.1,
         )
 
         self.loss_fn = DiceCELoss(sigmoid=True, softmax=False)
@@ -177,7 +182,7 @@ def main(args):
         pass
 
     # Get label threshold from args (default 0.5)
-    label_threshold = getattr(args, 'label_threshold', 1e-6)
+    label_threshold = getattr(args, 'label_threshold', 0)
 
     # Load file paths
     train_files = list(Path(args.train_dir).glob('*.npz'))
@@ -187,12 +192,13 @@ def main(args):
     if getattr(args, 'small_dataset', False):
         train_files = train_files[:len(train_files)//10]
         val_files = val_files[:len(val_files)//10]
-
+    
     # Identify positive volumes and optionally oversample them
     def has_foreground(npz_path: Path, thr: float) -> bool:
         try:
             d = np.load(npz_path)
             m = d['mask']
+            print(f"Max mask value in {npz_path.name}: {m.max():.6f},  np.sum(mask > 0) = {np.sum(m > 0)}")
             return bool((m > thr).any())
         except Exception:
             return False
@@ -201,7 +207,22 @@ def main(args):
     pos_files = [p for p in train_files if has_foreground(p, pos_thr)]
     neg_files = [p for p in train_files if p not in set(pos_files)]
 
-    print(f"Train vols: {len(train_files)} (pos={len(pos_files)}, neg={len(neg_files)}), Val vols: {len(val_files)}, pos_thr={pos_thr}")
+    # Also compute positives for validation set
+    val_pos_files = [p for p in val_files if has_foreground(p, pos_thr)]
+    val_neg_files = [p for p in val_files if p not in set(val_pos_files)]
+
+    print(f"Train vols: {len(train_files)} (pos={len(pos_files)}, neg={len(neg_files)}), Val vols: {len(val_files)} (pos={len(val_pos_files)}), pos_thr={pos_thr}")
+
+    # Optionally keep only positive volumes for train/val
+    if getattr(args, 'only_positive', False):
+        print(f"--only-positive: keeping {len(pos_files)} positive training volumes (out of {len(train_files)})")
+        train_files = pos_files
+        neg_files = []
+
+    if getattr(args, 'only_positive_val', False):
+        print(f"--only-positive-val: keeping {len(val_pos_files)} positive validation volumes (out of {len(val_files)})")
+        val_files = val_pos_files
+        val_neg_files = []
 
 
     # Transforms
@@ -214,15 +235,17 @@ def main(args):
         # flip
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
-        # Sample balanced positive/negative patches from soft label maps
+        # For extremely sparse labels, use a different strategy
+        # Just crop patches - let the dataset sampling handle pos/neg balance
         RandCropByPosNegLabeld(
-            keys=["image", "label"],
-            label_key="label",
-            spatial_size=(16, 256, 256),
-            pos=2,
+            keys=['image', 'label'],
+            label_key='label',
+            spatial_size=(8, 128, 128),
+            pos=1,
             neg=1,
             num_samples=2,
-            image_key="image",
+            image_key='image',
+            image_threshold=0
         ),
         EnsureTyped(keys=["image", "label"]),
     ])
@@ -268,7 +291,7 @@ def main(args):
                         lbl2d = lbl_vol[z]
                         fig, ax = plt.subplots(1, 1, figsize=(5, 5))
                         ax.imshow(img2d, cmap="gray")
-                        thr = 0.0
+                        thr = 0.5  # Use 0.5 since labels are binarized to 0/1
                         mask_vis = np.ma.masked_where(lbl2d <= thr, lbl2d)
                         ax.imshow(mask_vis, cmap="turbo", alpha=0.65)
                         # add a bright contour for extra visibility
@@ -291,7 +314,7 @@ def main(args):
                     lbl2d = yi[0] if yi.ndim == 3 else yi
                     fig, ax = plt.subplots(1, 1, figsize=(5, 5))
                     ax.imshow(img2d, cmap="gray")
-                    thr = 0.0
+                    thr = 0.5  # Use 0.5 since labels are binarized to 0/1
                     mask_vis = np.ma.masked_where(lbl2d <= thr, lbl2d)
                     ax.imshow(mask_vis, cmap="turbo", alpha=0.65)
                     bin_lbl = (lbl2d > thr).astype(np.uint8)
@@ -312,6 +335,9 @@ def main(args):
                 sample_count += 1
             if sample_count >= args.viz_samples:
                 break
+        
+        print(f"Visualization complete! Saved {sample_count} samples to {out_dir}")
+        return  # Exit early after visualization
 
     # DataLoaders
     train_loader = DataLoader(
@@ -364,8 +390,8 @@ if __name__ == "__main__":
     parser.add_argument('--train-dir', type=str, required=True, help='Training data directory')
     parser.add_argument('--val-dir', type=str, required=True, help='Validation data directory')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
-    parser.add_argument('--viz-samples', type=int, default=8, help='Save this many transformed training samples and exit after saving')
+    parser.add_argument('--epochs', type=int, default=200, help='Number of epochs')
+    parser.add_argument('--viz-samples', type=int, default=0, help='Save this many transformed training samples and exit after saving')
     parser.add_argument('--viz-dir', type=str, default='outputs/transform_viz', help='Directory to save transform visualizations')
     parser.add_argument('--pos-weight', type=float, default=128.0, help='Positive weight for BCE loss (higher for foreground)')
     parser.add_argument('--small-dataset', action='store_true', help='Use 10% of the dataset for quick testing')
@@ -375,6 +401,8 @@ if __name__ == "__main__":
     parser.add_argument('--wandb-name', type=str, default='', help='W&B run name')
     parser.add_argument('--wandb-group', type=str, default='', help='W&B group')
     parser.add_argument('--label-threshold', type=float, default=1e-6, help='Threshold for binarizing labels to hard (0 or 1)')
+    parser.add_argument('--only-positive', default=True, action='store_true', help='Keep only positive training volumes (mask > pos-thr)')
+    parser.add_argument('--only-positive-val', default=True, action='store_true', help='Keep only positive validation volumes (mask > pos-thr)')
     args = parser.parse_args()
     main(args)
 
@@ -395,3 +423,4 @@ if __name__ == "__main__":
 #  --small-dataset
 
 # python3 train_unet_concise.py --train-dir data/unet_dataset/train --val-dir data/unet_dataset/val --lr 1e-4 --epochs 100 
+#$ cd /home/sersasj/RSNA-IAD-Codebase && python3 train_unet_concise.py --train-dir data/Dataset001_unet_isotropic_resize/train --val-dir data/Dataset001_unet_isotropic_resize/test --small-dataset

@@ -206,6 +206,7 @@ if __name__ == '__main__':
     run()
 
 
+#  python3 -m src.run_yolo_pipeline   --model yolo11n.pt   --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_locations   --name cv_y11_preprocessing_fix   
 
 #python3 -m src.run_yolo_pipeline   --model yolo11n.pt   --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_locations   --name cv_y11n   
 #--data-fold-template configs/yolo_fold{fold}.yaml   --folds 0,1,2,3,4   --slice-step 1 --mip-wi
@@ -259,13 +260,3 @@ if __name__ == '__main__':
 
 
 
-#python3 -m src.run_yolo_pipeline \
-#  --model yolo11n.pt \
-#  --epochs 5 \
-#  --img 512 \
-#  --batch 16 \
-#  --project yolo_aneurysm_locations \
-#  --name cv_y11n_mode \
-#  --data-fold-template configs/yolo_fold{fold}.yaml \
-#  --folds 0 \
-#  --val-batch 16

@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import pydicom
-from scipy.ndimage import zoom
+from scipy import ndimage
 from sklearn.model_selection import StratifiedKFold
 
 # Allow importing project configs
@@ -30,9 +30,8 @@ def create_ball_mask(shape: Tuple[int, int, int], center_z: int, center_y: int, 
     depth, height, width = shape
     
     radius = 6
-    z_extent = 2
     
-    for z in range(max(0, center_z - z_extent), min(depth, center_z + z_extent + 1)):
+    for z in range(max(0, center_z - radius), min(depth, center_z + radius + 1)):
         for y in range(max(0, center_y - radius), min(height, center_y + radius + 1)):
             for x in range(max(0, center_x - radius), min(width, center_x + radius + 1)):
                 dz, dy, dx = z - center_z, y - center_y, x - center_x
@@ -147,6 +146,28 @@ def ensure_dirs(base: Path):
         (base / sub).mkdir(parents=True, exist_ok=True)
 
 
+def resample_isotropic(vol: np.ndarray, spacing: Tuple[float, float, float], target: float = 1.0) -> np.ndarray:
+    """Resample volume to isotropic voxels."""
+    sx, sy, sz = spacing
+    zoom = (sz / target, sy / target, sx / target)  # Z, Y, X order
+    return ndimage.zoom(vol, zoom, order=1, prefilter=False)
+
+
+def get_spacing_from_paths(paths: List[Path]) -> Tuple[float, float, float]:
+    """Extract spacing information from DICOM files."""
+    if not paths:
+        return (1.0, 1.0, 1.0)
+    
+    try:
+        ds = pydicom.dcmread(str(paths[0]), stop_before_pixels=True)
+        pixel_spacing = getattr(ds, "PixelSpacing", [1.0, 1.0])
+        slice_thickness = float(getattr(ds, "SliceThickness", 1.0))
+        spacing_z = float(getattr(ds, "SpacingBetweenSlices", slice_thickness))
+        return (float(pixel_spacing[0]), float(pixel_spacing[1]), spacing_z)
+    except Exception:
+        return (1.0, 1.0, 1.0)
+
+
 def process_series(uid: str, root: Path, out_base: Path, folds: Dict[str, int], 
                   series_to_labels: Dict[str, List[Tuple[str, float, float]]], 
                   test_fold: int, target_shape: Tuple[int, int, int], overwrite: bool) -> int:
@@ -173,20 +194,44 @@ def process_series(uid: str, root: Path, out_base: Path, folds: Dict[str, int],
 
     volume = np.stack(slices, axis=0).astype(np.float32)
     n_slices, h, w = volume.shape
-    mask = np.zeros((n_slices, h, w), dtype=np.float32)
 
-    # Add annotations
+    # Get spacing information
+    spacing = get_spacing_from_paths(paths)
+    
+    # Step 1: Resample to isotropic voxels (1mm spacing)
+    volume_iso = resample_isotropic(volume, spacing, target=1.0)
+    n_slices_iso, h_iso, w_iso = volume_iso.shape
+    
+    # Step 2: Create mask after isotropic resampling for consistent physical size
+    mask_iso = np.zeros((n_slices_iso, h_iso, w_iso), dtype=np.float32)
+    
+    # Calculate scaling factors from original to isotropic space
+    sx, sy, sz = spacing
+    scale_x = w_iso / w  # original width to isotropic width
+    scale_y = h_iso / h  # original height to isotropic height  
+    scale_z = n_slices_iso / n_slices  # original slices to isotropic slices
+    
+    # Add annotations in isotropic space
     for sop, x, y in series_to_labels.get(uid, []):
         idx = sop_to_idx.get(sop)
         if idx is not None:
-            y_int, x_int = int(np.clip(y, 0, h-1)), int(np.clip(x, 0, w-1))
-            ball_mask = create_ball_mask((n_slices, h, w), idx, y_int, x_int)
-            mask = np.maximum(mask, ball_mask)
-
-    # Resize
-    zoom_factors = (target_shape[0]/n_slices, target_shape[1]/h, target_shape[2]/w)
-    volume_resized = zoom(volume, zoom_factors, order=1)
-    mask_resized = zoom(mask, zoom_factors, order=1)
+            # Transform coordinates to isotropic space
+            x_iso = x * scale_x
+            y_iso = y * scale_y
+            z_iso = idx * scale_z
+            
+            # Clip to valid range
+            x_int = int(np.clip(x_iso, 0, w_iso-1))
+            y_int = int(np.clip(y_iso, 0, h_iso-1))
+            z_int = int(np.clip(z_iso, 0, n_slices_iso-1))
+            
+            ball_mask = create_ball_mask((n_slices_iso, h_iso, w_iso), z_int, y_int, x_int)
+            mask_iso = np.maximum(mask_iso, ball_mask)
+    
+    # Step 3: Resize to target shape
+    zoom_factors = (target_shape[0]/n_slices_iso, target_shape[1]/h_iso, target_shape[2]/w_iso)
+    volume_resized = ndimage.zoom(volume_iso, zoom_factors, order=1)
+    mask_resized = ndimage.zoom(mask_iso, zoom_factors, order=1)
     mask_resized = (mask_resized > 0.5).astype(np.float32)
 
     # Convert types
@@ -203,12 +248,12 @@ def process_series(uid: str, root: Path, out_base: Path, folds: Dict[str, int],
     return 1
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Prepare nnU-Net dataset")
-    ap.add_argument("--dataset-id", type=int, required=True, help="nnU-Net dataset ID")
-    ap.add_argument("--dataset-name", type=str, required=True, help="nnU-Net dataset name")
+    ap = argparse.ArgumentParser(description="Prepare nU-Net dataset")
+    ap.add_argument("--dataset-id", default=1, type=int, required=False, help="nnU-Net dataset ID")
+    ap.add_argument("--dataset-name",default='unet_isotropic_resize', type=str, required=False, help="nnU-Net dataset name")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     ap.add_argument("--workers", type=int, default=4, help="Number of workers")
-    ap.add_argument("--target-shape", nargs=3, type=int, default=[48, 384, 384], help="Target volume shape (D H W)")
+    ap.add_argument("--target-shape", nargs=3, type=int, default=[64, 384, 384], help="Target volume shape (D H W)")
     ap.add_argument("--fold-as-test", type=int, default=0, help="Fold to use as test set")
     return ap.parse_args()
 
@@ -247,3 +292,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+#  - MONAI UNet: python3 train_unet_concise.py --train-dir /home/sersasj/RSNA-IAD-Codebase/data/Dataset001_unet_isotropic_resize/train --val-dir /home/sersasj/RSNA-IAD-Codebase/data/Dataset001_unet_isotropic_resize/test
+#  - timm 3D: python3 train_timm3d_multiclass.py --data-root /home/sersasj/RSNA-IAD-Codebase/data/Dataset001_unet_isotropic_resize --csv-path /home/sersasj/RSNA-IAD-Codebase/data/train_df.csv

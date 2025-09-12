@@ -1,20 +1,4 @@
-"""Validate a single-class YOLO aneurysm detector at series level.
 
-Preprocessing:
-    - DICOM -> HU -> per-slice min-max -> uint8 grayscale for YOLO (auto BGR conversion on call)
-
-Series score:
-    - Probability = max detection confidence across all processed slices/MIP windows in a series
-
-Outputs:
-    - Prints classification AUC (aneurysm present)
-    - Prints location macro AUC (degenerate ~0.5; constant probs)
-    - Optional CSV with per-series probabilities
-
-Notes:
-    - Requires ultralytics (YOLOv8/11). Single-class model assumed.
-    - Use --mip-window > 0 to validate on sliding-window MIPs instead of raw slices.
-"""
 import argparse
 from pathlib import Path
 import sys
@@ -26,9 +10,7 @@ import pandas as pd
 import pydicom
 import cv2
 from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
-sys.path.insert(0, "ultralytics-timm")
 from ultralytics import YOLO
-from typing import Dict, List, Tuple, Set, Optional, Union
 
 # Project root & config imports
 ROOT = Path(__file__).resolve().parent
@@ -113,57 +95,6 @@ def min_max_normalize(img: np.ndarray) -> np.ndarray:
 def collect_series_slices(series_dir: Path) -> List[Path]:
     return sorted(series_dir.glob('*.dcm'))
 
-# --- New windowing / normalization pipeline (adapted from user-provided snippet) ---
-def get_windowing_params(ds: pydicom.Dataset, img: Optional[np.ndarray] = None) -> Tuple[Optional[Union[float, str]], Optional[Union[float, str]]]:
-    """Determine windowing parameters based on modality.
-
-    For CT (incl. CTA), we signal CT path by returning non-None sentinel values ("CT", "CT").
-    For MR or other modalities we return (None, None) to trigger percentile normalization.
-    """
-    modality = getattr(ds, "Modality", "CT")
-    if modality == "CT":
-        # Original window (50,350) replaced by sentinel to follow provided logic.
-        return 0, 500  # type: ignore[return-value]
-    elif modality == "MR":
-        return None, None
-    else:
-        return None, None
-
-def apply_windowing_or_normalize(img: np.ndarray, center: Optional[Union[float, str]], width: Optional[Union[float, str]]) -> np.ndarray:
-    """Apply CT hard-range normalization or MR percentile normalization.
-
-    CT path (center & width not None): clip to fixed [0,500] -> scale to 0..255.
-    MR/other path (center or width is None): clip to 1st-99th percentile -> scale.
-    Includes robust fallbacks to min-max when required.
-    """
-    if center is not None and width is not None:
-        # CT branch: hardcoded range 0..500
-        p1, p99 = center, width
-        if p99 > p1:
-            clipped = np.clip(img, p1, p99)
-            norm = (clipped - p1) / (p99 - p1)
-            return (norm * 255).astype(np.uint8)
-        # Fallback
-        img_min, img_max = float(img.min()), float(img.max())
-        if img_max > img_min:
-            norm = (img - img_min) / (img_max - img_min)
-            return (norm * 255).astype(np.uint8)
-        return np.zeros_like(img, dtype=np.uint8)
-    else:
-        # MR / other: percentile 1..99
-        try:
-            p1, p99 = np.percentile(img, [1, 99])
-        except Exception:
-            p1, p99 = float(img.min()), float(img.max())
-        if p99 > p1:
-            clipped = np.clip(img, p1, p99)
-            norm = (clipped - p1) / (p99 - p1)
-            return (norm * 255).astype(np.uint8)
-        img_min, img_max = float(img.min()), float(img.max())
-        if img_max > img_min:
-            norm = (img - img_min) / (img_max - img_min)
-            return (norm * 255).astype(np.uint8)
-        return np.zeros_like(img, dtype=np.uint8)
 
 
 def main():
@@ -247,8 +178,7 @@ def main():
                     print(f"[SKIP] {dcm_path.name}: {e}")
                 continue
             for f in frames:
-                center, width = get_windowing_params(ds, frames[0])
-                img_uint8 = apply_windowing_or_normalize(f, center, width)
+                img_uint8 = min_max_normalize(f)
                 if img_uint8.ndim == 2:
                     img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
                 batch.append(img_uint8)

@@ -249,7 +249,7 @@ class DataModule(pl.LightningDataModule):
         uid2labels = build_uid_to_multilabel(self.csv_path)
         
         self.train_ds = VolumeDataset(os.path.join(self.data_root, 'train'), uid2labels)
-        self.val_ds = VolumeDataset(os.path.join(self.data_root, 'val'), uid2labels)
+        self.val_ds = VolumeDataset(os.path.join(self.data_root, 'test'), uid2labels)
         
         print(f"Training samples: {len(self.train_ds)}")
         print(f"Validation samples: {len(self.val_ds)}")
@@ -263,7 +263,7 @@ class DataModule(pl.LightningDataModule):
             pos_counts = np.sum(all_labels, axis=0)
             neg_counts = len(all_labels) - pos_counts
             # Avoid division by zero by using max(pos_count, 1)
-           # pos_weights = [float(neg) / float(max(pos, 1)) for pos, neg in zip(pos_counts, neg_counts)]
+            #pos_weights = [float(neg) / float(max(pos, 1)) for pos, neg in zip(pos_counts, neg_counts)]
             pos_weights = [1 for pos, neg in zip(pos_counts, neg_counts)]
             self.pos_weight = torch.tensor(pos_weights, dtype=torch.float32)
 
@@ -289,12 +289,12 @@ class DataModule(pl.LightningDataModule):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-root", default="/home/sersasj/RSNA-IAD-Codebase/data/unet_dataset_v2")
+    parser.add_argument("--data-root", default="/home/sersasj/RSNA-IAD-Codebase/data/Dataset001_unet_isotropic_resize")
     parser.add_argument("--csv-path", default="/home/sersasj/RSNA-IAD-Codebase/data/train_df.csv")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--model-name", default="convnextv2_nano.fcmae_ft_in22k_in1k")
+    parser.add_argument("--model-name", default="tf_efficientnetv2_s.in21k_ft_in1k")
     # Weights & Biases logging options
     parser.add_argument("--wandb", choices=["online", "offline", "disabled"], default="online")
     parser.add_argument("--wandb-project", default="rsna-iad-multilabel")

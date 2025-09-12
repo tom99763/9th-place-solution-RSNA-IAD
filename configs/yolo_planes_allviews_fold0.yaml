@@ -1,0 +1,23 @@
+train:
+- /home/sersasj/RSNA-IAD-Codebase/data/yolo_planes_fold0/axial/images/train
+- /home/sersasj/RSNA-IAD-Codebase/data/yolo_planes_fold0/coronal/images/train
+- /home/sersasj/RSNA-IAD-Codebase/data/yolo_planes_fold0/sagittal/images/train
+val:
+- /home/sersasj/RSNA-IAD-Codebase/data/yolo_planes_fold0/axial/images/val
+- /home/sersasj/RSNA-IAD-Codebase/data/yolo_planes_fold0/coronal/images/val
+- /home/sersasj/RSNA-IAD-Codebase/data/yolo_planes_fold0/sagittal/images/val
+names:
+- Anterior Communicating Artery
+- Basilar Tip
+- Left Anterior Cerebral Artery
+- Left Infraclinoid Internal Carotid Artery
+- Left Middle Cerebral Artery
+- Left Posterior Communicating Artery
+- Left Supraclinoid Internal Carotid Artery
+- Other Posterior Circulation
+- Right Anterior Cerebral Artery
+- Right Infraclinoid Internal Carotid Artery
+- Right Middle Cerebral Artery
+- Right Posterior Communicating Artery
+- Right Supraclinoid Internal Carotid Artery
+nc: 13
