@@ -2,144 +2,117 @@ import torch
 import pytorch_lightning as pl
 from hydra.utils import instantiate
 import torch.nn.functional as F
+import numpy as np
 
-from monai.losses.dice import DiceCELoss
-from monai.inferers.inferer import Inferer
-from monai.inferers.splitter import SlidingWindowSplitter
-from monai.inferers.merger import AvgMerger
+from monai.losses.dice import DiceLoss
 from monai.metrics.meandice import DiceMetric
 import torchmetrics
+import torch.nn as nn
+from monai.inferers import sliding_window_inference
 
 torch.set_float32_matmul_precision('medium')
 
 
-class WindowedMIPInferer(Inferer):
-    def __init__(self, cfg):
+class DiceBCECombined(nn.Module):
+    def __init__(self, bce_weight=0.5, smooth=1e-5):
         super().__init__()
-        self.cfg = cfg
-        self.validation_params = self.cfg.params.validation
-        self.splitter = SlidingWindowSplitter(self.validation_params.patch_size)
-        self.merger = AvgMerger(merged_shape=tuple(self.validation_params.output_img), device="cuda")
+        self.bce_weight = bce_weight
+        # DiceLoss expects probabilities or logits depending on use_sigmoid flag.
+        self.dice = DiceLoss(include_background=False, to_onehot_y=False, sigmoid=True)
+        # Use BCEWithLogits so model outputs raw logits
+        self.bce = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([32.0]))
 
-    def __call__(self, x, model):
-        img_width,img_height = (self.cfg.params.img_width, self.cfg.params.img_height)
-
-        slices_resized = F.interpolate(x, size=(img_width, img_height), mode='bilinear', align_corners=False)[0]
-
-        # Bx2x128x128
-        patches, locs = [], []
-        for patch, loc in self.splitter(x):
-            patches.append(patch)  # keep whole (B,C,H,W)
-            locs.append(loc)
-
-        patches = torch.vstack(patches)
-        patches = F.interpolate(patches, size=(img_width, img_height), mode="bilinear", align_corners=False)
-
-        xs = torch.stack([torch.vstack([patch, slices_resized]) for patch in patches])
-
-        # BSx14x256x256
-        ys = model(xs)
-
-        # BSx14x128x128
-        ys = F.interpolate(ys, size=tuple(self.validation_params.patch_size))
-
-        for y,loc in zip(ys, locs):
-            self.merger.aggregate(y.unsqueeze(0), loc)
-
-        # 1x14x512x512
-        y = self.merger.finalize()
-        return y
+    def forward(self, logits, target):
+        """
+        logits: tensor [B, 1, D, H, W] raw logits from model
+        target: tensor [B, 1, D, H, W] binary {0,1}
+        """
+        bce_loss = self.bce(logits, target.float())
+        return bce_loss
 
 
-class LitWindowedMIP(pl.LightningModule):
+class LitSegmentationCls(pl.LightningModule):
     def __init__(self, model, cfg):
         super().__init__()
         self.save_hyperparameters(ignore=['model']) # Saves args to checkpoint
         
         self.model = model
         self.cfg = cfg
-        self.loss_fn = DiceCELoss(include_background=False, to_onehot_y=False, softmax=True)
-        self.automatic_optimization = False
-        self.dice_metric_fn = DiceMetric(include_background=False, num_classes=self.cfg.params.num_classes, ignore_empty=True)
-
-        self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.cfg.params.num_classes - 1, average="macro")
-        # self.val_cls_auroc = torchmetrics.AUROC(task="binary")
-
+        self.loss_fn = DiceBCECombined()
+        self.val_cls_auroc = torchmetrics.AUROC(task="binary")
+        self.dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
 
     def forward(self, x):
         return self.model(x)
 
     def training_step(self, batch, _):
-        x, mask = batch
-        mask = self.mask_to_onehot(mask)
-
+        x = torch.vstack([batch[i]["volume"] for i in range(len(batch))])
+        mask = torch.vstack([batch[i]["mask"] for i in range(len(batch))])
         predmask =self(x)
         loss = self.loss_fn(predmask, mask)
+
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        
-        # Manual backward pass
-        opt = self.optimizers()
-        opt.zero_grad()
-        self.manual_backward(loss)
-        opt.step()
+
+        # mask = (mask > 0).float()
+        # dice = self.dice_metric(y_pred=predmask, y=mask)
+        # self.dice_metric.reset()
+        #
+        # labels = mask.amax(dim=(1,2,3,4))
+        # dice_mean = dice[labels == 1].mean()
+        #
+        # if not torch.isnan(dice_mean):
+        #     self.log("train_dice", dice_mean, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
         return loss
 
-    
-    def mask_to_onehot(self, mask):
-        """
-        Convert mask (B, H, W) to one-hot (B, num_classes, H, W).
-        """
-        one_hot = F.one_hot(mask, num_classes=self.cfg.params.num_classes)  # (B, H, W, num_classes)
-        return one_hot.permute(0, 3, 1, 2)  # (B, num_classes, H, W)
+    def validation_step(self, batch, batch_idx):
+        x,mask = batch["volume"], batch["mask"]
+        predmask = sliding_window_inference(
+            inputs=x,
+            roi_size=(128,256,256),
+            sw_batch_size=4,
+            predictor=self,
+            overlap=0.0,
+            mode="gaussian",   # blending mode (gaussian/constant/mean)
+        )
 
-    def validation_step(self, sample, batch_idx):
-        # return
-        uid, xs,masks,labels = sample
-        xs = xs.squeeze(dim=0)
-        masks = masks.squeeze(dim=0)
-        labels = labels.squeeze(dim=0).long()
 
-        predmasks = []
-
-        for x,_ in zip(xs,masks):
-            inferer = WindowedMIPInferer(self.cfg)
-            # 1x2x512x512 -> 1x14x512x512
-            predmask = inferer(x.unsqueeze(0), self.model)
-            predmasks.append(predmask)
-
-        # BSx14x512x512
-        predmasks = torch.vstack(predmasks)
-        masks = self.mask_to_onehot(masks)
-
-        loss = self.loss_fn(predmasks, masks)
-        self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-
-        predmasks = predmasks.softmax(dim=1)
-
-        self.dice_metric_fn(predmasks.argmax(1), masks.argmax(1))
-        dice_score = self.dice_metric_fn.aggregate()
-        self.log('dice_score', dice_score, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-
-        # probs of 13 classes: 0th class is BG
-        cls_probs = predmasks.amax(dim=(0,2,3))[1:]
-        # self.val_cls_auroc.update(cls_probs.max().reshape(1,1), labels[0:1].reshape(1,1))
-        self.val_loc_auroc.update(cls_probs.unsqueeze(0), labels[1:].unsqueeze(0))
-        self.log('val_loc_auroc', self.val_loc_auroc, on_step=False, on_epoch=True, prog_bar=True)
-        # self.log('val_cls_auroc', self.val_cls_auroc, on_step=False, on_epoch=True, prog_bar=True)
+        loss = self.loss_fn(predmask, mask)
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        pred_cls_logits = predmask.amax(dim=(1,2,3,4))
+        labels = mask.amax(dim=(1,2,3,4))
+        self.val_cls_auroc.update(pred_cls_logits, labels.long())
         return loss
 
-    def on_train_epoch_end(self):
-        sch = self.lr_schedulers()
+        # predmask = (predmask.sigmoid() > 0.1).float()
+        # mask = (mask > 0).float()
+        # dice = self.dice_metric(y_pred=predmask, y=mask)
+        # self.dice_metric.reset()
+        #
+        # dice_mean = dice[labels == 1].mean()
+        #
+        # if not torch.isnan(dice_mean):
+        #     self.log("val_dice", dice_mean, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-        # If the selected scheduler is a ReduceLROnPlateau scheduler.
-        if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and (self.current_epoch + 1) % self.cfg.trainer.check_val_every_n_epoch == 0:
-            sch.step(self.trainer.callback_metrics["val_loss"])
-        self.dice_metric_fn.reset()
-        self.val_loc_auroc.reset()
+    def on_validation_epoch_end(self):
+        cls_auc = self.val_cls_auroc.compute()
+        self.log('val_cls_auroc', cls_auc, on_step=False, on_epoch=True, prog_bar=True)
+
+        self.val_cls_auroc.reset()
 
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
-        
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=4)
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+
+        frequency = 10
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=self.cfg.trainer.max_steps / frequency,
+            eta_min=0.0
+        )
+        return { "optimizer": optimizer
+                , "lr_scheduler": {
+                        "scheduler": scheduler,
+                        "interval": "step",
+                        "frequency": frequency
+                    }
+                }
