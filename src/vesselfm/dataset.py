@@ -70,7 +70,7 @@ def _generate_transforms(vol_size, input_size, mode):
                 image_key="Image",
                 allow_smaller=True,
             ),
-            #ModalityIntensityScalingd(keys=["Image"]),
+            ModalityIntensityScalingd(keys=["Image"]),
             SpatialPadd(keys=["Image", "Mask"], spatial_size=input_size, mode="constant", method="symmetric"),
             ToTensord(keys=["Image", "Mask"]),
         ])
@@ -79,7 +79,7 @@ def _generate_transforms(vol_size, input_size, mode):
             EnsureChannelFirstd(keys=["Image", "Mask"], channel_dim="no_channel"),
             EnsureTyped(keys=["Image", "Mask"]),
             Resized(keys=["Image", "Mask"], spatial_size=vol_size, mode=["trilinear", "nearest"]),
-            #ModalityIntensityScalingd(keys=["Image"]),
+            ModalityIntensityScalingd(keys=["Image"]),
             ToTensord(keys=["Image", "Mask"]),
         ])
 
@@ -110,7 +110,6 @@ class RSNASegDataset(Dataset):
         #mask
         mask_data = nib.load(mask_path)
         mask = mask_data.get_fdata()
-        affine = mask_data.affine
         mask = np.flip(mask, axis=0).copy()
         mask = mask.transpose(2, 1, 0).copy()
         mask = np.flip(mask, axis=1).copy()
