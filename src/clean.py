@@ -9,5 +9,5 @@ for i in range(3):
         data = os.path.join(f'{data_path}/fold{i}', file)
         if len(os.listdir(data)) == 0:
             total+=1
-            #os.rmdir(data)
+            os.rmdir(data)
     print(total)

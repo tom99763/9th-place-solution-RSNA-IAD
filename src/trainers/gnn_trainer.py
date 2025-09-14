@@ -7,6 +7,41 @@ from hydra.utils import instantiate
 torch.set_float32_matmul_precision('medium')
 
 
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1.0, gamma=2.0, reduction="mean"):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, logits, targets):
+        bce_loss = nn.functional.binary_cross_entropy_with_logits(
+            logits, targets.float(), reduction="none"
+        )
+        probas = torch.sigmoid(logits)
+        pt = torch.where(targets == 1, probas, 1 - probas)
+        focal_weight = self.alpha * (1 - pt) ** self.gamma
+        loss = focal_weight * bce_loss
+
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        return loss
+
+class BCEFocalLoss(nn.Module):
+    def __init__(self, pos_weight=None, alpha=1.0, gamma=2.0, bce_weight=0.5, focal_weight=0.5):
+        super().__init__()
+        self.bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="mean")
+        self.focal = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
+        self.bce_weight = bce_weight
+        self.focal_weight = focal_weight
+
+    def forward(self, logits, targets):
+        loss_bce = self.bce(logits, targets.float())
+        loss_focal = self.focal(logits, targets)
+        return self.bce_weight * loss_bce + self.focal_weight * loss_focal
+
 class GNNClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
         super().__init__()
@@ -17,7 +52,13 @@ class GNNClassifier(pl.LightningModule):
 
         # Node classification loss
         pos_weight = torch.ones([1]) * cfg.pos_weight
-        self.node_loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        self.node_loss_fn = BCEFocalLoss(
+            pos_weight=pos_weight,
+            alpha=cfg.focal_alpha,
+            gamma=cfg.focal_gamma,
+            bce_weight=cfg.bce_weight,
+            focal_weight=cfg.focal_weight,
+        )
 
         # Graph-level metrics
         self.val_cls_auroc = torchmetrics.AUROC(task="binary")
