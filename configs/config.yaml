@@ -7,7 +7,7 @@ fold_id: 1
 
 params:
   data_path: ./data/processed
-  batch_size: 8
+  batch_size: 12
   num_workers: 8
 
 

@@ -30,7 +30,6 @@ class DiceBCECombined(nn.Module):
         bce_loss = self.bce(logits, target.float())
         return bce_loss
 
-
 class LitSegmentationCls(pl.LightningModule):
     def __init__(self, model, cfg):
         super().__init__()
@@ -50,6 +49,9 @@ class LitSegmentationCls(pl.LightningModule):
         mask = torch.vstack([batch[i]["mask"] for i in range(len(batch))])
         predmask =self(x)
         loss = self.loss_fn(predmask, mask)
+
+        if torch.isnan(loss):
+            print(f"{predmask.max()=}, {predmask.min()=}")
 
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 

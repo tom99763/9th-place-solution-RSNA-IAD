@@ -1,11 +1,16 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from src.trainers.segmentation import *
-from src.rsna_datasets.segmentation import *
+from src.trainers.mil import *
+from src.rsna_datasets.mil import *
+from src.models.mil import *
 
 import pytorch_lightning as pl
-from hydra.utils import instantiate
+
 from src.unet import get_model
+
+# def debug_hook(module, inp, out):
+#     if torch.isnan(out).any():
+#         print(f"NaN in {module}")
 
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
 def train(cfg: DictConfig) -> None:
@@ -19,9 +24,12 @@ def train(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
     datamodule = NpzDataModule(cfg)
 
-    model = get_model("resunet")
+    model = AneurysmClassifier()
 
-    pl_model = LitSegmentationCls(model, cfg)
+    # for _, module in model.named_modules():
+    #     module.register_forward_hook(debug_hook)
+
+    pl_model = LitMil(model, cfg)
 
     loss_ckpt_callback = pl.callbacks.ModelCheckpoint(
                           monitor="val_loss"
@@ -29,6 +37,7 @@ def train(cfg: DictConfig) -> None:
                         , dirpath="./models"
                         , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"_fold_id={cfg.fold_id}"
                         , save_top_k=2
+                        , save_last=True
                         )
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
@@ -39,7 +48,7 @@ def train(cfg: DictConfig) -> None:
         callbacks=[lr_monitor, loss_ckpt_callback]
     )
 
-    trainer.fit(pl_model, datamodule=datamodule, ckpt_path="./models/segmentation_cls-epoch=08-val_loss=0.0012_fold_id=1.ckpt")
+    trainer.fit(pl_model, datamodule=datamodule)
     # trainer.validate(pl_model, datamodule=datamodule)
 
 if __name__ == "__main__":

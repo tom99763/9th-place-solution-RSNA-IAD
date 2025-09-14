@@ -1,5 +1,6 @@
 data_path: ./data
 
-target_shape: [128,512,512]
+target_shape: [96,384,384]
 radius: 2
 n_folds: 5
+cores: 12

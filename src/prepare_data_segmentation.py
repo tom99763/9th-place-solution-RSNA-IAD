@@ -94,10 +94,9 @@ def load_dicom_folder(uid, folder_path: str, labeldf):
             "PixelSpacing": getattr(slices[0], "PixelSpacing", None),
             "SliceThickness": getattr(slices[0], "SliceThickness", None),
             "Shape": volume.squeeze().shape,
-            "Coords": []
+            "Coords": [],
+            "Label": []
         }
-
-
         
         labels = labeldf[labeldf["SeriesInstanceUID"] == uid]
 
@@ -105,91 +104,19 @@ def load_dicom_folder(uid, folder_path: str, labeldf):
             sopInstance = label["SOPInstanceUID"]
             coord = label["coordinates"]
             coord = ast.literal_eval(coord)
+            location = label["location"]
 
             if "f" in coord:
                 for series_uid in metadata.keys():
                     metadata[series_uid]["Coords"].append([coord["f"], coord["y"], coord["x"]])
+                    metadata[series_uid]["Label"].append(LABELS_TO_IDX[location])
             else:
                 z = sop_instance_uids_sorted.index(sopInstance)
                 for series_uid in metadata.keys():
                     metadata[series_uid]["Coords"].append([z, coord["y"], coord["x"]])
+                    metadata[series_uid]["Label"].append(LABELS_TO_IDX[location])
 
     return volumes, metadata
-
-
-
-def gaussian_ball_mask(shape, center, radius, sigma=None, dtype=np.float32, normalize=True):
-    """
-    Create a 3D Gaussian ball mask.
-
-    Parameters
-    ----------
-    shape : tuple of ints (D, H, W)
-        Output volume shape (z, y, x).
-    center : sequence of 3 floats (cz, cy, cx)
-        Center of the Gaussian in voxel coordinates. May be floats.
-    radius : float
-        Effective radius for the ball; used to set default sigma if sigma is None.
-        Must be >= 0.
-    sigma : float or sequence of 3 floats, optional
-        Standard deviation(s) of the Gaussian. If None, sigma = radius / 3.
-        If a single float is given it is used for all axes.
-    dtype : numpy dtype, optional
-        Output dtype (default: np.float32).
-    normalize : bool, optional
-        If True, scale mask to [0,1] (i.e., divide by the max value which is 1).
-        (Gaussian peak is 1 by construction; normalize kept for API symmetry.)
-
-    Returns
-    -------
-    mask : ndarray of shape `shape` dtype `dtype`
-        3D array with Gaussian values in range ~(0,1], peak at center = 1.
-    """
-    if radius < 0:
-        raise ValueError("radius must be >= 0")
-
-    shape = tuple(int(s) for s in shape)
-    if len(shape) != 3:
-        raise ValueError("shape must be length-3 (D, H, W)")
-
-    cz, cy, cx = (float(c) for c in center)
-
-    # Determine sigma
-    if sigma is None:
-        if radius == 0:
-            sigma = 1e-6  # tiny sigma to produce near-delta
-        else:
-            sigma = float(radius) / 3.0
-    if np.isscalar(sigma):
-        sigma = (float(sigma),) * 3
-    else:
-        sigma = tuple(float(s) for s in sigma)
-    if any(s <= 0 for s in sigma):
-        raise ValueError("sigma values must be > 0")
-
-    # Create coordinate grids
-    dz = np.arange(shape[0], dtype=np.float32) - cz
-    dy = np.arange(shape[1], dtype=np.float32) - cy
-    dx = np.arange(shape[2], dtype=np.float32) - cx
-
-    zz = dz[:, None, None]   # shape (D,1,1)
-    yy = dy[None, :, None]   # shape (1,H,1)
-    xx = dx[None, None, :]   # shape (1,1,W)
-
-    # Gaussian: exp(-0.5 * ((z/sz)^2 + (y/sy)^2 + (x/sx)^2))
-    sz, sy, sx = sigma
-    sq = (zz / sz) ** 2 + (yy / sy) ** 2 + (xx / sx) ** 2
-    mask = np.exp(-0.5 * sq).astype(dtype)
-
-    if normalize:
-        # Peak is already 1 at center when center aligns with grid; when center is off-grid peak < 1,
-        # so we normalize to make peak exactly 1.
-        peak = mask.max()
-        if peak > 0:
-            mask = mask / peak
-
-    return mask
-
 
 def apply_ct_window(image: np.ndarray, window_level=250, window_width=700) -> np.ndarray:
     lower = window_level - (window_width / 2)
@@ -198,6 +125,35 @@ def apply_ct_window(image: np.ndarray, window_level=250, window_width=700) -> np
     image = ((image - lower) / (window_width + 1e-7)) * 255.0
 
     return image
+
+def generate_sphere_mask(shape, center, radius):
+    """
+    Generate a binary segmentation mask of a sphere inside a 3D volume.
+
+    Parameters
+    ----------
+    shape : tuple of int
+        The shape of the output 3D array (e.g., (depth, height, width)).
+    center : tuple of float
+        The (z, y, x) coordinates of the sphere center.
+    radius : float
+        The radius of the sphere.
+
+    Returns
+    -------
+    mask : np.ndarray
+        A binary mask with ones inside the sphere and zeros outside.
+    """
+    z = np.arange(shape[0])[:, None, None]
+    y = np.arange(shape[1])[None, :, None]
+    x = np.arange(shape[2])[None, None, :]
+
+    dist_sq = ((z - center[0])**2 +
+               (y - center[1])**2 +
+               (x - center[2])**2)
+
+    mask = dist_sq <= radius**2
+    return mask.astype(np.uint8)
 
 
 def process_series(uid, root_path, labeldf, cfg):
@@ -221,7 +177,7 @@ def process_series(uid, root_path, labeldf, cfg):
 
     for (cz,cy,cx) in metadata["Coords"]:
 
-        mask += gaussian_ball_mask(mask.shape
+        mask += generate_sphere_mask(mask.shape
                 , (cz * target_z / orig_z, cy * target_h / orig_h, cx * target_w / orig_w)
                 , cfg.preprocess.radius)
 
@@ -269,10 +225,26 @@ def main(cfg):
 
     uids = traindf["SeriesInstanceUID"].unique().tolist()
 
-    run_parallel(uids, root_path, labeldf, cfg, num_workers=8)
+    run_parallel(uids, root_path, labeldf, cfg, num_workers=cfg.preprocess.cores)
 
     traindf.to_csv(root_path / "processed/train.csv", index=False)
 
 if __name__ == "__main__":
+
+    LABELS_TO_IDX = {
+                'Anterior Communicating Artery': 0,
+                'Basilar Tip': 1,
+                'Left Anterior Cerebral Artery': 2,
+                'Left Infraclinoid Internal Carotid Artery': 3,
+                'Left Middle Cerebral Artery': 4,
+                'Left Posterior Communicating Artery': 5,
+                'Left Supraclinoid Internal Carotid Artery': 6,
+                'Other Posterior Circulation': 7,
+                'Right Anterior Cerebral Artery': 8,
+                'Right Infraclinoid Internal Carotid Artery': 9,
+                'Right Middle Cerebral Artery': 10,
+                'Right Posterior Communicating Artery': 11,
+                'Right Supraclinoid Internal Carotid Artery': 12
+    }
     main()
 
