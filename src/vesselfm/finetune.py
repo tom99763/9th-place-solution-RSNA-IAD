@@ -135,7 +135,7 @@ def main(cfg):
     lightning_module = hydra.utils.instantiate(
         cfg.trainer.lightning_module)(
         model=model,
-        dataset_name=dataset_name,
+        dataset_name='rsna',
         threshold=cfg.threshold
     )
 

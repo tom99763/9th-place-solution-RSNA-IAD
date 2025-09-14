@@ -20,7 +20,7 @@ path_to_chkpt: null
 devices: [0]
 
 # logging
-run_name: 'fine-tune-vesselfm-13-classes-yolo_proc'
+run_name: 'dyn-unet-yolo_proc'
 wandb_project: 'rsna-iad-13classes-seg-tom'
 chkpt_folder: /path/where/to/store/chkpts
 offline: False
