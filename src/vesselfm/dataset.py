@@ -111,12 +111,12 @@ class RSNASegDataset(Dataset):
         mask_data = nib.load(mask_path)
         mask = mask_data.get_fdata()
         affine = mask_data.affine
-        mask = np.flip(mask, axis=0)
-        mask = mask.transpose(2, 1, 0)
-        mask = np.flip(mask, axis=1) #z, y, x
+        mask = np.flip(mask, axis=0).copy()
+        mask = mask.transpose(2, 1, 0).copy()
+        mask = np.flip(mask, axis=1).copy()
 
         #volume
-        vol = np.load(vol_path)['vol'][..., 0] #z, y, x
+        vol = np.load(vol_path)['vol'][..., 0].copy()
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':
             return transformed

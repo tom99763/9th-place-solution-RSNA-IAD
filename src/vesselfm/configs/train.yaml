@@ -29,7 +29,7 @@ offline: False
 dataloader:
   _target_: "torch.utils.data.DataLoader"
   _partial_: True
-  num_workers: 8
+  num_workers: 4
   prefetch_factor: 3
   batch_size: ${batch_size}
   pin_memory: True
