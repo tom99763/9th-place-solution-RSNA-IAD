@@ -22,7 +22,7 @@ transforms:
         spatial_size: ${input_size}
         num_classes: 13
         ratios: [ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 ]
-        num_samples: 4
+        num_samples: 2
         image_key: "Image"
         allow_smaller: True
 #    - RandAffined: # 🔹 random rotation on X/Y only
