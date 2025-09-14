@@ -168,6 +168,16 @@ def load_labels(root: Path) -> pd.DataFrame:
     if "x" not in label_df.columns or "y" not in label_df.columns:
         label_df["x"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["x"])  # type: ignore[arg-type]
         label_df["y"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["y"])  # type: ignore[arg-type]
+    # Parse frame index 'f' from coordinates when present
+    if "f" not in label_df.columns and "coordinates" in label_df.columns:
+        label_df["f"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s).get("f"))  # type: ignore[arg-type]
+    # Coerce 'f' to nullable integer where possible
+    if "f" in label_df.columns:
+        try:
+            label_df["f"] = pd.to_numeric(label_df["f"], errors="coerce").astype("Int64")
+        except Exception:
+            # If coercion fails, leave as-is; downstream will handle None/NA
+            pass
     # Standardize dtypes
     label_df["SeriesInstanceUID"] = label_df["SeriesInstanceUID"].astype(str)
     label_df["SOPInstanceUID"] = label_df["SOPInstanceUID"].astype(str)
@@ -238,7 +248,7 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
     out_base = root / out_dir_name
     ensure_yolo_dirs(out_base)
 
-    # Ignore known problematic and multi-frame series
+    # Ignore only known problematic series
     ignore_uids: Set[str] = set(
         [
             "1.2.826.0.1.3680043.8.498.11145695452143851764832708867797988068",
@@ -246,21 +256,13 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
             "1.2.826.0.1.3680043.8.498.87480891990277582946346790136781912242",
         ]
     )
-    mf_path = root / "multiframe_dicoms.csv"
-    if mf_path.exists():
-        try:
-            mf_df = pd.read_csv(mf_path)
-            if "SeriesInstanceUID" in mf_df.columns:
-                ignore_uids.update(mf_df["SeriesInstanceUID"].astype(str).tolist())
-        except Exception:
-            pass
 
     folds = load_folds(root)
     label_df = load_labels(root)
 
     # Group labels per series, keep SOP to locate slice indices
-    # Build map of series -> list of (SOPInstanceUID, x, y, cls_id)
-    series_to_labels: Dict[str, List[Tuple[str, float, float, int]]] = {}
+    # Build map of series -> list of (SOPInstanceUID, x, y, cls_id, frame_idx)
+    series_to_labels: Dict[str, List[Tuple[str, float, float, int, int | None]]] = {}
     for _, r in label_df.iterrows():
         if args.label_scheme == "locations":
             loc = r.get("location", None)
@@ -272,8 +274,14 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
         else:
             # Binary: any annotation is class 0
             cls_id = 0
+        # Frame index can be NA/None; convert to Python int or None
+        f_val = r.get("f", None)
+        try:
+            f_idx = int(f_val) if pd.notna(f_val) else None
+        except Exception:
+            f_idx = None
         series_to_labels.setdefault(r.SeriesInstanceUID, []).append(
-            (str(r.SOPInstanceUID), float(r.x), float(r.y), cls_id)
+            (str(r.SOPInstanceUID), float(r.x), float(r.y), cls_id, f_idx)
         )
 
     all_series: List[str] = []
@@ -314,14 +322,23 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
         # Per-slice generation (no MIP/BGR)
         if labels_for_series:
             pos_saved = 0
-            for (sop, x, y, cls_id) in labels_for_series:
+            # Track positive frames used per SOP to enable intra-DICOM adjacent negatives
+            sop_to_pos_frames: Dict[str, Set[int]] = {}
+            for (sop, x, y, cls_id, f_idx) in labels_for_series:
                 dcm_path = root / "series" / uid / f"{sop}.dcm"
                 if not dcm_path.exists():
                     continue
                 frames = read_dicom_frames_hu(dcm_path)
                 if not frames:
                     continue
-                img = min_max_normalize(frames[0])
+                # Select correct frame for positives. Treat 'f' as 0-based; fall back to 1-based if needed.
+                frame_index = 0
+                if len(frames) > 1 and f_idx is not None:
+                    if 0 <= f_idx < len(frames):
+                        frame_index = f_idx
+                    elif 1 <= f_idx <= len(frames):
+                        frame_index = f_idx - 1
+                img = min_max_normalize(frames[frame_index])
                 if args.mip_img_size > 0 and (
                     img.shape[0] != args.mip_img_size or img.shape[1] != args.mip_img_size
                 ):
@@ -331,7 +348,11 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                     img_resized = img
                     resize_h, resize_w = img_resized.shape
 
-                stem = f"{uid}_{sop}_slice"
+                # Name images to include frame index for multi-frame DICOMs to avoid collisions
+                if len(frames) > 1:
+                    stem = f"{uid}_{sop}_frame{frame_index}"
+                else:
+                    stem = f"{uid}_{sop}_slice"
                 img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
                 label_path = out_base / "labels" / split / f"{stem}.txt"
                 if img_path.exists() and label_path.exists() and not args.overwrite:
@@ -341,7 +362,7 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                 cv2.imwrite(str(img_path), img_resized)
 
                 # Scale point if resized
-                orig_h, orig_w = frames[0].shape
+                orig_h, orig_w = frames[frame_index].shape
                 if (resize_w, resize_h) != (orig_w, orig_h):
                     x_scaled = x * (resize_w / orig_w)
                     y_scaled = y * (resize_h / orig_h)
@@ -353,12 +374,15 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                 total_pos += 1
                 total_series += 1
                 pos_saved += 1
+                # Track used positive frame indices per SOP
+                if len(frames) > 1:
+                    sop_to_pos_frames.setdefault(sop, set()).add(frame_index)
 
             # Sample adjacent negatives if requested
             adjacent_neg_saved = 0
             if args.use_adjacent_negatives and pos_saved > 0:
                 pos_indices: Set[int] = set()
-                for (sop, _x, _y, _cid) in labels_for_series:
+                for (sop, _x, _y, _cid, _fidx) in labels_for_series:
                     idx = sop_to_idx.get(sop)
                     if idx is not None:
                         pos_indices.add(idx)
@@ -395,6 +419,38 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                                 if args.verbose:
                                     print(f"  Failed to process adjacent slice {adj_idx}: {e}")
                                 continue
+
+                # Additionally, for multi-frame DICOMs with frame annotations, add intra-DICOM adjacent frames as negatives
+                if args.adjacent_offset > 0 and sop_to_pos_frames:
+                    for sop, pos_frames in sop_to_pos_frames.items():
+                        dcm_path = root / "series" / uid / f"{sop}.dcm"
+                        try:
+                            frames = read_dicom_frames_hu(dcm_path)
+                        except Exception:
+                            frames = []
+                        if len(frames) <= 1:
+                            continue
+                        for pf in pos_frames:
+                            for offset in [-args.adjacent_offset, args.adjacent_offset]:
+                                adj_f = pf + offset
+                                if 0 <= adj_f < len(frames) and adj_f not in pos_frames:
+                                    img = min_max_normalize(frames[adj_f])
+                                    if args.mip_img_size > 0 and (
+                                        img.shape[0] != args.mip_img_size or img.shape[1] != args.mip_img_size
+                                    ):
+                                        img = cv2.resize(img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                                    stem = f"{uid}_{sop}_frame{adj_f}_adj_neg_{offset:+d}"
+                                    img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+                                    label_path = out_base / "labels" / split / f"{stem}.txt"
+                                    if (img_path.exists() and label_path.exists()) and not args.overwrite:
+                                        continue
+                                    cv2.imwrite(str(img_path), img)
+                                    open(label_path, "w").close()
+                                    total_neg += 1
+                                    total_series += 1
+                                    adjacent_neg_saved += 1
+                                    if args.verbose:
+                                        print(f"  Added intra-DICOM adjacent negative: frame {adj_f} (offset {offset:+d} from positive frame {pf}) in SOP {sop}")
 
             # Sample additional random negatives from this positive series if requested
             if args.pos_neg_ratio > 0 and n_slices > 0 and pos_saved > 0:

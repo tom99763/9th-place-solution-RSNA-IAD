@@ -9,7 +9,7 @@ import os
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Tuple, Set, Optional
 
 import cv2
 import numpy as np
@@ -77,28 +77,40 @@ def ordered_dcm_paths(series_dir: Path) -> Tuple[List[Path], Dict[str, int]]:
     return paths, sop_to_idx
 
 
-def load_volume(series_dir: Path) -> Tuple[np.ndarray, Tuple[float, float, float], List[Path], Dict[str, int]]:
+def load_volume(series_dir: Path) -> Tuple[
+    np.ndarray,
+    Tuple[float, float, float],
+    List[Path],
+    Dict[str, int],
+    Dict[str, int],
+    Dict[str, int],
+]:
     paths, sop_to_idx = ordered_dcm_paths(series_dir)
     if not paths:
         raise FileNotFoundError(f"No DICOMs in {series_dir}")
     slices: List[np.ndarray] = []
     spacing = None
     h = w = None
+    sop_to_start_z: Dict[str, int] = {}
+    sop_to_num_frames: Dict[str, int] = {}
     for p in paths:
         frames, sp = read_dicom_frames_hu(p)
         if spacing is None:
             spacing = sp
+        sop_stem = p.stem
+        sop_to_start_z[sop_stem] = len(slices)
         for fr in frames:
             if h is None:
                 h, w = fr.shape
             if fr.shape != (h, w):
                 continue
             slices.append(fr)
+        sop_to_num_frames[sop_stem] = len(frames)
     if not slices:
         raise RuntimeError(f"No readable frames in {series_dir}")
     vol = np.stack(slices, axis=0).astype(np.float32)
     assert spacing is not None
-    return vol, spacing, paths, sop_to_idx
+    return vol, spacing, paths, sop_to_idx, sop_to_start_z, sop_to_num_frames
 
 
 # --------- Geometry ---------
@@ -161,13 +173,26 @@ def load_labels(root: Path) -> pd.DataFrame:
     if "x" not in label_df.columns or "y" not in label_df.columns:
         label_df["x"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["x"])  # type: ignore[arg-type]
         label_df["y"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["y"])  # type: ignore[arg-type]
+    # Optional frame index for multi-frame DICOMs
+    if "f" not in label_df.columns and "coordinates" in label_df.columns:
+        try:
+            label_df["f"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s).get("f"))  # type: ignore[arg-type]
+        except Exception:
+            label_df["f"] = None
+    if "f" in label_df.columns:
+        try:
+            label_df["f"] = pd.to_numeric(label_df["f"], errors="coerce").astype("Int64")
+        except Exception:
+            pass
     label_df["SeriesInstanceUID"] = label_df["SeriesInstanceUID"].astype(str)
     label_df["SOPInstanceUID"] = label_df["SOPInstanceUID"].astype(str)
     return label_df
 
 
-def ensure_yolo_dirs(base: Path):
-    for v in ["axial", "coronal", "sagittal"]:
+def ensure_yolo_dirs(base: Path, view_names: List[str] | None = None):
+    if view_names is None:
+        view_names = ALL_VIEW_NAMES
+    for v in view_names:
         for sub in ["images/train", "images/val", "labels/train", "labels/val"]:
             (base / v / sub).mkdir(parents=True, exist_ok=True)
 
@@ -197,7 +222,34 @@ class ViewDef:
         raise ValueError(self.name)
 
 
-VIEWS = [ViewDef("axial"), ViewDef("coronal"), ViewDef("sagittal")]
+# Available views and helpers
+ALL_VIEW_NAMES = ["axial", "coronal", "sagittal"]
+
+
+def parse_selected_views(spec: str) -> List[str]:
+    """Parse comma-separated view spec. Returns list within ALL_VIEW_NAMES order.
+
+    Accepts 'all' (default) or any subset, e.g. 'axial', 'axial,coronal'.
+    Falls back to ALL_VIEW_NAMES if nothing valid is provided.
+    """
+    if not spec or str(spec).lower() == "all":
+        return ALL_VIEW_NAMES
+    parts = [p.strip().lower() for p in str(spec).split(",") if p.strip()]
+    selected = [p for p in parts if p in ALL_VIEW_NAMES]
+    if not selected:
+        return ALL_VIEW_NAMES
+    # Preserve canonical order
+    seen: Set[str] = set()
+    ordered = []
+    for name in ALL_VIEW_NAMES:
+        if name in selected and name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    return ordered
+
+
+def get_view_defs(view_names: List[str]) -> List[ViewDef]:
+    return [ViewDef(name) for name in view_names]
 
 
 # --------- Main generation ---------
@@ -213,8 +265,9 @@ def parse_args():
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--out-name", type=str, default="yolo_planes")
-    ap.add_argument("--label-scheme", type=str, choices=["locations", "aneurysm_present"], default="aneurysm_present")
-    ap.add_argument("--workers", type=int, default=8, help="Number of parallel workers for series processing (use >1 to speed up)")
+    ap.add_argument("--label-scheme", type=str, choices=["locations", "aneurysm_present"], default="locations")
+    ap.add_argument("--workers", type=int, default=6, help="Number of parallel workers for series processing (use >1 to speed up)")
+    ap.add_argument("--views", type=str, default="all", help="Comma-separated subset of views: axial,coronal,sagittal or 'all'")
     return ap.parse_args()
 
 
@@ -226,14 +279,14 @@ def write_label(path: Path, cls_id: int, x: float, y: float, w: int, h: int, box
 
 
 # --------- Parallel worker context ---------
-_CTX_SERIES_TO_LABELS: Dict[str, List[Tuple[str, float, float, int]]] | None = None
+_CTX_SERIES_TO_LABELS: Dict[str, List[Tuple[str, float, float, int, Optional[int]]]] | None = None
 _CTX_FOLDS: Dict[str, int] | None = None
 _CTX_ARGS: types.SimpleNamespace | None = None
 _CTX_OUT_ROOT: Path | None = None
 _CTX_VAL_FOLD: int | None = None
 
 
-def _init_worker(series_to_labels: Dict[str, List[Tuple[str, float, float, int]]],
+def _init_worker(series_to_labels: Dict[str, List[Tuple[str, float, float, int, Optional[int]]]],
                  folds: Dict[str, int],
                  args_dict: Dict[str, object],
                  out_root_str: str,
@@ -268,9 +321,9 @@ def _deterministic_index(key: str, n: int) -> int:
     return int(h[:8], 16) % n
 
 
-def process_series(uid: str, split: str, args, out_root: Path, label_rows: List[Tuple[str, float, float, int]]):
+def process_series(uid: str, split: str, args, out_root: Path, label_rows: List[Tuple[str, float, float, int, Optional[int]]]):
     series_dir = Path(data_path) / "series" / uid
-    vol, spacing, paths, sop_to_idx = load_volume(series_dir)
+    vol, spacing, paths, sop_to_idx, sop_to_start_z, sop_to_num_frames = load_volume(series_dir)
     # resample 3D isotropic then resize to cube
     vol_iso = resample_isotropic(vol, spacing, args.target_spacing)
     # Avoid expensive 3D cube resizing; do 2D per-slice resize on write instead for speed.
@@ -281,14 +334,26 @@ def process_series(uid: str, split: str, args, out_root: Path, label_rows: List[
 
     # group labels by SOP slice index
     points_xyz: List[Tuple[float, float, float, int]] = []  # x,y,z,cls
-    for sop, x, y, cls in label_rows:
-        z0 = sop_to_idx.get(sop)
-        if z0 is None:
-            continue
-        points_xyz.append((x * kx, y * ky, z0 * kz, cls))
+    for sop, x, y, cls, f_idx in label_rows:
+        # Base Z offset where this SOP's frames start in the stacked volume
+        z_base = sop_to_start_z.get(sop)
+        if z_base is None:
+            # Fallback to per-file index if start map missing
+            z_base = sop_to_idx.get(sop, None)
+            if z_base is None:
+                continue
+        num_frames = sop_to_num_frames.get(sop, 1)
+        # Choose frame index: f is always 0-based; default to 0 if out of range or missing
+        frame_index = 0
+        if f_idx is not None and 0 <= int(f_idx) < num_frames:
+            frame_index = int(f_idx)
+        z_cont = (z_base + frame_index) * kz
+        points_xyz.append((x * kx, y * ky, z_cont, cls))
 
-    # for each view, process based on whether this is a positive or negative series
-    for view in VIEWS:
+    # for each selected view, process based on whether this is a positive or negative series
+    selected_view_names = parse_selected_views(getattr(args, "views", "all"))
+    view_defs = get_view_defs(selected_view_names)
+    for view in view_defs:
         img_dir = out_root / view.name / "images" / split
         lbl_dir = out_root / view.name / "labels" / split
         img_dir.mkdir(parents=True, exist_ok=True)
@@ -376,13 +441,14 @@ def build_series_lists(root: Path, labels_df: pd.DataFrame) -> List[str]:
 def generate_for_fold(val_fold: int, args):
     root = Path(data_path)
     out_root = root / f"{args.out_name}_fold{val_fold}"
-    ensure_yolo_dirs(out_root)
+    selected_view_names = parse_selected_views(getattr(args, "views", "all"))
+    ensure_yolo_dirs(out_root, selected_view_names)
 
     folds = load_folds(root)
     labels = load_labels(root)
 
-    # Build series -> list[(SOP, x, y, cls)] with scheme
-    series_to_labels: Dict[str, List[Tuple[str, float, float, int]]] = {}
+    # Build series -> list[(SOP, x, y, cls, frame_idx)] with scheme
+    series_to_labels: Dict[str, List[Tuple[str, float, float, int, Optional[int]]]] = {}
     for _, r in labels.iterrows():
         if args.label_scheme == "locations":
             loc = r.get("location", None)
@@ -392,13 +458,18 @@ def generate_for_fold(val_fold: int, args):
                 continue
         else:
             cls_id = 0
+        f_val = r.get("f", None)
+        try:
+            f_idx: Optional[int] = int(f_val) if pd.notna(f_val) else None
+        except Exception:
+            f_idx = None
         series_to_labels.setdefault(str(r.SeriesInstanceUID), []).append(
-            (str(r.SOPInstanceUID), float(r.x), float(r.y), cls_id)
+            (str(r.SOPInstanceUID), float(r.x), float(r.y), cls_id, f_idx)
         )
 
     all_series = build_series_lists(root, labels)
 
-    print(f"Processing {len(all_series)} series (val fold={val_fold}, workers={args.workers}) -> {out_root}")
+    print(f"Processing {len(all_series)} series (val fold={val_fold}, workers={args.workers}, views={','.join(selected_view_names)}) -> {out_root}")
 
     if max(1, int(args.workers)) > 1:
         n_workers = max(1, int(args.workers))
@@ -429,8 +500,8 @@ def generate_for_fold(val_fold: int, args):
             if args.verbose and status != "OK":
                 print(f"[{status}] {uid}")
 
-    # quick stats
-    for view in ["axial", "coronal", "sagittal"]:
+    # quick stats (only selected views)
+    for view in selected_view_names:
         for split in ["train", "val"]:
             n_imgs = len(list((out_root / view / "images" / split).glob("*")))
             n_lbls = len(list((out_root / view / "labels" / split).glob("*.txt")))
@@ -439,7 +510,7 @@ def generate_for_fold(val_fold: int, args):
     return out_root
 
 
-def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_scheme: str):
+def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_scheme: str, view_names: List[str] | None = None):
     yaml_dir.mkdir(parents=True, exist_ok=True)
     rel = dataset_root.resolve().relative_to(ROOT)
     # names
@@ -451,7 +522,10 @@ def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_sc
         for i in range(max(idx_to_label.keys()) + 1):
             names.append(idx_to_label.get(i, f"class_{i}"))
 
-    for view in ["axial", "coronal", "sagittal"]:
+    if view_names is None:
+        view_names = ALL_VIEW_NAMES
+
+    for view in view_names:
         # Important: train/val must be RELATIVE to 'path' to avoid duplication by Ultralytics
         text = [
             f"path: {rel}/{view}",
@@ -470,13 +544,15 @@ if __name__ == "__main__":
     if args.generate_all_folds:
         for f in range(N_FOLDS):
             out_root = generate_for_fold(f, args)
-            write_yolo_yaml(Path(ROOT / "configs"), f"yolo_planes_{{view}}_fold{f}.yaml", out_root, args.label_scheme)
+            write_yolo_yaml(Path(ROOT / "configs"), f"yolo_planes_{{view}}_fold{f}.yaml", out_root, args.label_scheme, parse_selected_views(getattr(args, "views", "all")))
         print(f"Generated per-view datasets and YAMLs for folds 0..{N_FOLDS-1}")
     else:
         out_root = generate_for_fold(args.val_fold, args)
-        write_yolo_yaml(Path(ROOT / "configs"), f"yolo_planes_{{view}}.yaml", out_root, args.label_scheme)
+        write_yolo_yaml(Path(ROOT / "configs"), f"yolo_planes_{{view}}.yaml", out_root, args.label_scheme, parse_selected_views(getattr(args, "views", "all")))
         print("Done. YAMLs written under configs/ as yolo_planes_{view}.yaml")
 
 #python3 -m src.prepare_yolo_dataset_v2_planes --val-fold 0 --mip-img-size 512 --target-spacing 1.0 --label-
 #scheme locations --out-name yolo_planes
 
+## All folds, axial only
+#python3 -m src.prepare_yolo_dataset_v2_planes --generate-all-folds --views axial --out-name yolo_planes

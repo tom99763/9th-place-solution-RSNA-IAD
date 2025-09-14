@@ -51,13 +51,13 @@ N_LOC = len(LOCATION_LABELS)
 
 def parse_args():
     ap = argparse.ArgumentParser(description='Train and validate YOLO plane models')
-    ap.add_argument('--model', type=str, default='yolo11n.pt', help='Pretrained checkpoint')
+    ap.add_argument('--model', type=str, default='yolo11m.pt', help='Pretrained checkpoint')
     ap.add_argument('--epochs', type=int, default=100)
     ap.add_argument('--img', type=int, default=512)
     ap.add_argument('--batch', type=int, default=16)
     ap.add_argument('--device', type=str, default='')
     ap.add_argument('--project', type=str, default='yolo_planes')
-    ap.add_argument('--name', type=str, default='exp-yolo11n-multiview')
+    ap.add_argument('--name', type=str, default='exp-yolo11m-single-view-plane-increasedRegularization')
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--freeze', type=int, default=0)
     ap.add_argument('--patience', type=int, default=150)
@@ -65,6 +65,7 @@ def parse_args():
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--fold', type=int, default=0, help='Fold to train and validate')
     ap.add_argument('--multi-view', action='store_true', help='Train a single model on all views and validate across all')
+    ap.add_argument('--planes', type=str, default='axial,coronal,sagittal', help="Comma-separated planes to use: axial,coronal,sagittal")
     
     # Augmentation parameters
     ap.add_argument('--mixup', type=float, default=0.4)
@@ -146,7 +147,7 @@ def _get_plane_yaml_path(plane: str, fold: int) -> Path:
     raise FileNotFoundError(f"Config not found: {yaml_path_fold} or {yaml_path_base}")
 
 
-def _build_multiview_data_dict(fold: int) -> Dict:
+def _build_multiview_data_dict(fold: int, planes: List[str]) -> Dict:
     """Construct a Ultralytics data dict that merges train/val from axial, coronal, sagittal YAMLs.
 
     Returns a dict with absolute paths for 'train' and 'val' lists and 'names'/'nc'.
@@ -155,7 +156,7 @@ def _build_multiview_data_dict(fold: int) -> Dict:
     vals: List[str] = []
     names: List[str] | None = None
 
-    for plane in ["axial", "coronal", "sagittal"]:
+    for plane in planes:
         ypath = _get_plane_yaml_path(plane, fold)
         with open(ypath, 'r') as f:
             y = yaml.safe_load(f)
@@ -184,13 +185,13 @@ def _build_multiview_data_dict(fold: int) -> Dict:
     }
 
 
-def train_all_views_model(args, fold: int) -> Path:
+def train_all_views_model(args, fold: int, planes: List[str]) -> Path:
     """Train a single YOLO model using merged datasets from all three planes."""
     print(f"\n{'='*60}")
     print(f"Training SINGLE model on ALL planes for fold {fold}")
     print(f"{'='*60}")
 
-    data_dict = _build_multiview_data_dict(fold)
+    data_dict = _build_multiview_data_dict(fold, planes)
     # Write to a temporary/reproducible YAML to avoid passing a dict (some versions expect a path-like)
     multiview_yaml = ROOT / "configs" / f"yolo_planes_allviews_fold{fold}.yaml"
     try:
@@ -207,7 +208,7 @@ def train_all_views_model(args, fold: int) -> Path:
         batch=args.batch,
         device=args.device if args.device else None,
         project=args.project,
-        name=f"{args.name}_allviews_fold{fold}",
+        name=f"{args.name}_allviews_fold{fold}_{'-'.join(planes)}",
         workers=args.workers,
         freeze=args.freeze,
         patience=args.patience,
@@ -471,20 +472,23 @@ def ensemble_validation(plane_results: List[Dict], fold: int, args) -> Dict:
 def main():
     args = parse_args()
     fold = args.fold
+    planes = [p.strip().lower() for p in args.planes.split(',') if p.strip()]
+    planes = [p for p in planes if p in ['axial', 'coronal', 'sagittal']]
+    if not planes:
+        planes = ['axial', 'coronal', 'sagittal']
     
     print(f"YOLO Plane Models Pipeline - Fold {fold}")
     print(f"Model: {args.model}")
     print(f"Project: {args.project}")
     print(f"Name: {args.name}")
     
-    planes = ['axial', 'coronal', 'sagittal']
     trained_models: Dict[str, Path | None] = {}
     validation_results: List[Dict] = []
 
     if args.multi_view:
         # Train a single model on all planes, then validate that model across each plane
         try:
-            shared_weights = train_all_views_model(args, fold)
+            shared_weights = train_all_views_model(args, fold, planes)
         except Exception as e:
             print(f"✗ Failed to train ALL-VIEWS model: {e}")
             shared_weights = None

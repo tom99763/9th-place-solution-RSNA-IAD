@@ -45,36 +45,21 @@ def ordered_dcm_paths(series_dir: Path) -> List[Path]:
     slices.sort()
     return [s[1] for s in slices]
 
-def create_ball_mask(shape: Tuple[int, int, int], center_z: int, center_y: int, center_x: int, 
-                    target_shape: Tuple[int, int, int] = (48, 384, 384)) -> np.ndarray:
-    """Create ball mask sized to be 6px radius, 3 slices thick after resize."""
-    mask = np.zeros(shape, dtype=np.uint8)
+
+def create_ball_mask(shape: Tuple[int, int, int], center_z: int, center_y: int, center_x: int) -> np.ndarray:
+    """Create a simple 3D ball mask."""
+    mask = np.zeros(shape, dtype=np.float32)
     depth, height, width = shape
-    target_z, target_h, target_w = target_shape
     
-    # Calculate resize factors
-    fz = target_z / depth
-    fy = target_h / height  
-    fx = target_w / width
+    radius = 6
     
-    # Work backwards: want 6px radius and 3 slices in final image
-    desired_radius_final = 6
-    desired_z_extent_final = 1
-    
-    # Calculate required original size
-    radius_x = max(1, int(desired_radius_final / fx))
-    radius_y = max(1, int(desired_radius_final / fy))
-    radius_z = max(1, int(desired_z_extent_final / fz))
-    
-    print(f"Creating ball: orig_shape={shape}, resize_factors=({fz:.2f},{fy:.2f},{fx:.2f}), radii=({radius_z},{radius_y},{radius_x})")
-    
-    for z in range(max(0, center_z - radius_z), min(depth, center_z + radius_z + 1)):
-        for y in range(max(0, center_y - radius_y), min(height, center_y + radius_y + 1)):
-            for x in range(max(0, center_x - radius_x), min(width, center_x + radius_x + 1)):
+    for z in range(max(0, center_z - radius), min(depth, center_z + radius + 1)):
+        for y in range(max(0, center_y - radius), min(height, center_y + radius + 1)):
+            for x in range(max(0, center_x - radius), min(width, center_x + radius + 1)):
                 dz, dy, dx = z - center_z, y - center_y, x - center_x
-                # Ellipsoid equation 
-                if np.sqrt((dx/radius_x)**2 + (dy/radius_y)**2 + (dz/radius_z)**2) <= 1.0:
-                    mask[z, y, x] = 1
+                if np.sqrt(dx**2 + dy**2 + (dz*2)**2) <= radius:
+                    mask[z, y, x] = 1.0
+    
     return mask
 
 def load_labels(root: Path) -> pd.DataFrame:
@@ -101,27 +86,36 @@ def load_labels(root: Path) -> pd.DataFrame:
     df["SOPInstanceUID"] = df["SOPInstanceUID"].astype(str)
     return df
 
-def read_series(series_dir: Path) -> Tuple[Optional[np.ndarray], Dict[str, int], Dict[str, Tuple[int, int]]]:
-    """Read DICOM series and return (volume, sop->middle_slice_index, frame_info).
+def read_series(series_dir: Path) -> Tuple[Optional[np.ndarray], Dict[str, int], Dict[str, Tuple[int, int]], Tuple[float, float, float]]:
+    """Read DICOM series and return (volume, sop->middle_slice_index, frame_info, spacing).
 
     frame_info maps SOPInstanceUID -> (base_index, n_frames). For single-frame objects n_frames=1.
     This allows later use of explicit frame index ("f" in labels, 1-based) for multi-frame.
     We still keep a middle slice fallback mapping for backward compatibility.
+    spacing is (x_spacing, y_spacing, z_spacing) in mm.
     """
     paths = ordered_dcm_paths(series_dir)
     if not paths:
-        return None, {}, {}
+        return None, {}, {}, (1.0, 1.0, 1.0)
 
     volume_slices: List[np.ndarray] = []
     sop_map: Dict[str, int] = {}
     frame_info: Dict[str, Tuple[int, int]] = {}
-    for p in paths:
+    spacing = (1.0, 1.0, 1.0)  # Default spacing
+    for i, p in enumerate(paths):
         try:
             ds = pydicom.dcmread(str(p))
             arr = ds.pixel_array.astype(np.float32)
             slope = float(getattr(ds, "RescaleSlope", 1.0))
             intercept = float(getattr(ds, "RescaleIntercept", 0.0))
             sop_uid = str(getattr(ds, "SOPInstanceUID", p.stem))
+            
+            # Extract spacing information from first DICOM
+            if i == 0:
+                pixel_spacing = getattr(ds, "PixelSpacing", [1.0, 1.0])
+                slice_thickness = float(getattr(ds, "SliceThickness", 1.0))
+                spacing_between = float(getattr(ds, "SpacingBetweenSlices", slice_thickness))
+                spacing = (float(pixel_spacing[0]), float(pixel_spacing[1]), spacing_between)
 
             # RGB: take first channel
             if arr.ndim == 3 and arr.shape[-1] == 3:
@@ -149,18 +143,18 @@ def read_series(series_dir: Path) -> Tuple[Optional[np.ndarray], Dict[str, int],
             continue
 
     if not volume_slices:
-        return None, {}, {}
+        return None, {}, {}, (1.0, 1.0, 1.0)
 
-    return np.stack(volume_slices, axis=0), sop_map, frame_info
+    return np.stack(volume_slices, axis=0), sop_map, frame_info, spacing
 
 def process_series(uid: str, root: Path, out_base: Path, series_to_labels: Dict,
-                  folds_map: Dict, fold_as_test: int, target_shape: Tuple) -> bool:
+                  folds_map: Dict, fold_as_test: int, save_only_positive: bool = False) -> bool:
     """Process single series. Returns True if saved (train or test)."""
     series_dir = root / "series" / uid
     if not series_dir.exists():
         return False
     
-    vol, sop_map, frame_info = read_series(series_dir)
+    vol, sop_map, frame_info, spacing = read_series(series_dir)
     if vol is None:
         return False
     
@@ -177,9 +171,17 @@ def process_series(uid: str, root: Path, out_base: Path, series_to_labels: Dict,
     is_train = folds_map.get(uid, 0) != fold_as_test
     mask = None
     
+    # Check if we have positive labels for this series
+    labels = series_to_labels.get(uid, [])
+    has_labels = len(labels) > 0
+    
+    # If save_only_positive is True, skip series without annotations
+    if save_only_positive and not has_labels:
+        print(f"Skipping {uid} - no positive annotations (save_only_positive=True)")
+        return False
+    
     had_positives = False
     if is_train:
-        labels = series_to_labels.get(uid, [])
         mask = np.zeros_like(vol, dtype=np.uint8)
         if labels:  # only build mask if we have positive annotations
             had_positives = True
@@ -210,7 +212,7 @@ def process_series(uid: str, root: Path, out_base: Path, series_to_labels: Dict,
                     continue
                 y_i = int(np.clip(y, 0, vol.shape[1] - 1))
                 x_i = int(np.clip(x, 0, vol.shape[2] - 1))
-                ball = create_ball_mask(vol.shape, idx, y_i, x_i, target_shape)
+                ball = create_ball_mask(vol.shape, idx, y_i, x_i)
                 mask = np.maximum(mask, ball)
                 placed += 1
             print(f"[mask-debug] {uid}: labels={len(labels)} placed={placed} missing_sop={missing_sop} mask_sum_pre_resize={int(mask.sum())}")
@@ -222,30 +224,19 @@ def process_series(uid: str, root: Path, out_base: Path, series_to_labels: Dict,
             # Negative case: keep empty mask (all zeros) so nnU-Net has negative samples
             pass
     
-    # Resize
-    if target_shape:
-        tz, ty, tx = target_shape
-        fz = tz / vol.shape[0]
-        fy = ty / vol.shape[1]  
-        fx = tx / vol.shape[2]
-        vol = zoom(vol, (fz, fy, fx), order=1)
-        if mask is not None:
-            mask = zoom(mask.astype(np.float32), (fz, fy, fx), order=1)
-            mask = (mask >= 0.5).astype(np.uint8)
-    
+
     # Print shapes and mask info
     mask_sum = mask.sum() if mask is not None else 0
     print(f"Image shape: {vol.shape}, Mask shape: {mask.shape if mask is not None else None}, Mask sum: {mask_sum}")
     
-    # Check minimum mask size after resizing for training cases
-    if is_train and had_positives and mask is not None and mask_sum < 10:
-        print(f"Skipping {uid} - mask too small after resize: {mask_sum} voxels (positive case)")
-        return False
+
     
-    # Save as NIfTI
+    # Save as NIfTI with proper spacing information
     safe_id = sanitize_uid(uid)
     vol_nib = np.transpose(vol, (2, 1, 0))
-    affine = np.diag([1.0, 1.0, 1.0, 1.0])
+    # Create affine matrix with proper spacing (important for nnU-Net)
+    sx, sy, sz = spacing
+    affine = np.diag([sx, sy, sz, 1.0])
     img_nifti = nib.Nifti1Image(vol_nib, affine=affine)
     
     if is_train:
@@ -315,9 +306,10 @@ def parse_args():
     ap.add_argument("--dataset-id", type=int, required=True, help="Dataset ID")
     ap.add_argument("--dataset-name", type=str, required=True, help="Dataset name")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
-    ap.add_argument("--workers", type=int, default=1, help="Number of workers")
-    ap.add_argument("--target-shape", nargs=3, type=int, default=[48, 384, 384], help="Target shape (Z Y X)")
+    ap.add_argument("--workers", type=int, default=6, help="Number of workers")
     ap.add_argument("--fold-as-test", type=int, default=0, help="Fold to use as test")
+    ap.add_argument("--percentage", type=float, default=0.01, help="Percentage of the dataset to use (0.1 = 10%, 1.0 = 100%)")
+    ap.add_argument("--save-only-positive", action="store_true", help="Save only cases with aneurysm annotations (positive cases)")
     return ap.parse_args()
 
 def write_progress_json(out_base: Path, dataset_id: int, dataset_name: str, processed: int,
@@ -370,7 +362,31 @@ def main():
     train_df = pd.read_csv(root / "train_df.csv")
     all_series = train_df["SeriesInstanceUID"].astype(str).unique().tolist()
     
-    print(f"Processing {len(all_series)} series...")
+    # Shuffle and apply percentage if specified
+    if args.percentage <= 0 or args.percentage > 1.0:
+        raise ValueError(f"Percentage must be between 0 and 1.0, got {args.percentage}")
+    
+    if args.percentage < 1.0:
+        import random
+        random.seed(SEED)  # Use consistent seed for reproducibility
+        random.shuffle(all_series)
+        n_series = int(len(all_series) * args.percentage)
+        all_series = all_series[:n_series]
+        print(f"Using {args.percentage*100:.1f}% of dataset: {n_series} series (out of {len(train_df['SeriesInstanceUID'].unique())})")
+    
+    # Count positive and negative cases for logging
+    positive_series = set(series_to_labels.keys())
+    n_positive = len([uid for uid in all_series if uid in positive_series])
+    n_negative = len(all_series) - n_positive
+    
+    if args.save_only_positive:
+        print(f"Processing {len(all_series)} series (save_only_positive=True)")
+        print(f"  - Positive cases (with annotations): {n_positive}")
+        print(f"  - Negative cases (will be skipped): {n_negative}")
+    else:
+        print(f"Processing {len(all_series)} series")
+        print(f"  - Positive cases (with annotations): {n_positive}")
+        print(f"  - Negative cases (no annotations): {n_negative}")
     
     # Process series
     uid_mapping: Dict[str, str] = {}
@@ -383,7 +399,7 @@ def main():
         safe_id = sanitize_uid(uid)
         is_train_local = folds_map.get(uid, 0) != args.fold_as_test
         success = process_series(uid, root, out_base, series_to_labels,
-                                 folds_map, args.fold_as_test, tuple(args.target_shape))
+                                 folds_map, args.fold_as_test, args.save_only_positive)
         # Only update shared structures under lock when needed
         with lock:
             uid_mapping[uid] = safe_id
@@ -431,3 +447,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#    python3 prepare_nnunet_dataset.py \
+#  --dataset-id 001 \
+#  --dataset-name aneurysm_positives_only \
+#  --save-only-positive \
+#  --percentage 0.1

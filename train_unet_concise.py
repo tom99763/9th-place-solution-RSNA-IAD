@@ -404,6 +404,8 @@ if __name__ == "__main__":
     parser.add_argument('--only-positive', default=True, action='store_true', help='Keep only positive training volumes (mask > pos-thr)')
     parser.add_argument('--only-positive-val', default=True, action='store_true', help='Keep only positive validation volumes (mask > pos-thr)')
     args = parser.parse_args()
+    import time
+    time.sleep(60*60)
     main(args)
 
 
@@ -424,3 +426,6 @@ if __name__ == "__main__":
 
 # python3 train_unet_concise.py --train-dir data/unet_dataset/train --val-dir data/unet_dataset/val --lr 1e-4 --epochs 100 
 #$ cd /home/sersasj/RSNA-IAD-Codebase && python3 train_unet_concise.py --train-dir data/Dataset001_unet_isotropic_resize/train --val-dir data/Dataset001_unet_isotropic_resize/test --small-dataset
+
+
+#sersasj@DESKTOP-8U9D0KJ:~/RSNA-IAD-Codebase$ python3 '/home/sersasj/RSNA-IAD-Codebase/train_unet_concise.py' --train-dir /home/sersasj/RSNA-IAD-Codebase/data/Dataset001_unet_isotropic_resize/train --val-dir /home/sersasj/RSNA-IAD-Codebase/data/Dataset001_unet_isotropic_resize/test

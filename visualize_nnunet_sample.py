@@ -1,7 +1,7 @@
 """Visualize a random (or specified) nnU-Net case (image + label) from Dataset ID.
 
 Usage examples:
-  python3 visualize_nnunet_sample.py --dataset-id 902
+  python3 visualize_nnunet_sample.py --dataset-id 001 --case-id bea9a55937b6f34672075975163520c8
   python3 visualize_nnunet_sample.py --dataset-id 902 --case-id fe3f842e426f615b9ebbf72f729cdbc7
   python3 visualize_nnunet_sample.py --dataset-id 902 --num-slices 12 --save out.png
 

@@ -2,6 +2,7 @@
 path: /home/sersasj/RSNA-IAD-Codebase/data/yolo_dataset_fold0
 train: /home/sersasj/RSNA-IAD-Codebase/data/yolo_dataset_fold0/images/train
 val: /home/sersasj/RSNA-IAD-Codebase/data/yolo_dataset_fold0/images/val
+
 names:
   0: Anterior Communicating Artery
   1: Basilar Tip

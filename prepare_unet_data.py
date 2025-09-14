@@ -253,8 +253,9 @@ def parse_args():
     ap.add_argument("--dataset-name",default='unet_isotropic_resize', type=str, required=False, help="nnU-Net dataset name")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     ap.add_argument("--workers", type=int, default=4, help="Number of workers")
-    ap.add_argument("--target-shape", nargs=3, type=int, default=[64, 384, 384], help="Target volume shape (D H W)")
+    ap.add_argument("--target-shape", nargs=3, type=int, default=[128, 384, 384], help="Target volume shape (D H W)")
     ap.add_argument("--fold-as-test", type=int, default=0, help="Fold to use as test set")
+    ap.add_argument("--percentage", type=float, default=0.1, help="Percentage of the dataset to use")
     return ap.parse_args()
 
 
@@ -278,7 +279,9 @@ def main():
     # Get all series
     train_csv = pd.read_csv(root / "train_df.csv")
     all_series = train_csv["SeriesInstanceUID"].astype(str).unique().tolist()
-    
+    if args.percentage:
+        all_series = all_series[:int(len(all_series) * args.percentage)]
+
     print(f"Processing {len(all_series)} series...")
     
     # Process series

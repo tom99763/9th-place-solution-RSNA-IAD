@@ -331,4 +331,6 @@ if __name__ == "__main__":
 # python3 -m src.vizualize_views --series-dir /home/sersasj/RSNA-IAD-Codebase/data/series/1.2.826.0.1.3680043.8.498.99892990973227842737467360295351276702
 # python3 -m src.vizualize_views --series-dir /home/sersasj/RSNA-IAD-Codebase/data/series/1.2.826.0.1.3680043.8.498.98671147049544538232951626931886481868 --slice-mode quartile --no-show --save outputs/series_quartiles.png
 
-#python3 -m src.vizualize_views --series-dir /home/sersasj/RSNA-IAD-Codebase/data/series/1.2.826.0.1.3680043.8.498.98671147049544538232951626931886481868 --slice-mode all --no-show --save outputs/series_quartiles.png
+#python3 -m src.vizualize_views_isotropic --series-dir /home/sersasj/RSNA-IAD-Codebase/data/series/t9503 --slice-mode all --no-show --save outputs/series_quartiles.png
+
+#1.2.826.0.1.3680043.8.498.10337340834925241563571050156541599503.npz
