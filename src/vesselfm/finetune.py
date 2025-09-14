@@ -42,11 +42,9 @@ def main(cfg):
     torch.set_float32_matmul_precision("medium")
 
     #load data
-    df = pd.read_csv('../rsna_data/train.csv')
-    uids = os.listdir('../rsna_data/seg_nii')
-    uids = [x.split('_seg.nii')[0] for x in uids]
-    print(uids[0])
-
+    df = pd.read_csv('../data/train.csv')
+    uids = os.listdir('../data/seg_vols')
+    uids = [x.split('.npz')[0] for x in uids]
     df_seg = df[df.SeriesInstanceUID.isin(uids)].copy()
     df_seg.reset_index(inplace=True)
 
@@ -58,8 +56,6 @@ def main(cfg):
 
     train_uids = df_seg[df_seg.fold != cfg.fold_idx].SeriesInstanceUID.values.tolist()
     val_uids = df_seg[df_seg.fold == cfg.fold_idx].SeriesInstanceUID.values.tolist()
-
-    dataset_name = 'rsna'
     run_name = cfg.run_name
 
     # init logger
