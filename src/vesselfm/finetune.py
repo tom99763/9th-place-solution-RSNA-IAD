@@ -104,31 +104,16 @@ def main(cfg):
         dataset=val_dataset, batch_size=1, persistent_workers=True)
     logger.info(f"Val dataset size: {len(val_dataset)}")
 
-
-    # # # init model
-    # ckpt = torch.load(
-    #     hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
-    #     map_location=f'cuda:{cfg.devices[0]}',
-    #     weights_only=True
-    # )
-
     # Instantiate model from hydra config
     model = hydra.utils.instantiate(cfg.model)
 
-    # Replace last layer: DynUNet uses model.output_block as final conv
-    #in_channels = model.output_block.out_channels  # this should be the input to last conv
-
-    # Now load pretrained weights, but ignore the mismatched final layer
-    # model.load_state_dict(ckpt, strict=False)
-    # model.output_block = nn.Conv3d(32, 14, kernel_size=1)
-
-    # ckpt = torch.load(
-    #     './finetune_ckpts/rsna-iad-13classes-seg/vesselfm_13_classes/vesselfm_13_classes-val_dice=0.5000.ckpt',
-    #     map_location=f'cuda:{cfg.devices[0]}',
-    #     weights_only=False
-    # )
-    # ckpt = {k.replace("model.", ""): v for k, v in ckpt['state_dict'].items()}
-    # model.load_state_dict(ckpt)
+    ckpt = torch.load(
+        './pretrained/vesselfm_13_classes_dynunet-val_dice0.5047.ckpt',
+        map_location=f'cuda:{cfg.devices[0]}',
+        weights_only=False
+    )
+    ckpt = {k.replace("model.", ""): v for k, v in ckpt['state_dict'].items()}
+    model.load_state_dict(ckpt)
 
 
     # init lightning module
