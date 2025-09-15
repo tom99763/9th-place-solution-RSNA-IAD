@@ -21,6 +21,7 @@ from monai.transforms import (
     ConcatItemsd,
     ToTensord,
     Lambdad,
+RandCropByPosNegLabeld
 )
 from monai.transforms import MapTransform
 
@@ -60,15 +61,24 @@ def _generate_transforms(vol_size, input_size, mode):
             EnsureChannelFirstd(keys=["Image", "Mask"], channel_dim="no_channel"),
             EnsureTyped(keys=["Image", "Mask"]),
             Resized(keys=["Image", "Mask"], spatial_size=vol_size, mode=["trilinear", "nearest"]),
-            RandCropByLabelClassesd(
+            # RandCropByLabelClassesd(
+            #     keys=["Image", "Mask"],
+            #     label_key="Mask",
+            #     spatial_size=input_size,
+            #     num_classes=13,
+            #     ratios = [1] * 13,
+            #     num_samples=16,
+            #     image_key="Image",
+            #     allow_smaller=True,
+            # ),
+            RandCropByPosNegLabeld(
                 keys=["Image", "Mask"],
                 label_key="Mask",
                 spatial_size=input_size,
-                num_classes=13,
-                ratios=[1] * 13,
+                pos=1,
+                neg=0,
                 num_samples=16,
-                image_key="Image",
-                allow_smaller=True,
+                allow_smaller=True
             ),
             ModalityIntensityScalingd(keys=["Image"]),
             SpatialPadd(keys=["Image", "Mask"], spatial_size=input_size, mode="constant", method="symmetric"),
