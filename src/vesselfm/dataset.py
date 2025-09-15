@@ -77,7 +77,7 @@ def _generate_transforms(vol_size, input_size, mode):
                 spatial_size=input_size,
                 pos=1,
                 neg=0,
-                num_samples=16,
+                num_samples=4,
                 allow_smaller=True
             ),
             ModalityIntensityScalingd(keys=["Image"]),

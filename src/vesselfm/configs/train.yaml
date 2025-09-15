@@ -6,7 +6,7 @@ defaults:
   - _self_
 
 # data
-input_size: [64, 64, 64]
+input_size: [128, 96, 96]
 vol_size: [128, 384, 384]
 image_channels: 1
 num_classes: 1
