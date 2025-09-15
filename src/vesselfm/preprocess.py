@@ -160,3 +160,50 @@ def process_dicom_for_yolo(series_path):
     # Now dicom_files matches the sorted slices
     dcm_list = [f.stem for f in dicom_files]
     return np.array(all_slices)
+
+
+def load_dicom_to_nii_series(series_dir):
+    """
+    Load a DICOM series into a 3D HU volume with affine matrix.
+
+    Args:
+        series_dir (Path): directory containing DICOM files
+
+    Returns:
+        volume (np.ndarray): 3D array (Z, Y, X) in HU
+        affine (np.ndarray): 4x4 voxel-to-world affine
+    """
+    # Collect DICOMs
+    dcm_paths = [Path(series_dir) / f for f in os.listdir(series_dir) if f.lower().endswith(".dcm")]
+    if not dcm_paths:
+        raise FileNotFoundError(f"No DICOM files found in {series_dir}")
+
+    slices = [pydicom.dcmread(str(p), force=True) for p in dcm_paths]
+
+    # Orientation & sorting
+    orientation = np.array(slices[0].ImageOrientationPatient).reshape(2, 3)
+    row_cos, col_cos = orientation
+    normal = np.cross(row_cos, col_cos)
+    slices.sort(key=lambda ds: np.dot(ds.ImagePositionPatient, normal))
+
+    # HU scaling
+    slope = float(getattr(slices[0], "RescaleSlope", 1.0))
+    intercept = float(getattr(slices[0], "RescaleIntercept", 0.0))
+    volume = np.stack([ds.pixel_array for ds in slices]).astype(np.float32)
+    volume = volume * slope + intercept
+
+    # Spacing
+    delx, dely = [float(x) for x in slices[0].PixelSpacing]
+    positions = [np.array(ds.ImagePositionPatient) for ds in slices]
+    slice_positions = [np.dot(p, normal) for p in positions]
+    delz = float(np.mean(np.diff(slice_positions)))
+
+    # Affine
+    slice_cos = normal
+    origin = np.array(slices[0].ImagePositionPatient)
+    affine = np.eye(4)
+    affine[0:3, 0] = row_cos * delx
+    affine[0:3, 1] = col_cos * dely
+    affine[0:3, 2] = slice_cos * delz
+    affine[0:3, 3] = origin
+    return volume

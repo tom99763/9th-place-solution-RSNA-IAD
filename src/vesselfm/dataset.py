@@ -66,7 +66,7 @@ def _generate_transforms(vol_size, input_size, mode):
                 spatial_size=input_size,
                 num_classes=13,
                 ratios=[1] * 13,
-                num_samples=4,
+                num_samples=3,
                 image_key="Image",
                 allow_smaller=True,
             ),
@@ -109,13 +109,13 @@ class RSNASegDataset(Dataset):
 
         #mask
         mask_data = nib.load(mask_path)
-        mask = mask_data.get_fdata()
+        mask = mask_data.get_fdata().astype('float32')
         mask = np.flip(mask, axis=0).copy()
         mask = mask.transpose(2, 1, 0).copy()
         mask = np.flip(mask, axis=1).copy()
 
         #volume
-        vol = np.load(vol_path, mmap_mode='r')['vol'][..., 0].copy()
+        vol = np.load(vol_path, mmap_mode='r')['vol'][..., 0].copy().astype('float32')
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':
             return transformed
