@@ -23,7 +23,7 @@ devices: [0]
 run_name: 'dyn-unet-yolo_proc'
 wandb_project: 'rsna-iad-13classes-seg-tom'
 chkpt_folder: /path/where/to/store/chkpts
-offline: False
+offline: True
 
 # dataloader
 dataloader:

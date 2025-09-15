@@ -66,7 +66,7 @@ def _generate_transforms(vol_size, input_size, mode):
                 spatial_size=input_size,
                 num_classes=13,
                 ratios=[1] * 13,
-                num_samples=2,
+                num_samples=4,
                 image_key="Image",
                 allow_smaller=True,
             ),
