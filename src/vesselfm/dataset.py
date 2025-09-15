@@ -77,7 +77,7 @@ def _generate_transforms(vol_size, input_size, mode):
                 spatial_size=input_size,
                 pos=1,
                 neg=0,
-                num_samples=4,
+                num_samples=2,
                 allow_smaller=True
             ),
             ModalityIntensityScalingd(keys=["Image"]),
@@ -125,7 +125,7 @@ class RSNASegDataset(Dataset):
         mask = np.flip(mask, axis=1).copy()
 
         #volume
-        vol = np.load(vol_path, mmap_mode='r')['vol'].copy()
+        vol = np.load(vol_path, mmap_mode='r')['vol'].copy()[..., 0]
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':
             return transformed
