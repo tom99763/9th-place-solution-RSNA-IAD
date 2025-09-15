@@ -16,7 +16,7 @@ data_path = '../data'
 
 def process_vol_and_save(series_path: str):
     try:
-        vol = process_dicom_for_yolo(series_path)
+        vol = load_dicom_to_nii_series(series_path)
         print(vol.shape)
         np.savez_compressed(target_dir / f"{uid}.npz", vol=vol)
     except Exception as e:
