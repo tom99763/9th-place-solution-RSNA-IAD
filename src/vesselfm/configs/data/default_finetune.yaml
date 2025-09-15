@@ -3,7 +3,7 @@ fold_idx: 0
 file_format: "nii"
 image_size: ${input_size}
 filter_dataset_IDs: null
-input_size: [128, 96, 96]
+input_size: [128, 128, 128]
 vol_size: [128, 384, 384]
 transforms:
   train:
