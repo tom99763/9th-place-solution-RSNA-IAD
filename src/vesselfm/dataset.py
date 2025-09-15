@@ -75,7 +75,7 @@ def _generate_transforms(vol_size, input_size, mode):
                 keys=["Image", "Mask"],
                 label_key="Mask",
                 spatial_size=input_size,
-                pos=1, neg=1,  # balance between fg/bg
+                pos=1, neg=0,  # balance between fg/bg
                 num_samples=2,
                 image_key="Image",
                 allow_smaller=True,
