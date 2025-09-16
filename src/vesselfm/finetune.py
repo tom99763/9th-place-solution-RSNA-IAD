@@ -43,8 +43,8 @@ def main(cfg):
 
     #load data
     df = pd.read_csv('../data/train.csv')
-    uids = os.listdir('../data/seg_vols')
-    uids = [x.split('.npz')[0] for x in uids]
+    uids = os.listdir('../data/segmentations')
+    uids = [uid.split('.nii')[0] for uid in uids if 'cowseg' not in uid]
     df_seg = df[df.SeriesInstanceUID.isin(uids)].copy()
     df_seg.reset_index(inplace=True)
 
