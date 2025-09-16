@@ -4,4 +4,4 @@ defaults:
 
 RSNA:
   sample_prop: 1
-  path: ../rsna_data
+  path: ../data

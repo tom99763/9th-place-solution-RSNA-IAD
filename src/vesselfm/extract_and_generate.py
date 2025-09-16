@@ -18,6 +18,9 @@ from utils.io import determine_reader_writer
 from preprocess import *
 import os
 import SimpleITK as sitk
+import pydicom
+from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
 
 
 warnings.filterwarnings("ignore")
@@ -45,7 +48,7 @@ def load_model(cfg, device):
     return model
 
 
-def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resample=False, default_thickness=1.0):
+def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resample=False, default_thickness=1.0, max_workers=20):
     reader = sitk.ImageSeriesReader()
 
     # Get all series IDs
@@ -54,24 +57,24 @@ def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resampl
         raise RuntimeError(f"No DICOM series found in {series_path}")
 
     # Pick first if not specified
-    if series_id is None:
-        series_id = series_ids[0]
-    else:
-        series_id = str(series_id)
+    series_id = str(series_ids[0] if series_id is None else series_id)
 
-    # Get file names
+    # Get file names for the series
     all_files = reader.GetGDCMSeriesFileNames(series_path, series_id)
 
-    # --- Filter files by consistent size ---
-    file_sizes = {}
-    for f in all_files:
-        img = sitk.ReadImage(f)
-        file_sizes.setdefault(img.GetSize(), []).append(f)
+    # --- Parallel metadata read (fast size check) ---
+    def get_size(f):
+        ds = pydicom.dcmread(f, stop_before_pixels=True)
+        return (int(ds.Rows), int(ds.Columns)), f
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        sizes = list(ex.map(get_size, all_files))
 
     # Pick the most common size
-    target_size = max(file_sizes, key=lambda k: len(file_sizes[k]))
-    files = file_sizes[target_size]
+    most_common_size = Counter(s[0] for s in sizes).most_common(1)[0][0]
+    files = [f for (sz, f) in sizes if sz == most_common_size]
 
+    # --- Now read the actual image series ---
     reader.SetFileNames(files)
     image = reader.Execute()
 
@@ -97,6 +100,7 @@ def load_series2vol(series_path, series_id=None, spacing_tolerance=1e-3, resampl
         resampler.SetInterpolator(sitk.sitkLinear)
         image = resampler.Execute(image)
 
+    # Convert to numpy array
     volume = sitk.GetArrayFromImage(image)
     return volume
 
@@ -111,6 +115,74 @@ def resample(image, factor=None, target_shape=None):
         new_d, new_h, new_w = int(round(d / factor)), int(round(h / factor)), int(round(w / factor))
     return F.interpolate(image, size=(new_d, new_h, new_w), mode="trilinear", align_corners=False)
 
+
+def read_dicom_info(path):
+    """Read DICOM metadata needed for sorting and decoding."""
+    ds = pydicom.dcmread(path, stop_before_pixels=True)
+    try:
+        z = float(ds.ImagePositionPatient[2])  # Preferred
+    except AttributeError:
+        z = float(ds.InstanceNumber)           # Fallback
+    return path, z, ds
+
+def read_pixel_data(path, rescale_slope, rescale_intercept):
+    """Read pixel data and apply rescale."""
+    ds = pydicom.dcmread(path)  # full read with pixels
+    arr = ds.pixel_array.astype(np.float32)
+    if rescale_slope is not None and rescale_intercept is not None:
+        arr = arr * rescale_slope + rescale_intercept
+    return arr
+
+def load_volume_fast(directory, max_workers=8):
+    # Step 1: List all .dcm files
+    dcm_files = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.dcm')]
+    if not dcm_files:
+        raise RuntimeError(f"No DICOM files found in {directory}")
+
+    # Step 2: Read metadata in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        meta_info = list(executor.map(read_dicom_info, dcm_files))
+
+    # Step 3: Sort by slice position
+    meta_info.sort(key=lambda x: x[1])
+    sorted_paths = [m[0] for m in meta_info]
+    first_ds = meta_info[0][2]
+
+    # Extract rescale params once
+    rescale_slope = getattr(first_ds, "RescaleSlope", None)
+    rescale_intercept = getattr(first_ds, "RescaleIntercept", None)
+
+    # Step 4: Read one slice to get shape and dimension
+    test_arr = pydicom.dcmread(sorted_paths[0]).pixel_array
+    if test_arr.ndim == 2:
+        depth = len(sorted_paths)
+        height, width = test_arr.shape
+        volume = np.zeros((depth, height, width), dtype=np.float32)
+    elif test_arr.ndim == 3:
+        # multi-frame DICOM case
+        depth = test_arr.shape[0]
+        height, width = test_arr.shape[1], test_arr.shape[2]
+        if len(sorted_paths) > 1:
+            raise ValueError("Multiple multi-frame DICOM files not supported yet")
+        volume = np.zeros((depth, height, width), dtype=np.float32)
+    else:
+        raise ValueError(f"Unexpected pixel array shape: {test_arr.shape}")
+
+    # Step 5: Load pixel data in parallel directly into volume
+    def load_into_array(idx_path):
+        idx, path = idx_path
+        arr = read_pixel_data(path, rescale_slope, rescale_intercept)
+        if arr.ndim == 3 and volume.shape[0] == arr.shape[0]:
+            volume[:] = arr  # entire volume from single file
+        elif arr.ndim == 2:
+            volume[idx] = arr
+        else:
+            raise ValueError(f"Shape mismatch loading {path}, arr shape: {arr.shape}, volume shape: {volume.shape}")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        executor.map(load_into_array, enumerate(sorted_paths))
+
+    return volume
 
 @hydra.main(config_path="configs", config_name="extraction", version_base="1.3.2")
 def main(cfg):
@@ -151,10 +223,12 @@ def main(cfg):
 
     with torch.no_grad():
         for idx, uid in tqdm(enumerate(sorted(os.listdir(cfg.series_path))), total=len(os.listdir(series_paths)), desc="Processing series."):
+            if os.path.exists(f'{cfg.output_folder}/{uid}'):
+                continue
             image_path = os.path.join(cfg.series_path, uid)
             preds = []
             for scale in cfg.tta.scales:
-                image = load_series2vol(image_path)
+                image = load_volume_fast(image_path)
                 image = transforms(image.astype(np.float32))[None].to(device)
 
                 # apply test time augmentation

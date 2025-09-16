@@ -1,188 +1,209 @@
-import os.path
-
-import torch
-from torch_cluster import knn_graph
+import os
 import numpy as np
+import pydicom
+import cv2
+from pathlib import Path
+from typing import List, Tuple, Dict, Optional
+from scipy import ndimage
+import warnings
 import gc
+import sys
+import json
+import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import queue
+import time
+import nibabel as nib
+
+warnings.filterwarnings('ignore')
+
+# Data handling
+import polars as pl
+import pandas as pd
+
+# ML/DL
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.cuda.amp import autocast
 
 
-def sample_positive_points(segmentation, N):
-    B, _, Z, Y, X = segmentation.shape
-    points_list = []
-
-    for b in range(B):
-        pos_idx = torch.nonzero(segmentation[b, 0], as_tuple=False)  # (num_pos, 3)
-
-        if len(pos_idx) == 0:
-            rand_idx = torch.stack([
-                torch.randint(0, Z, (N,)),
-                torch.randint(0, Y, (N,)),
-                torch.randint(0, X, (N,))
-            ], dim=1)
-            points_list.append(rand_idx)
-            continue
-
-        if len(pos_idx) >= N:
-            # Uniformly spaced indices in the sorted list
-            choice = torch.linspace(0, len(pos_idx) - 1, steps=N).long()
-            choice = torch.clamp(choice, max=len(pos_idx) - 1)
-            sampled = pos_idx[choice]
-        else:
-            # Repeat points if not enough
-            repeats = (N + len(pos_idx) - 1) // len(pos_idx)
-            repeated = pos_idx.repeat((repeats, 1))
-            choice = torch.linspace(0, len(repeated) - 1, steps=N).long()
-            sampled = repeated[choice]
-
-        points_list.append(sampled)
-
-    points = torch.stack(points_list, dim=0)  # (B, N, 3)
-    return points
+# Optimization settings
+torch.set_float32_matmul_precision('medium')
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.deterministic = False
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 
-class StopForward(Exception): pass
+####configs
+MAX_WORKERS = 4
 
-def extract_features_with_hook(model, image, stop_at_layer):
-    features = {}
-    def hook_fn(module, input, output):
-        features['feat'] = output
-        raise StopForward()
 
-    target_module = dict(model.named_modules())[stop_at_layer]
-    handle = target_module.register_forward_hook(hook_fn)
+#### functions
+def read_dicom_frames_hu(path: Path) -> List[Tuple[float, np.ndarray]]:
+    """Read DICOM file and return list of (slice_position, HU frame)"""
+    ds = pydicom.dcmread(str(path), force=True)
+    pix = ds.pixel_array
+    slope = float(getattr(ds, 'RescaleSlope', 1.0))
+    intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+
+    # Compute slice location using orientation + position
     try:
-        _ = model(image)
-    except StopForward:
-        pass
-    finally:
-        handle.remove()
-    return features['feat']
+        orientation = np.array(ds.ImageOrientationPatient).reshape(2, 3)
+        row_cos, col_cos = orientation
+        normal = np.cross(row_cos, col_cos)  # slice normal vector
+        position = np.array(ds.ImagePositionPatient)
+        slice_loc = float(np.dot(position, normal))  # projection along normal
+    except Exception:
+        # Fallback: SliceLocation / InstanceNumber
+        slice_loc = float(getattr(ds, "SliceLocation", getattr(ds, "InstanceNumber", 0.0)))
 
+    frames: List[Tuple[float, np.ndarray]] = []
 
-def compute_slices(spatial_shape, roi_size, step):
-    slices_list = []
-    for start_d in range(0, spatial_shape[0], step[0]):
-        end_d = start_d + roi_size[0]
-        if end_d > spatial_shape[0]:
-            start_d = spatial_shape[0] - roi_size[0]
-            end_d = spatial_shape[0]
-
-        for start_h in range(0, spatial_shape[1], step[1]):
-            end_h = start_h + roi_size[1]
-            if end_h > spatial_shape[1]:
-                start_h = spatial_shape[1] - roi_size[1]
-                end_h = spatial_shape[1]
-
-            for start_w in range(0, spatial_shape[2], step[2]):
-                end_w = start_w + roi_size[2]
-                if end_w > spatial_shape[2]:
-                    start_w = spatial_shape[2] - roi_size[2]
-                    end_w = spatial_shape[2]
-
-                slices_list.append((
-                    (start_d, end_d),
-                    (start_h, end_h),
-                    (start_w, end_w)
-                ))
-
-    # Remove duplicates by converting to hashable tuples
-    slices_list = list(dict.fromkeys(slices_list))
-
-    # Convert tuples back to slices
-    slices_list = [
-        (slice(d[0], d[1]), slice(h[0], h[1]), slice(w[0], w[1]))
-        for d, h, w in slices_list
-    ]
-    return slices_list
-
-
-def sliding_window_patches(image, roi_size, device=None, overlap=0.5):
-    batch_mode = (image.dim() == 5)
-    if batch_mode:
-        B = image.shape[0]
-        C = image.shape[1]
-        spatial_shape = image.shape[2:]
-    else:
-        B = 1
-        C = image.shape[0]
-        spatial_shape = image.shape[1:]
-        image = image.unsqueeze(0)  # add batch dim
-
-    step = [max(1, int(s * (1 - overlap))) for s in roi_size]
-    slices = compute_slices(spatial_shape, roi_size, step)
-
-    for sl in slices:
-        patch = image[(slice(None), slice(None)) + sl]  # (B, C, D_roi, H_roi, W_roi)
-        coord = (sl[0].start, sl[1].start, sl[2].start)
-        if batch_mode:
-            yield patch.to(device), coord
+    if pix.ndim == 2:
+        img = pix.astype(np.float32)
+        frames.append((slice_loc, img * slope + intercept))
+    elif pix.ndim == 3:
+        # RGB or multi-frame
+        if pix.shape[-1] == 3 and pix.shape[0] != 3:
+            try:
+                gray = cv2.cvtColor(pix.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+            except Exception:
+                gray = pix[..., 0].astype(np.float32)
+            frames.append((slice_loc, gray * slope + intercept))
         else:
-            yield patch[0].to(device), coord
+            for i in range(pix.shape[0]):
+                frm = pix[i].astype(np.float32)
+                # tiny offset ensures consistent ordering for multi-frame
+                frames.append((slice_loc + i * 1e-3, frm * slope + intercept))
+    return frames
 
 
-def assign_point_features_with_sliding(model, image, points, stop_at="downsamples.3", roi_size=(128,128,128), overlap=0.5):
-    B, N, _ = points.shape
-    device = image.device
-    point_feats_sum = None
-    point_counts = torch.zeros((B, N), device=device)
-
-    for patch, (start_z, start_y, start_x) in sliding_window_patches(image, roi_size, device=device, overlap=overlap):
-        with torch.no_grad():
-            feat_map = extract_features_with_hook(model, patch, stop_at)
-        C_feat = feat_map.shape[1]
-
-        if point_feats_sum is None:
-            point_feats_sum = torch.zeros((B, N, C_feat), device=device)
-
-        scale_z = feat_map.shape[2] / patch.shape[2]
-        scale_y = feat_map.shape[3] / patch.shape[3]
-        scale_x = feat_map.shape[4] / patch.shape[4]
-
-        for b in range(B):
-            mask_inside = (
-                (points[b, :, 0] >= start_z) & (points[b, :, 0] < start_z + patch.shape[2]) &
-                (points[b, :, 1] >= start_y) & (points[b, :, 1] < start_y + patch.shape[3]) &
-                (points[b, :, 2] >= start_x) & (points[b, :, 2] < start_x + patch.shape[4])
-            )
-            inside_idx = torch.nonzero(mask_inside, as_tuple=False).squeeze(1)
-            if len(inside_idx) == 0:
-                continue
-
-            local_z = ((points[b, inside_idx, 0] - start_z).float() * scale_z).long().clamp(0, feat_map.shape[2]-1)
-            local_y = ((points[b, inside_idx, 1] - start_y).float() * scale_y).long().clamp(0, feat_map.shape[3]-1)
-            local_x = ((points[b, inside_idx, 2] - start_x).float() * scale_x).long().clamp(0, feat_map.shape[4]-1)
-
-            feats = feat_map[b, :, local_z, local_y, local_x].permute(1,0)  # (num_pts, C_feat)
-            point_feats_sum[b, inside_idx] += feats
-            point_counts[b, inside_idx] += 1
-
-    point_feats = point_feats_sum / point_counts.clamp_min(1).unsqueeze(-1)
-    return point_feats
+def min_max_normalize(img: np.ndarray) -> np.ndarray:
+    """Min-max normalization to 0-255 with optional flipping"""
+    mn, mx = float(img.min()), float(img.max())
+    if mx - mn < 1e-6:
+        norm = np.zeros_like(img, dtype=np.uint8)
+    else:
+        norm = (img - mn) / (mx - mn)
+        norm = (norm * 255.0).clip(0, 255).astype(np.uint8)
+    return norm
 
 
-def extract_and_save(uid, save_path, vol, segmap, model,
-                         target_layer = 'downsamples.2',
-                         N = 10000, threshold = 0.1):
-    mask = segmap>threshold
-    points = sample_positive_points(mask[None, None], N)
-    point_feats = assign_point_features_with_sliding(model, vol, points, stop_at=target_layer)
-    edge_index_k5 = knn_graph(points[0], k=5, loop=False)
-    edge_index_k10 = knn_graph(points[0], k=10, loop=False)
-    edge_index_k15 = knn_graph(points[0], k=15, loop=False)
-
-    if not os.path.exists(f'{save_path}/{uid}'):
-        os.makedirs(f'{save_path}/{uid}')
-
-    np.save(f'{save_path}/{uid}/{uid}_points.npy', points[0].cpu())
-    np.save(f'{save_path}/{uid}/{uid}_point_feats.npy', point_feats[0].cpu())
-    np.save(f'{save_path}/{uid}/{uid}_edge_index_k5.npy', edge_index_k5)
-    np.save(f'{save_path}/{uid}/{uid}_edge_index_k10.npy', edge_index_k10)
-    np.save(f'{save_path}/{uid}/{uid}_edge_index_k15.npy', edge_index_k15)
-
-    del points
-    del point_feats
-    del mask
-    del segmap
-    gc.collect()
+def process_dicom_file(dcm_path: Path) -> List[Tuple[float, np.ndarray]]:
+    """Process single DICOM file -> list of (slice_loc, image) tuples"""
+    try:
+        frames = read_dicom_frames_hu(dcm_path)
+        processed_slices = []
+        for loc, f in frames:
+            img_u8 = min_max_normalize(f)
+            if img_u8.ndim == 2:
+                img_u8 = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
+            processed_slices.append((loc, img_u8))
+        return processed_slices
+    except Exception as e:
+        print(f"Failed processing {dcm_path.name}: {e}")
+        return []
 
 
+def collect_series_slices(series_dir: Path) -> List[Path]:
+    """Collect all DICOM files in a series directory (recursively)."""
+    dcm_paths: List[Path] = []
+    try:
+        for root, _, files in os.walk(series_dir):
+            for f in files:
+                if f.lower().endswith('.dcm'):
+                    dcm_paths.append(Path(root) / f)
+    except Exception as e:
+        print(f"Failed to walk series dir {series_dir}: {e}")
+    return dcm_paths
+
+
+def slice_sort_key(path: Path) -> float:
+    """Compute a robust slice sort key (orientation + position) for a single DICOM file"""
+    try:
+        ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        orientation = np.array(ds.ImageOrientationPatient).reshape(2, 3)
+        row_cos, col_cos = orientation
+        normal = np.cross(row_cos, col_cos)
+        position = np.array(ds.ImagePositionPatient)
+        return float(np.dot(position, normal))
+    except Exception:
+        # fallback
+        try:
+            return float(getattr(ds, "SliceLocation", getattr(ds, "InstanceNumber", 0.0)))
+        except:
+            return 0.0
+
+
+def process_dicom_for_yolo(series_path):
+    series_path = Path(series_path)
+    dicom_files = collect_series_slices(series_path)
+
+    # Sort DICOM files by orientation+position before processing
+    dicom_files.sort(key=slice_sort_key)
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        results = list(executor.map(process_dicom_file, dicom_files))
+
+    # Flatten into (loc, img)
+    all_slices_with_loc = [item for sublist in results for item in sublist]
+
+    # Already sorted by dicom_files order, but double-check (safe)
+    all_slices_with_loc.sort(key=lambda x: x[0])
+
+    # Extract just the images
+    all_slices = [img for _, img in all_slices_with_loc]
+
+    # Now dicom_files matches the sorted slices
+    dcm_list = [f.stem for f in dicom_files]
+    return np.array(all_slices)
+
+
+def load_dicom_to_nii_series(series_dir):
+    """
+    Load a DICOM series into a 3D HU volume with affine matrix.
+
+    Args:
+        series_dir (Path): directory containing DICOM files
+
+    Returns:
+        volume (np.ndarray): 3D array (Z, Y, X) in HU
+        affine (np.ndarray): 4x4 voxel-to-world affine
+    """
+    # Collect DICOMs
+    dcm_paths = [Path(series_dir) / f for f in os.listdir(series_dir) if f.lower().endswith(".dcm")]
+    if not dcm_paths:
+        raise FileNotFoundError(f"No DICOM files found in {series_dir}")
+
+    slices = [pydicom.dcmread(str(p), force=True) for p in dcm_paths]
+
+    # Orientation & sorting
+    orientation = np.array(slices[0].ImageOrientationPatient).reshape(2, 3)
+    row_cos, col_cos = orientation
+    normal = np.cross(row_cos, col_cos)
+    slices.sort(key=lambda ds: np.dot(ds.ImagePositionPatient, normal))
+
+    # HU scaling
+    slope = float(getattr(slices[0], "RescaleSlope", 1.0))
+    intercept = float(getattr(slices[0], "RescaleIntercept", 0.0))
+    volume = np.stack([ds.pixel_array for ds in slices]).astype(np.float32)
+    volume = volume * slope + intercept
+
+    # Spacing
+    delx, dely = [float(x) for x in slices[0].PixelSpacing]
+    positions = [np.array(ds.ImagePositionPatient) for ds in slices]
+    slice_positions = [np.dot(p, normal) for p in positions]
+    delz = float(np.mean(np.diff(slice_positions)))
+
+    # Affine
+    slice_cos = normal
+    origin = np.array(slices[0].ImagePositionPatient)
+    affine = np.eye(4)
+    affine[0:3, 0] = row_cos * delx
+    affine[0:3, 1] = col_cos * dely
+    affine[0:3, 2] = slice_cos * delz
+    affine[0:3, 3] = origin
+    return volume

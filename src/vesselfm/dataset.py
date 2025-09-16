@@ -4,19 +4,107 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from utils.io import determine_reader_writer
 from utils.data import generate_transforms
+import SimpleITK as sitk
+from concurrent.futures import ThreadPoolExecutor
+import pydicom
+from collections import Counter
+import nibabel as nib
+from utils.io import determine_reader_writer
+from monai.transforms import (
+    Compose,
+    EnsureChannelFirstd,
+    EnsureTyped,
+    Resized,
+    RandCropByLabelClassesd,
+    SpatialPadd,
+    ConcatItemsd,
+    ToTensord,
+    Lambdad,
+RandCropByPosNegLabeld
+)
+from monai.transforms import MapTransform
 
+
+sitk.ProcessObject.SetGlobalWarningDisplay(False)
 logger = logging.getLogger(__name__)
+
+class ModalityIntensityScalingd(MapTransform):
+    """
+    Modality-agnostic normalization:
+      - Robust z-score within 2–98 percentiles
+      - Then rescale to [0, 1]
+    """
+    def __init__(self, keys=("Image",)):
+        super().__init__(keys)
+
+    def __call__(self, data):
+        d = dict(data)
+        img = d[self.keys[0]]
+
+        # robust stats
+        p2, p98 = np.percentile(img, (2, 98))
+        mask = (img >= p2) & (img <= p98)
+        mean = np.mean(img[mask])
+        std = np.std(img[mask]) + 1e-6
+
+        img = (img - mean) / std
+        img = np.clip((img - img.min()) / (img.max() - img.min() + 1e-6), 0, 1)
+
+        d[self.keys[0]] = img.astype(np.float32)
+        return d
+
+
+def _generate_transforms(vol_size, input_size, mode):
+    if mode == "train":
+        return Compose([
+            EnsureChannelFirstd(keys=["Image", "Mask"], channel_dim="no_channel"),
+            EnsureTyped(keys=["Image", "Mask"]),
+            Resized(keys=["Image", "Mask"], spatial_size=vol_size, mode=["trilinear", "nearest"]),
+            # RandCropByLabelClassesd(
+            #     keys=["Image", "Mask"],
+            #     label_key="Mask",
+            #     spatial_size=input_size,
+            #     num_classes=14,
+            #     ratios = [0] + [1] * 13,
+            #     num_samples=2,
+            #     image_key="Image",
+            #     allow_smaller=True,
+            # ),
+            RandCropByPosNegLabeld(
+                keys=["Image", "Mask"],
+                label_key="Mask",
+                spatial_size=input_size,
+                pos=1, neg=0,  # balance between fg/bg
+                num_samples=2,
+                image_key="Image",
+                allow_smaller=True,
+            ),
+            ModalityIntensityScalingd(keys=["Image"]),
+            SpatialPadd(keys=["Image", "Mask"], spatial_size=input_size, mode="constant", method="symmetric"),
+            ToTensord(keys=["Image", "Mask"]),
+        ])
+    else:  # val / test
+        return Compose([
+            EnsureChannelFirstd(keys=["Image", "Mask"], channel_dim="no_channel"),
+            EnsureTyped(keys=["Image", "Mask"]),
+            Resized(keys=["Image", "Mask"], spatial_size=vol_size, mode=["trilinear", "nearest"]),
+            ModalityIntensityScalingd(keys=["Image"]),
+            ToTensord(keys=["Image", "Mask"]),
+        ])
+
+
 
 class RSNASegDataset(Dataset):
     def __init__(self, uids, dataset_config, mode):
         super().__init__()
         # init datasets
+        print(dataset_config)
         self.data_path = dataset_config.path
         self.uids = uids
         self.reader = determine_reader_writer(dataset_config.file_format)()
-        self.transforms = generate_transforms(dataset_config.transforms[mode])
+        self.transforms = _generate_transforms(
+            dataset_config['vol_size'], dataset_config['input_size'], mode) #generate_transforms(dataset_config.transforms[mode])
         self.mode = mode
 
     def __len__(self):
@@ -24,71 +112,21 @@ class RSNASegDataset(Dataset):
 
     def __getitem__(self, idx: int):
         uid = self.uids[idx]
-        vol_path = f'{self.data_path}/segmentations/{uid}/{uid}.nii'
-        mask_path = f'{self.data_path}/vessel_segments/{uid}.nii'
+        vol_path = f'{self.data_path}/segmentations/{uid}.nii'
+        mask_path = f'{self.data_path}/segmentations/{uid}_cowseg.nii'
         vol = self.reader.read_images(vol_path)[0].astype(np.float32)
-        mask = self.reader.read_images(mask_path)[0].astype(bool)
+        mask = self.reader.read_images(mask_path)[0]
+
+        # #mask
+        # mask_data = nib.load(mask_path)
+        # mask = mask_data.get_fdata()
+        # mask = np.flip(mask, axis=0).copy()
+        # mask = mask.transpose(2, 1, 0).copy()
+        # mask = np.flip(mask, axis=1).copy()
+        #
+        # #volume
+        # vol = np.load(vol_path, mmap_mode='r')['vol'].copy()
         transformed = self.transforms({'Image': vol, 'Mask': mask})
         if self.mode == 'train':
             return transformed
-        return transformed['Image'], transformed['Mask'] > 0
-
-
-
-class UnionDataset(Dataset):
-    """
-    Dataset that accumulates all given datasets.
-    """
-
-    def __init__(self, dataset_configs, mode, finetune=False):
-        super().__init__()
-        # init datasets
-        self.finetune = finetune
-        self.datasets, probs = [], []
-        self.len = 0
-        for name, dataset_config in dataset_configs.items():
-            data_dir = Path(dataset_config.path) / mode if finetune else Path(dataset_config.path)
-            paths = sorted(list(data_dir.iterdir()))  # ensures that we use same 1-shot sample
-
-            self.len += len(paths)
-            self.datasets.append(
-                {
-                    "name": name,
-                    "paths": paths,
-                    "reader": determine_reader_writer(dataset_config.file_format)(),
-                    "transforms": generate_transforms(dataset_config.transforms[mode]),
-                    "sample_prop": dataset_config.sample_prop,
-                    "filter_dataset_IDs": dataset_config.filter_dataset_IDs
-                }
-            )
-            probs.append(dataset_config.sample_prop)
-
-        # ensure that probs sum up to 1
-        probs = torch.tensor(probs)
-        self.probs = probs / probs.sum()
-
-    def __len__(self):
-        return self.len
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        # sample dataset
-        dataset_id = torch.multinomial(self.probs, 1).item()
-        dataset = self.datasets[dataset_id]
-
-        # sample data sample
-        while True:
-            data_idx = idx if self.finetune else torch.randint(0, len(dataset["paths"]), (1,)).item()
-            sample_id = dataset["paths"][data_idx]
-
-            img_path = [path for path in sample_id.iterdir() if 'img' in path.name][0]
-            mask_path = [path for path in sample_id.iterdir() if 'mask' in path.name][0]
-
-            if dataset['filter_dataset_IDs'] is not None:
-                if int(img_path.stem.split("_")[-1]) in dataset['filter_dataset_IDs']:
-                    continue
-
-            img = dataset['reader'].read_images(str(img_path))[0].astype(np.float32)
-            mask = dataset['reader'].read_images(str(mask_path))[0].astype(bool)
-
-            transformed = dataset['transforms']({'Image': img, 'Mask': mask})
-            return transformed['Image'], transformed['Mask'] > 0
+        return transformed['Image'], transformed['Mask']

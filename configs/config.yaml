@@ -1,7 +1,21 @@
 # conf/config.yaml
 # These are some base parameters for the experiment
-project_name: "rsna-intracranial-aneurysm-detection"
+project_name: "rsna-iad-node-level"
 
+data_dir: ./src/rsna_data/series_extraction_dense
+meta_dir: ./src/rsna_data
+offline: False
+num_neighbs: 15
+seed: 42
+fold_id: 0
+batch_size: 4
+radius: 15
+num_nodes: 2000
+num_workers: 16
+use_pe: False
+walk_length: 4
+experiment: vesselfm-graphsage-k15
+=======
 data_dir: ./data/processed
 seed: 42
 fold_id: 0
@@ -22,11 +36,14 @@ wandb:
   tags: ["tf_efficientnetv2_b0.in1k", "fold_${fold_id}"]
   notes: "efficientnet_v2 on 2.5D slices"
 
+modality:
+  - CTA
+  - MRA
+  - MRI T2
+  - MRI T1post
 
-# The 'defaults' list tells Hydra which configs to load by default.
-# It will look for 'lightgbm.yaml' inside the 'model' sub-directory.
 defaults:
-  - model: MultiBackboneModel
+  - model: GraphModel
   - optimizer: AdamW
   - trainer: default
   - _self_

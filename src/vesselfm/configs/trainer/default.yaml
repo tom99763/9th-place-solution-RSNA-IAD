@@ -18,7 +18,8 @@ lightning_module:
 
   loss:
     _target_: monai.losses.DiceCELoss
-    sigmoid: True
+    softmax: True          # use softmax for multi-class
+    to_onehot_y: True      # convert target mask to one-hot internally
     reduction: "mean"
     squared_pred: True
     lambda_ce: 0.1

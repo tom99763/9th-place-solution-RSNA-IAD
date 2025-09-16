@@ -2,6 +2,42 @@ import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.nn.models import GraphSAGE, GAT
+from torch_geometric.nn import LayerNorm, global_max_pool
+
+
+class GraphModel(nn.Module):
+    def __init__(self, use_pe,
+                 walk_length,
+                 num_layers,
+                 hidden_channels,
+                 jk,
+                 dropout):
+        super().__init__()
+
+        in_channels = 256 + walk_length if use_pe else 256
+
+        self.gnn = GraphSAGE(
+            in_channels,
+            num_layers=num_layers,
+            hidden_channels=hidden_channels,
+            out_channels=13,
+            jk=jk,
+            dropout=dropout,
+            norm=LayerNorm(hidden_channels),
+        )
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        x = x.cuda()
+        edge_index = edge_index.cuda() if edge_index.numel() > 0 else torch.tensor([[0, 0]]).T.cuda()
+        batch = batch.cuda()
+        node_logits = self.gnn(x, edge_index, batch=batch) #([N1, ...], 13)
+
+        #generate prediction
+        loc_logits = global_max_pool(node_logits, batch) #(B, 13)
+        cls_logits, _ = loc_logits.max(dim=-1, keepdim=True) #(B, 1)
+        return node_logits, cls_logits, loc_logits
 
 
 class MultiBackboneModel(nn.Module):

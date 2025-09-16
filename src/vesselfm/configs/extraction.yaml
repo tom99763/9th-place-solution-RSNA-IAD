@@ -6,16 +6,19 @@ defaults:
 # i/o
 series_path: ../rsna_data/series
 image_file_ending: nii
-output_folder: ../rsna_data/series_extraction
+output_folder: ../rsna_data/series_extraction_dense
 file_app: ""
 
 #extraction
 num_sampling_points: 10000
 threshold: 0.1
 target_layer: downsamples.2
-
 mask_path: null
 round_to: 2
+xy_ratio: 2.5
+z_ratio: 2
+z_scale: 1.
+std_scale: 0.5
 
 # model & ckpt
 device: cuda:0
@@ -42,6 +45,9 @@ transforms_config:
       b_min: 0
       b_max: 1
       clip: true
+  - Resize:
+      spatial_size: [null, 512, 512]
+      mode: bilinear
   - ToTensor:
       device: null
 

@@ -7,28 +7,29 @@ defaults:
 
 # data
 input_size: [128, 128, 128]
+vol_size: [128, 384, 384]
 image_channels: 1
 num_classes: 1
 
 # training
 seed: 404
-lr: 0.00001
-batch_size: 4
+lr: 0.0005
+batch_size: 1
 eval_path: /path/to/eval_set_pretrain
 path_to_chkpt: null
-devices: [1]
+devices: [0]
 
 # logging
-run_name: 'fine-tune-seg'
-wandb_project: 'rsna-intracranial-aneurysm'
+run_name: 'dyn-unet-yolo_proc'
+wandb_project: 'rsna-iad-13classes-seg-tom'
 chkpt_folder: /path/where/to/store/chkpts
-offline: False
+offline: True
 
 # dataloader
 dataloader:
   _target_: "torch.utils.data.DataLoader"
   _partial_: True
-  num_workers: 8
+  num_workers: 4
   prefetch_factor: 3
   batch_size: ${batch_size}
   pin_memory: True

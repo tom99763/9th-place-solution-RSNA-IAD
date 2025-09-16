@@ -15,6 +15,7 @@ from lightning.pytorch.loggers import WandbLogger
 from dataset import RSNASegDataset
 from huggingface_hub import hf_hub_download
 from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold
+import torch.nn as nn
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ def flatten_batch_collate_fn(batch):
 
     images = torch.stack([d['Image'] for d in flat], dim=0)
     masks = torch.stack([d['Mask'] for d in flat], dim=0)
-    return images, masks > 0
+    return images, masks
 
 
 @hydra.main(config_path="configs", config_name="finetune", version_base="1.3.2")
@@ -41,23 +42,21 @@ def main(cfg):
     torch.set_float32_matmul_precision("medium")
 
     #load data
-    df = pd.read_csv('../rsna_data/train.csv')
-    uids = os.listdir('../rsna_data/segmentations')
+    df = pd.read_csv('../data/train.csv')
+    uids = os.listdir('../data/segmentations')
+    uids = [uid.split('.nii')[0] for uid in uids if 'cowseg' not in uid]
     df_seg = df[df.SeriesInstanceUID.isin(uids)].copy()
     df_seg.reset_index(inplace=True)
 
     #split
     df_seg['fold'] = -1
-    gkf = StratifiedGroupKFold(n_splits = 5, shuffle=True, random_state=42)
-    groups = df_seg['Modality'].values
-    for fold, (train_idx, val_idx) in enumerate(gkf.split(df_seg, df_seg['Aneurysm Present'], groups)):
+    skf = StratifiedKFold(n_splits = 5, shuffle=True, random_state=42)
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df_seg, df_seg['Aneurysm Present'])):
         df_seg.loc[val_idx, 'fold'] = fold
 
     train_uids = df_seg[df_seg.fold != cfg.fold_idx].SeriesInstanceUID.values.tolist()
     val_uids = df_seg[df_seg.fold == cfg.fold_idx].SeriesInstanceUID.values.tolist()
-
-    dataset_name = 'rsna'
-    run_name = f'finetune_{dataset_name}_' + cfg.run_name
+    run_name = cfg.run_name
 
     # init logger
     wnb_logger = WandbLogger(
@@ -69,13 +68,13 @@ def main(cfg):
 
     # callbacks
     lr_monitor = LearningRateMonitor()
-    monitor_metric = "val_volumetric_recall"
+    monitor_metric = "val_dice"
     checkpoint_callback = ModelCheckpoint(
         dirpath=cfg.chkpt_folder + "/" + cfg.wandb_project + "/" + run_name,
         monitor=monitor_metric,
         save_top_k=1,
         mode="max",
-        filename = f"{run_name}-{{val_volumetric_recall:.4f}}",
+        filename = f"{run_name}-{{val_dice:.4f}}",
         #auto_insert_metric_name=True,
         save_last=True
     )
@@ -105,14 +104,15 @@ def main(cfg):
         dataset=val_dataset, batch_size=1, persistent_workers=True)
     logger.info(f"Val dataset size: {len(val_dataset)}")
 
-
-    # # init model
-    hf_hub_download(repo_id='bwittmann/vesselFM', filename='meta.yaml')  # required to track downloads
-    ckpt = torch.load(
-        hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
-        map_location=f'cuda:{cfg.devices[0]}', weights_only=True
-    )
+    # Instantiate model from hydra config
     model = hydra.utils.instantiate(cfg.model)
+
+    ckpt = torch.load(
+        './pretrained/vesselfm_13_classes_dynunet-val_dice0.5047.ckpt',
+        map_location=f'cuda:{cfg.devices[0]}',
+        weights_only=False
+    )
+    ckpt = {k.replace("model.", ""): v for k, v in ckpt['state_dict'].items()}
     model.load_state_dict(ckpt)
 
 
@@ -120,7 +120,7 @@ def main(cfg):
     lightning_module = hydra.utils.instantiate(
         cfg.trainer.lightning_module)(
         model=model,
-        dataset_name=dataset_name,
+        dataset_name='rsna',
         threshold=cfg.threshold
     )
 
