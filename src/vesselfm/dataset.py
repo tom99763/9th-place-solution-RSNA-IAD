@@ -61,25 +61,25 @@ def _generate_transforms(vol_size, input_size, mode):
             EnsureChannelFirstd(keys=["Image", "Mask"], channel_dim="no_channel"),
             EnsureTyped(keys=["Image", "Mask"]),
             Resized(keys=["Image", "Mask"], spatial_size=vol_size, mode=["trilinear", "nearest"]),
-            # RandCropByLabelClassesd(
+            RandCropByLabelClassesd(
+                keys=["Image", "Mask"],
+                label_key="Mask",
+                spatial_size=input_size,
+                num_classes=14,
+                ratios = [1] * 14,
+                num_samples=4,
+                image_key="Image",
+                allow_smaller=True,
+            ),
+            # RandCropByPosNegLabeld(
             #     keys=["Image", "Mask"],
             #     label_key="Mask",
             #     spatial_size=input_size,
-            #     num_classes=14,
-            #     ratios = [0] + [1] * 13,
+            #     pos=1, neg=0,  # balance between fg/bg
             #     num_samples=2,
             #     image_key="Image",
             #     allow_smaller=True,
             # ),
-            RandCropByPosNegLabeld(
-                keys=["Image", "Mask"],
-                label_key="Mask",
-                spatial_size=input_size,
-                pos=1, neg=0,  # balance between fg/bg
-                num_samples=2,
-                image_key="Image",
-                allow_smaller=True,
-            ),
             ModalityIntensityScalingd(keys=["Image"]),
             SpatialPadd(keys=["Image", "Mask"], spatial_size=input_size, mode="constant", method="symmetric"),
             ToTensord(keys=["Image", "Mask"]),

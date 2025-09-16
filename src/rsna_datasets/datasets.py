@@ -47,6 +47,11 @@ class NpzVolumeDepthSliceDataset(Dataset):
             volume = data['vol'].astype(np.float32)
 
         if self.mode == "train":
+
+            loc_labels = np.zeros(self.num_classes)
+            label = 0
+            # Load the volume from the .npz file
+
             if int(rowdf["Aneurysm Present"].iloc[0]) == 1:
                 slice_idx = random.choice(labeldf["z"].tolist())
                 class_idxs = [LABELS_TO_IDX[c] for c in labeldf[labeldf["z"] == slice_idx]["location"]]
@@ -191,15 +196,3 @@ class NpzDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         return DataLoader(self.val_dataset, batch_size=1, num_workers=1, pin_memory=True)
-=======
-class NpzDataModule(pl.LightningDataModule):
-    def __init__(self, cfg):
-        super().__init__()
-       
-        self.cfg = cfg
-
-    def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.cfg.batch_size, shuffle=True, num_workers=self.cfg.num_workers, pin_memory=True)
-    
-    def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.cfg.batch_size, num_workers=self.cfg.num_workers, pin_memory=True)
