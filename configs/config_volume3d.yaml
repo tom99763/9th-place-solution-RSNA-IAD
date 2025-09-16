@@ -1,0 +1,36 @@
+project_name: "rsna-intracranial-aneurysm-detection-vol3d"
+
+data_dir: ./data/processed
+seed: 42
+fold_id: 0
+
+batch_size: 2
+val_batch_size: 2
+num_workers: 2
+experiment: vol3d_baseline
+
+data_mode: volume3d
+
+# Volume-specific augmentation (raw HU only)
+
+volume3d_window_prob: 0.0
+use_balanced_sampling: false
+pos_ratio: 0.5
+use_wandb: true
+wandb:
+  entity: null
+  tags: ["vol3d", "fold_${fold_id}"]
+  notes: "3D volumes depth-as-channels baseline"
+  offline: false
+
+label_smoothing: 0.0
+
+model:
+  in_chans: 32        
+  img_size: 384
+
+defaults:
+  - model: MultiBackboneModel
+  - optimizer: AdamW
+  - trainer: default
+  - _self_

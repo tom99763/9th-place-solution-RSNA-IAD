@@ -15,6 +15,26 @@ num_workers: 16
 use_pe: False
 walk_length: 4
 experiment: vesselfm-graphsage-k15
+=======
+data_dir: ./data/processed
+seed: 42
+fold_id: 0
+
+batch_size: 4  
+num_workers: 1  
+experiment: naive_efficientnet_v2_cls
+
+# Balanced sampling configuration
+use_balanced_sampling: true  # Set to true to enable balanced pos/neg sampling
+pos_ratio: 0.5  # 0.5 with batch_size 4 = 2 positive + 2 negative per batch
+image_mode: "2.5D"
+use_wandb: true  # Set to false to disable WandB logging
+
+# WandB settings (only used if use_wandb: true)
+wandb:
+  entity: null  # Auto-detect from logged-in user
+  tags: ["tf_efficientnetv2_b0.in1k", "fold_${fold_id}"]
+  notes: "efficientnet_v2 on 2.5D slices"
 
 modality:
   - CTA
@@ -27,3 +47,4 @@ defaults:
   - optimizer: AdamW
   - trainer: default
   - _self_
+

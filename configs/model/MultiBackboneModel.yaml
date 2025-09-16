@@ -1,10 +1,15 @@
 
 _target_: src.model.MultiBackboneModel
-model_name: "efficientnet_b2"
-
-in_chans: 3
+#model_name: "efficientnet_b2"
+model_name: "deit_small_patch16_224.fb_in1k"
+#python train.py --config-name config_mip \
+#deit_small_patch16_224.fb_in1k
+#tf_efficientnetv2_b0.in1k
+in_chans: 5  # 5-channel multi-window stack
 img_size: 512
 num_classes: 13
-drop_path_rate: 0.2
+# Stronger regularization
+drop_path_rate: 0.3
 drop_rate: 0.3
 pretrained: True
+fuse_multi_window: false  # use 1x1 conv -> 3ch before backbone

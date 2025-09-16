@@ -1,0 +1,10 @@
+_target_: src.model_cls.AneurysmOnlyModel
+model_name: resnet26.bt_in1k
+in_chans: 3
+img_size: 512
+pretrained: true
+drop_rate: 0.3
+drop_path_rate: 0.2
+global_pool_override: null
+num_classes: 1
+num_loc_classes: 13
