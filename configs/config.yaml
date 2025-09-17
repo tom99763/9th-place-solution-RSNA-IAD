@@ -1,12 +1,12 @@
 # conf/config.yaml
 # These are some base parameters for the experiment
-project_name: "rsna-intracranial-aneurysm-detection"
-experiment: windowed_mip
+project_name: "32-ch-reproduce"
+experiment: 32-ch-cnn
 seed: 42
-fold_id: 1
+fold_id: 0
 
 params:
-  data_dir: ./data/processed
+  data_dir: ./src/data
   num_classes: 14
   img_height: 512
   img_width: 512

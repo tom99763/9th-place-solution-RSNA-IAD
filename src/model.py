@@ -14,74 +14,12 @@ class MultiBackboneModel(nn.Module):
 
         self.model_name = model_name
 
-        self.backbone = timm.create_model(
+        self.loc_classifier = timm.create_model(
             model_name,
-            pretrained=pretrained,
-            in_chans=in_chans,
-            drop_rate=drop_rate,
-            drop_path_rate=drop_path_rate,
-            num_classes=0,  # Remove classifier head
-            global_pool=''  # Remove global pooling
-        )
-
-        with torch.no_grad():
-            dummy_input = torch.zeros(1, in_chans, img_size, img_size)
-            features = self.backbone(dummy_input)
-
-            if len(features.shape) == 4:
-                # Conv features (batch, channels, height, width)
-                num_features = features.shape[1]
-                self.needs_pool = True
-            elif len(features.shape) == 3:
-                # Transformer features (batch, sequence, features)
-                num_features = features.shape[-1]
-                self.needs_pool = False
-                self.needs_seq_pool = True
-            else:
-                # Already flat features (batch, features)
-                num_features = features.shape[1]
-                self.needs_pool = False
-                self.needs_seq_pool = False
-
-        print(f"Model {model_name}: detected {num_features} features, output shape: {features.shape}")
-
-        # Add global pooling for models that output spatial features
-        if self.needs_pool:
-            self.global_pool = nn.AdaptiveAvgPool2d(1)
-
-        # Combined classifier with batch norm for stability
-        self.loc_classifier = nn.Sequential(
-            nn.Linear(num_features, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(drop_rate),
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(drop_rate),
-            nn.Linear(256, num_classes)
+            num_classes=14,
+            pretrained=False,
+            in_chans=32
         )
 
     def forward(self, image):
-        # Extract image features
-        img_features = self.backbone(image)
-
-        # Apply appropriate pooling based on model type
-        if hasattr(self, 'needs_pool') and self.needs_pool:
-            # Conv features - apply global pooling
-            img_features = self.global_pool(img_features)
-            img_features = img_features.flatten(1)
-        elif hasattr(self, 'needs_seq_pool') and self.needs_seq_pool:
-            # Transformer features - average across sequence dimension
-            img_features = img_features.mean(dim=1)
-        elif len(img_features.shape) == 4:
-            # Fallback for any 4D output
-            img_features = F.adaptive_avg_pool2d(img_features, 1).flatten(1)
-        elif len(img_features.shape) == 3:
-            # Fallback for any 3D output
-            img_features = img_features.mean(dim=1)
-
-        # Classification
-        loc_output = self.loc_classifier(img_features)
-
-        return loc_output
+        return self.loc_classifier(image)

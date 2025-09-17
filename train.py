@@ -1,8 +1,8 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from src.trainers.cnn_25D import *
-from src.rsna_datasets.cnn_25D import *
-
+from src.rsna_datasets.cnn_25D_v2 import *
+from lightning.pytorch.loggers import WandbLogger
 import pytorch_lightning as pl
 from hydra.utils import instantiate
 
@@ -15,8 +15,15 @@ def train(cfg: DictConfig) -> None:
     print("✨ Configuration for this run: ✨")
     print(OmegaConf.to_yaml(cfg))
 
+    wnb_logger = WandbLogger(
+        project=cfg.project_name,
+        name=cfg.experiment,
+        config=OmegaConf.to_container(cfg),
+        offline=cfg.offline,
+    )
+
     pl.seed_everything(cfg.seed)
-    datamodule = NpzDataModule(cfg)
+    datamodule = VolumeDataModule(cfg)
 
     model = instantiate(cfg.model)
 
