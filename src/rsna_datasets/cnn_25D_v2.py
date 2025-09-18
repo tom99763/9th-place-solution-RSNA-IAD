@@ -263,8 +263,10 @@ class VolumeSliceDataset(Dataset):
         labeldf = self.label_df[self.label_df["SeriesInstanceUID"] == uid]
         #modality = rowdf["Modality"].iloc[0]
 
-        series_path = self.data_path / f"series/{uid}"
-        volume = self.preprocessor.process_series(series_path)
+        #series_path = self.data_path / f"series/{uid}"
+        #volume = self.preprocessor.process_series(series_path)
+        series_path = self.data_path / f"processed/{uid}.npz"
+        volume = np.load(series_path)['vol']
         volume = volume.transpose(1, 2, 0) # (D,H,W) -> (H,W,D)
 
 
