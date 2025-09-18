@@ -170,19 +170,18 @@ class DICOMPreprocessorKaggle:
 
         return resized_volume.astype(np.uint8)
 
-    def process_series(self, series_path) -> np.ndarray:
+    def process_series(self, series_path: str) -> np.ndarray:
         """Process DICOM series and return as NumPy array"""
         try:
             datasets, series_name = self.load_dicom_series(series_path)
 
             first_ds = datasets[0]
             first_img = first_ds.pixel_array
-            return self._process_single_3d_dicom(first_ds, series_name)
 
-            # if len(datasets) == 1 and first_img.ndim == 3:
-            #     return self._process_single_3d_dicom(first_ds, series_name)
-            # else:
-            #     return self._process_multiple_2d_dicoms(datasets, series_name)
+            if len(datasets) == 1 and first_img.ndim == 3:
+                return self._process_single_3d_dicom(first_ds, series_name)
+            else:
+                return self._process_multiple_2d_dicoms(datasets, series_name)
 
         except Exception as e:
             raise
@@ -222,11 +221,12 @@ class DICOMPreprocessorKaggle:
             ds = slice_data['dataset']
             img = self.extract_pixel_array(ds)
             processed_img = self.apply_windowing_or_normalize(img, window_center, window_width)
-            resized_img = cv2.resize(processed_img, (self.target_width, self.target_height))
-            processed_slices.append(resized_img)
+            # resized_img = cv2.resize(processed_img, (self.target_width, self.target_height))
+            processed_slices.append(processed_img)
 
         volume = np.stack(processed_slices, axis=0)
         final_volume = self.resize_volume_3d(volume)
+
         return final_volume
 
 
@@ -265,6 +265,7 @@ class VolumeSliceDataset(Dataset):
 
         series_path = self.data_path / f"series/{uid}"
         volume = self.preprocessor.process_series(series_path)
+        volume = volume.transpose(1, 2, 0) # (D,H,W) -> (H,W,D)
 
 
         labels = np.zeros(self.num_classes)
@@ -316,3 +317,9 @@ class VolumeDataModule(pl.LightningDataModule):
                           , batch_size=1
                           , num_workers=1
                           , pin_memory=True)
+
+if __name__ == '__main__':
+    proc = DICOMPreprocessorKaggle()
+    series_path = '../data/series/1.2.826.0.1.3680043.8.498.10004044428023505108375152878107656647'
+    o = proc.process_series(series_path)
+    print(o.shape)
