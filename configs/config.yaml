@@ -4,6 +4,8 @@ project_name: "32-ch-reproduce"
 experiment: 32-ch-cnn
 seed: 42
 fold_id: 0
+offline: true
+
 
 params:
   data_dir: ./src/data
