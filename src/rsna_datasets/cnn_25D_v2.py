@@ -310,16 +310,17 @@ class VolumeDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.cfg.params.batch_size, shuffle=True,
-                          num_workers=self.cfg.params.num_workers, pin_memory=True)
+                          num_workers=self.cfg.params.num_workers, pin_memory=True, persistent_workers=True)
 
     def val_dataloader(self):
         return DataLoader(self.val_dataset
                           , batch_size=1
                           , num_workers=1
-                          , pin_memory=True)
+                          , pin_memory=True
+                          , persistent_workers=True)
 
-if __name__ == '__main__':
-    proc = DICOMPreprocessorKaggle()
-    series_path = '../data/series/1.2.826.0.1.3680043.8.498.10004044428023505108375152878107656647'
-    o = proc.process_series(series_path)
-    print(o.shape)
+# if __name__ == '__main__':
+#     proc = DICOMPreprocessorKaggle()
+#     series_path = '../data/series/1.2.826.0.1.3680043.8.498.10004044428023505108375152878107656647'
+#     o = proc.process_series(series_path)
+#     print(o.shape)
