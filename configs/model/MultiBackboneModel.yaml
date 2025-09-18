@@ -1,5 +1,5 @@
 _target_: src.model.MultiBackboneModel
-model_name: "efficientnet_b2"
+model_name: "tf_efficientnetv2_s.in21k_ft_in1k"
 
 in_chans: 4
 img_size: 256

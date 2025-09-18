@@ -302,7 +302,9 @@ class VolumeDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str = None):
         data_path = Path(self.cfg.params.data_dir)
+        valid_uids = [filename.split('.npz')[0] for filename in os.listdir(data_path/f'processed/')]
         df = pd.read_csv(data_path / "train_df.csv")
+        df = df[df.SeriesInstanceUID.isin(valid_uids)].copy()
         train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"]
         val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"]
 
