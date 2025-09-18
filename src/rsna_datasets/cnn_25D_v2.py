@@ -277,7 +277,7 @@ class VolumeSliceDataset(Dataset):
         if self.transform:
             # BxDxHxW
             volume = self.transform(image=volume)["image"]
-        return uid, volume, labels
+        return volume, labels
 
 
 class VolumeDataModule(pl.LightningDataModule):
