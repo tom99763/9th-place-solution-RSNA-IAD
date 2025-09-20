@@ -1,9 +1,7 @@
-_target_: src.model.MultiBackboneModel
-model_name: "swinv2_small_window8_256"
-
-in_chans: 4
-img_size: 256
-num_classes: 14
-drop_path_rate: 0.2
-drop_rate: 0.3
+_target_: timm.create_model
+model_name: "tf_efficientnetv2_s.in21k_ft_in1k"
 pretrained: True
+in_chans: 38
+drop_rate: 0.3
+drop_path_rate: 0.2
+num_classes: 14

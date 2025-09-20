@@ -1,7 +1,7 @@
 _target_: timm.create_model
-model_name: "swin_base_patch4_window12_384.ms_in1k"
+model_name: "tf_efficientnetv2_s.in21k_ft_in1k"
 pretrained: True
-in_chans: 32
+in_chans: 38
 drop_rate: 0.3
 drop_path_rate: 0.2
 num_classes: 14

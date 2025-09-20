@@ -16,6 +16,7 @@ import cv2
 from scipy import ndimage
 from monai.transforms import Compose, EnsureChannelFirstd, ScaleIntensityd, ToTensord
 from monai.data import MetaTensor
+from scipy.ndimage import rotate
 
 torch.set_float32_matmul_precision('medium')
 
@@ -232,6 +233,47 @@ class DICOMPreprocessorKaggle:
         return final_volume
 
 
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import rotate
+
+
+def compute_mips(vol, angle=45):
+    """
+    vol: numpy array shaped (Z, Y, X) = (32, 384, 384)
+    angle: rotation angle in degrees for oblique planes
+
+    returns dictionary of 6 MIPs:
+        axial, coronal, sagittal,
+        oblique_x, oblique_y, oblique_z
+    """
+    # --- Orthogonal planes ---
+    mip_axial = vol.max(axis=0)  # Z collapsed → XY plane
+    mip_coronal = vol.max(axis=1)  # Y collapsed → XZ plane
+    mip_sagittal = vol.max(axis=2)  # X collapsed → YZ plane
+
+    # --- Oblique planes (tilt by angle) ---
+    # Rotate volume around Y axis (Z–X tilt)
+    rotated_x = rotate(vol, angle=angle, axes=(0, 2), reshape=True, order=1)
+    mip_oblique_x = rotated_x.max(axis=0)
+
+    # Rotate volume around X axis (Z–Y tilt)
+    rotated_y = rotate(vol, angle=angle, axes=(0, 1), reshape=True, order=1)
+    mip_oblique_y = rotated_y.max(axis=0)
+
+    # Rotate volume around Z axis (X–Y tilt)
+    rotated_z = rotate(vol, angle=angle, axes=(1, 2), reshape=True, order=1)
+    mip_oblique_z = rotated_z.max(axis=0)
+
+    return {
+        "axial": mip_axial,
+        "coronal": mip_coronal,
+        "sagittal": mip_sagittal,
+        "oblique_x": mip_oblique_x,
+        "oblique_y": mip_oblique_y,
+        "oblique_z": mip_oblique_z,
+    }
+
 class VolumeSliceDataset(Dataset):
     """
     Dataset to load .npz image volumes and serve random 2D slices.
@@ -292,33 +334,33 @@ class VolumeDataModule(pl.LightningDataModule):
 
         self.cfg = cfg
 
-        # self.train_transforms = A.Compose([
-        #     A.Resize(384, 384),  # spatial crop/scale
-        #     A.Normalize(),
-        #     ToTensorV2(),
+        self.train_transforms = A.Compose([
+            A.Resize(384, 384),  # spatial crop/scale
+            A.Normalize(),
+            ToTensorV2(),
+        ])
+
+        self.val_transforms = A.Compose([
+            A.Resize(384, 384),
+            A.Normalize(),
+            ToTensorV2(),
+        ])
+
+        # keys = ["image"]  # or ["image", "label"] if you have labels
+        #
+        # # Train transforms
+        # self.train_transforms = Compose([
+        #     #EnsureChannelFirstd(keys=["image"]),
+        #     ScaleIntensityd(keys=["image"]),
+        #     ToTensord(keys=["image"])
         # ])
         #
-        # self.val_transforms = A.Compose([
-        #     A.Resize(384, 384),
-        #     A.Normalize(),
-        #     ToTensorV2(),
+        # # Validation transforms (usually same as train, but no augmentation)
+        # self.val_transforms = Compose([
+        #     #EnsureChannelFirstd(keys=["image"]),
+        #     ScaleIntensityd(keys=["image"]),
+        #     ToTensord(keys=["image"])
         # ])
-
-        keys = ["image"]  # or ["image", "label"] if you have labels
-
-        # Train transforms
-        self.train_transforms = Compose([
-            #EnsureChannelFirstd(keys=["image"]),
-            ScaleIntensityd(keys=["image"]),
-            ToTensord(keys=["image"])
-        ])
-
-        # Validation transforms (usually same as train, but no augmentation)
-        self.val_transforms = Compose([
-            #EnsureChannelFirstd(keys=["image"]),
-            ScaleIntensityd(keys=["image"]),
-            ToTensord(keys=["image"])
-        ])
 
     def setup(self, stage: str = None):
         data_path = Path(self.cfg.params.data_dir)
