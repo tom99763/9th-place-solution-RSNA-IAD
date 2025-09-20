@@ -27,5 +27,5 @@ defaults:
   - preprocess: default
   - optimizer: AdamW
   - trainer: default
-  - model: timm
+  - model: MultiBackboneModel
   - _self_

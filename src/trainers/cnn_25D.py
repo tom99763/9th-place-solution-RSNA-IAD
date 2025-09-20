@@ -29,23 +29,22 @@ class LitTimmClassifier(pl.LightningModule):
 
     def training_step(self, batch, _):
         x, labels = batch
-
         preds = self(x)
 
+        # Split labels
         cls_labels, loc_labels = labels[:, 0], labels[:, 1:]
-        pred_cls, pred_locs = preds[:,0], preds[:, 1:]
+        pred_cls, pred_locs = preds[:, 0], preds[:, 1:]
 
+        # BCE supports soft labels
+        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
 
         loss = (cls_loss + loc_loss) / 2
 
-        self.train_loc_auroc.update(pred_locs, loc_labels.long())
-        self.train_cls_auroc.update(pred_cls, cls_labels.long())
-
-        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-
-
+        # Metrics: AUROC expects hard labels
+        self.train_cls_auroc.update(pred_cls, (cls_labels > 0.5).long())
+        self.train_loc_auroc.update(pred_locs, (loc_labels > 0.5).long())
+        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     def validation_step(self, sample, batch_idx):
@@ -105,3 +104,20 @@ class LitTimmClassifier(pl.LightningModule):
                         "frequency": frequency
                     }
                 }
+
+
+def mixup(x, labels, alpha=0.4):
+    """Mixup for binary + multilabel labels."""
+    if alpha > 0:
+        lam = torch.distributions.Beta(alpha, alpha).sample().item()
+    else:
+        lam = 1.0
+
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size, device=x.device)
+
+    mixed_x = lam * x + (1 - lam) * x[index]
+    y_a, y_b = labels, labels[index]
+
+    mixed_labels = lam * y_a + (1 - lam) * y_b
+    return mixed_x, mixed_labels

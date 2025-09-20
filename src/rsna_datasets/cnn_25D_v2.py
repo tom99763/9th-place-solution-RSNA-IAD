@@ -14,6 +14,7 @@ import os
 import pydicom
 import cv2
 from scipy import ndimage
+from monai.transforms import Compose, EnsureChannelFirstd, ScaleIntensityd, ToTensord
 
 torch.set_float32_matmul_precision('medium')
 
@@ -266,8 +267,8 @@ class VolumeSliceDataset(Dataset):
         #series_path = self.data_path / f"series/{uid}"
         #volume = self.preprocessor.process_series(series_path)
         series_path = self.data_path / f"processed/{uid}.npz"
-        volume = np.load(series_path)['vol']
-        volume = volume.transpose(1, 2, 0) # (D,H,W) -> (H,W,D)
+        volume = np.load(series_path)['vol'].astype(np.float32)
+        #volume = volume.transpose(1, 2, 0) # (D,H,W) -> (H,W,D)
 
 
         labels = np.zeros(self.num_classes)
@@ -276,9 +277,12 @@ class VolumeSliceDataset(Dataset):
             class_idxs = [LABELS_TO_IDX[loc] + 1 for loc in labeldf["location"].tolist()]
             labels[class_idxs] = 1
 
+        # if self.transform:
+        #     # BxxDxHxW
+        #     volume = self.transform(image=volume)["image"]
         if self.transform:
-            # BxDxHxW
-            volume = self.transform(image=volume)["image"]
+            # Bx1xDxHxW
+            volume = self.transform({"image": volume})["image"]
         return volume, labels
 
 
@@ -288,16 +292,32 @@ class VolumeDataModule(pl.LightningDataModule):
 
         self.cfg = cfg
 
-        self.train_transforms = A.Compose([
-            A.Resize(384, 384),
-            A.Normalize(),
-            ToTensorV2(),
+        # self.train_transforms = A.Compose([
+        #     A.Resize(384, 384),  # spatial crop/scale
+        #     A.Normalize(),
+        #     ToTensorV2(),
+        # ])
+        #
+        # self.val_transforms = A.Compose([
+        #     A.Resize(384, 384),
+        #     A.Normalize(),
+        #     ToTensorV2(),
+        # ])
+
+        keys = ["image"]  # or ["image", "label"] if you have labels
+
+        # Train transforms
+        self.train_transforms = Compose([
+            EnsureChannelFirstd(keys=keys),
+            ScaleIntensityd(keys=keys),
+            ToTensord(keys=keys),
         ])
 
-        self.val_transforms = A.Compose([
-            A.Resize(384, 384),
-            A.Normalize(),
-            ToTensorV2(),
+        # Validation transforms (usually same as train, but no augmentation)
+        self.val_transforms = Compose([
+            EnsureChannelFirstd(keys=keys),
+            ScaleIntensityd(keys=keys),
+            ToTensord(keys=keys),
         ])
 
     def setup(self, stage: str = None):
