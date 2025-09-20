@@ -6,6 +6,8 @@ from lightning.pytorch.loggers import WandbLogger
 import pytorch_lightning as pl
 from hydra.utils import instantiate
 import copy
+import os
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 def run_one_fold(cfg: DictConfig, fold_id: int):
     print(f"\n===== 🚀 Running fold {fold_id} =====\n")

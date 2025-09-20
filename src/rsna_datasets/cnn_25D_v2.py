@@ -15,6 +15,7 @@ import pydicom
 import cv2
 from scipy import ndimage
 from monai.transforms import Compose, EnsureChannelFirstd, ScaleIntensityd, ToTensord
+from monai.data import MetaTensor
 
 torch.set_float32_matmul_precision('medium')
 
@@ -267,9 +268,9 @@ class VolumeSliceDataset(Dataset):
         #series_path = self.data_path / f"series/{uid}"
         #volume = self.preprocessor.process_series(series_path)
         series_path = self.data_path / f"processed/{uid}.npz"
-        volume = np.load(series_path)['vol'].astype(np.float32)
+        volume = np.load(series_path)['vol'].astype(np.float32)[None, ]
+        volume = MetaTensor(volume, channel_dim=0)
         #volume = volume.transpose(1, 2, 0) # (D,H,W) -> (H,W,D)
-
 
         labels = np.zeros(self.num_classes)
         if int(rowdf["Aneurysm Present"].iloc[0]) == 1:
@@ -281,7 +282,6 @@ class VolumeSliceDataset(Dataset):
         #     # BxxDxHxW
         #     volume = self.transform(image=volume)["image"]
         if self.transform:
-            # Bx1xDxHxW
             volume = self.transform({"image": volume})["image"]
         return volume, labels
 
@@ -308,16 +308,16 @@ class VolumeDataModule(pl.LightningDataModule):
 
         # Train transforms
         self.train_transforms = Compose([
-            EnsureChannelFirstd(keys=keys),
-            ScaleIntensityd(keys=keys),
-            ToTensord(keys=keys),
+            #EnsureChannelFirstd(keys=["image"]),
+            ScaleIntensityd(keys=["image"]),
+            ToTensord(keys=["image"])
         ])
 
         # Validation transforms (usually same as train, but no augmentation)
         self.val_transforms = Compose([
-            EnsureChannelFirstd(keys=keys),
-            ScaleIntensityd(keys=keys),
-            ToTensord(keys=keys),
+            #EnsureChannelFirstd(keys=["image"]),
+            ScaleIntensityd(keys=["image"]),
+            ToTensord(keys=["image"])
         ])
 
     def setup(self, stage: str = None):
