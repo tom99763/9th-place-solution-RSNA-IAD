@@ -233,11 +233,6 @@ class DICOMPreprocessorKaggle:
         return final_volume
 
 
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.ndimage import rotate
-
-
 def compute_mips(vol, angle=45):
     """
     vol: numpy array shaped (Z, Y, X) = (32, 384, 384)
@@ -311,8 +306,8 @@ class VolumeSliceDataset(Dataset):
         #volume = self.preprocessor.process_series(series_path)
         series_path = self.data_path / f"processed/{uid}.npz"
         volume = np.load(series_path)['vol'].astype(np.float32)[None, ]
-        volume = MetaTensor(volume, channel_dim=0)
-        #volume = volume.transpose(1, 2, 0) # (D,H,W) -> (H,W,D)
+        # volume = MetaTensor(volume, channel_dim=0)
+        volume = volume.transpose(1, 2, 0) # (D,H,W) -> (H,W,D)
 
         labels = np.zeros(self.num_classes)
         if int(rowdf["Aneurysm Present"].iloc[0]) == 1:
@@ -320,11 +315,11 @@ class VolumeSliceDataset(Dataset):
             class_idxs = [LABELS_TO_IDX[loc] + 1 for loc in labeldf["location"].tolist()]
             labels[class_idxs] = 1
 
-        # if self.transform:
-        #     # BxxDxHxW
-        #     volume = self.transform(image=volume)["image"]
         if self.transform:
-            volume = self.transform({"image": volume})["image"]
+            # BxxDxHxW
+            volume = self.transform(image=volume)["image"]
+        # if self.transform:
+        #     volume = self.transform({"image": volume})["image"]
         return volume, labels
 
 
