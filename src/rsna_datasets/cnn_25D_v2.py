@@ -17,6 +17,7 @@ from scipy import ndimage
 from monai.transforms import Compose, EnsureChannelFirstd, ScaleIntensityd, ToTensord
 from monai.data import MetaTensor
 from scipy.ndimage import rotate
+#from skimage.transform import resize
 
 torch.set_float32_matmul_precision('medium')
 
@@ -238,36 +239,53 @@ def compute_mips(vol, angle=45):
     vol: numpy array shaped (Z, Y, X) = (32, 384, 384)
     angle: rotation angle in degrees for oblique planes
 
-    returns dictionary of 6 MIPs:
-        axial, coronal, sagittal,
-        oblique_x, oblique_y, oblique_z
+    returns array of shape (6, H, W) where H,W = vol.shape[1:]
     """
+
+    target_shape = vol.shape[1:]  # (H, W)
+
+    def resize_to_target(img, target_shape):
+        """Resize 2D array with cv2, keeping float range"""
+        return cv2.resize(
+            img.astype(np.float32),
+            (target_shape[1], target_shape[0]),  # (width, height)
+            interpolation=cv2.INTER_LINEAR
+        )
+
     # --- Orthogonal planes ---
-    mip_axial = vol.max(axis=0)  # Z collapsed → XY plane
-    mip_coronal = vol.max(axis=1)  # Y collapsed → XZ plane
-    mip_sagittal = vol.max(axis=2)  # X collapsed → YZ plane
+    mip_axial    = vol.max(axis=0)   # (H, W)
+    mip_coronal  = vol.max(axis=1)   # (Z, W)
+    mip_sagittal = vol.max(axis=2)   # (Z, H)
+
+    # Resize coronal/sagittal to (H, W)
+    mip_coronal  = resize_to_target(mip_coronal, target_shape)
+    mip_sagittal = resize_to_target(mip_sagittal, target_shape)
 
     # --- Oblique planes (tilt by angle) ---
-    # Rotate volume around Y axis (Z–X tilt)
     rotated_x = rotate(vol, angle=angle, axes=(0, 2), reshape=True, order=1)
     mip_oblique_x = rotated_x.max(axis=0)
+    mip_oblique_x = resize_to_target(mip_oblique_x, target_shape)
 
-    # Rotate volume around X axis (Z–Y tilt)
     rotated_y = rotate(vol, angle=angle, axes=(0, 1), reshape=True, order=1)
     mip_oblique_y = rotated_y.max(axis=0)
+    mip_oblique_y = resize_to_target(mip_oblique_y, target_shape)
 
-    # Rotate volume around Z axis (X–Y tilt)
     rotated_z = rotate(vol, angle=angle, axes=(1, 2), reshape=True, order=1)
     mip_oblique_z = rotated_z.max(axis=0)
+    mip_oblique_z = resize_to_target(mip_oblique_z, target_shape)
 
-    return {
-        "axial": mip_axial,
-        "coronal": mip_coronal,
-        "sagittal": mip_sagittal,
-        "oblique_x": mip_oblique_x,
-        "oblique_y": mip_oblique_y,
-        "oblique_z": mip_oblique_z,
-    }
+    # Stack all into shape (6, H, W)
+    mips = np.stack([
+        mip_axial,
+        mip_coronal,
+        mip_sagittal,
+        mip_oblique_x,
+        mip_oblique_y,
+        mip_oblique_z
+    ], axis=0)
+
+    return mips.astype(np.float32)
+
 
 class VolumeSliceDataset(Dataset):
     """
@@ -305,7 +323,9 @@ class VolumeSliceDataset(Dataset):
         #series_path = self.data_path / f"series/{uid}"
         #volume = self.preprocessor.process_series(series_path)
         series_path = self.data_path / f"processed/{uid}.npz"
-        volume = np.load(series_path)['vol'].astype(np.float32)[None, ]
+        volume = np.load(series_path)['vol'].astype(np.float32)
+        mips = compute_mips(volume)
+        volume = np.concatenate([volume, mips], axis=0)
         # volume = MetaTensor(volume, channel_dim=0)
         volume = volume.transpose(1, 2, 0) # (D,H,W) -> (H,W,D)
 
