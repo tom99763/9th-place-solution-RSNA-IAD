@@ -29,18 +29,25 @@ def run_one_fold(cfg: DictConfig, fold_id: int):
     model = instantiate(cfg.model)
     pl_model = LitTimmClassifier(model, cfg)
 
-    loss_ckpt_callback = pl.callbacks.ModelCheckpoint(
-        monitor="val_loss",
-        mode="min",
-        dirpath="./models",
-        filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"_fold_id={fold_id}",
-        save_top_k=2
-    )
+    # loss_ckpt_callback = pl.callbacks.ModelCheckpoint(
+    #     monitor="val_loss",
+    #     mode="min",
+    #     dirpath="./models",
+    #     filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"_fold_id={fold_id}",
+    #     save_top_k=2
+    # )
     kaggle_score_ckpt_callback = pl.callbacks.ModelCheckpoint(
         monitor="kaggle_score",
         mode="max",
         dirpath="./models",
-        filename=f'{cfg.experiment}'+'-{epoch:02d}-{kaggle_score:.4f}'+f"_fold_id={fold_id}",
+        filename=f'{cfg.experiment}'+'-{epoch:02d}-{kaggle_score:.4f}-{kaggle_score:.4f}'+f"_fold_id={fold_id}",
+        save_top_k=2
+    )
+    cls_score_ckpt_callback = pl.callbacks.ModelCheckpoint(
+        monitor="val_cls_auroc",
+        mode="max",
+        dirpath="./models",
+        filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_cls_auroc:.4f}' + f"_fold_id={fold_id}",
         save_top_k=2
     )
 
@@ -49,7 +56,7 @@ def run_one_fold(cfg: DictConfig, fold_id: int):
     trainer = pl.Trainer(
         **cfg.trainer,
         logger=wnb_logger,
-        callbacks=[lr_monitor, loss_ckpt_callback, kaggle_score_ckpt_callback]
+        callbacks=[lr_monitor, kaggle_score_ckpt_callback, cls_score_ckpt_callback]
     )
     wnb_logger.watch(model, log="all", log_freq=20)
 

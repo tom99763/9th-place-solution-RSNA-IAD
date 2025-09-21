@@ -40,7 +40,7 @@ def train(cfg: DictConfig) -> None:
                           monitor="kaggle_score"
                         , mode="max"
                         , dirpath="./models"
-                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{kaggle_score:.4f}'+f"_fold_id={cfg.fold_id}"
+                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{kaggle_score:.4f}--{kaggle_score:.4f}'+f"_fold_id={cfg.fold_id}"
                         , save_top_k=2
                         )
 

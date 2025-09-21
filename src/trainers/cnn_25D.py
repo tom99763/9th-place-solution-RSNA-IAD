@@ -2,9 +2,12 @@ import torch
 import pytorch_lightning as pl
 import torchmetrics
 from hydra.utils import instantiate
-
+import torch.nn as nn
+import torch.nn.functional as F
 
 torch.set_float32_matmul_precision('medium')
+
+
 
 class LitTimmClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
@@ -57,7 +60,7 @@ class LitTimmClassifier(pl.LightningModule):
         pred_cls, pred_locs = preds[:,0], preds[:, 1:]
        
         loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels.float())
+        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
   
         loss = (cls_loss + loc_loss) / 2
        
