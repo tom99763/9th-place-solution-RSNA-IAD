@@ -110,17 +110,20 @@ class ConvLSTM(nn.Module):
 # MultiBackboneModel
 # ------------------------
 class MultiBackboneModel(nn.Module):
-    def __init__(self,
-                 model_name="tf_efficientnetv2_s.in21k_ft_in1k",
-                 num_classes=14,
-                 in_chans=32,
-                 pretrained=True,
-                 drop_rate=0.3,
-                 drop_path_rate=0.2,
-                 convlstm_hidden_dim=64,
-                 reduce_seq_len=64,
-                 reduce_depth=True):
+    def __init__(
+        self,
+        model_name="tf_efficientnetv2_s.in21k_ft_in1k",
+        num_classes=14,
+        in_chans=32,
+        pretrained=True,
+        drop_rate=0.3,
+        drop_path_rate=0.2,
+        convlstm_hidden_dim=64,
+        reduce_seq_len=64
+    ):
         super().__init__()
+
+        self.reduce_seq_len = reduce_seq_len
 
         # 2D CNN backbone
         self.backbone = timm.create_model(
@@ -128,49 +131,49 @@ class MultiBackboneModel(nn.Module):
             pretrained=pretrained,
             in_chans=in_chans,
             num_classes=0,
-            global_pool=""
+            global_pool="",
+            drop_rate=drop_rate,
+            drop_path_rate=drop_path_rate,
         )
 
-        self.reduce_seq_len = reduce_seq_len
-        self.reduce_depth = reduce_depth
-
-        # placeholder for channel reduction
-        self.channel_reduce = None
-
-        # ConvLSTM: channels as sequence
+        # ConvLSTM
         self.convlstm = ConvLSTM(
-            input_dim=1,  # after reducing channels
+            input_dim=1,  # after channel reduction
             hidden_dim=convlstm_hidden_dim,
             kernel_size=(3, 3),
             num_layers=1,
             batch_first=True
         )
 
+        # Final classifier
         self.fc = nn.Linear(convlstm_hidden_dim, num_classes)
+        self.channel_reduce = nn.Conv2d(1280, reduce_seq_len, kernel_size=1)
 
     def forward(self, x):
         """
         x: (B, D, H, W) - input volume
         """
-        feat = self.backbone(x)  # (B, C, H', W')
-        B, C, H, W = feat.shape
+        B, _, H, W = x.shape
 
-        # reduce depth (sequence length) if too long
-        if self.reduce_depth and C > self.reduce_seq_len:
-            feat = feat[:, :self.reduce_seq_len, :, :]
-            C = feat.shape[1]
+        # 2. Feed into backbone
+        # Backbone expects (B, C, H, W) -> here channels = D
+        x_reshaped = x  # shape (B, D, H, W)
+        feat = self.backbone(x_reshaped)  # (B, C, H', W')
+        B, _, Hf, Wf = feat.shape
 
-        # define channel reduction conv dynamically
-        if self.channel_reduce is None or self.channel_reduce.in_channels != C:
-            self.channel_reduce = nn.Conv2d(C, 1, kernel_size=1).to(feat.device)
+        # 3. Reduce channels to 1 dynamically
+        feat = self.channel_reduce(feat)  # (B, 1, H', W')
+        D = feat.shape[1]
 
-        feat = self.channel_reduce(feat)  # (B, 1, H, W)
+        # 4. Treat depth as sequence for ConvLSTM
+        # Reshape to (B, T=D, C=1, H', W')
+        seq = feat.view(B, D, 1, Hf, Wf)
 
-        # treat channels as sequence for ConvLSTM
-        seq = feat.permute(0, 2, 3, 1).unsqueeze(1)  # (B, T=1, C=1, H, W)
-        lstm_out, _ = self.convlstm(seq)  # list of outputs
-        last_hidden = lstm_out[0][:, -1, :, :, :]  # last timestep
+        # 5. ConvLSTM forward
+        lstm_out, _ = self.convlstm(seq)
+        last_hidden = lstm_out[0][:, -1, :, :, :]  # last timestep (B, hidden_dim, H', W')
 
+        # 6. Global pooling + classifier
         pooled = F.adaptive_avg_pool2d(last_hidden, 1).squeeze(-1).squeeze(-1)
         out = self.fc(pooled)
         return out
