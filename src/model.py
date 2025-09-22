@@ -153,8 +153,9 @@ class MultiBackboneModel(nn.Module):
         B, _, H, W = x.shape
         D = 4
 
-        # Process each slice through backbone
-        x_slices = x.reshape(B * 4, 8, H, W)          # (B*D, 1, H, W)
+        #4 depth chunks, each with 8 depth window size
+        #eff->mip
+        x_slices = x.reshape(B * D, 32//D, H, W)          # (B*D, 1, H, W)
         feat = self.backbone(x_slices)                # (B*D, C, Hf, Wf)
         _, C, Hf, Wf = feat.shape
         feat = feat.view(B, D, C, Hf, Wf)             # (B, D, C, Hf, Wf)
@@ -163,7 +164,7 @@ class MultiBackboneModel(nn.Module):
         feat = feat.permute(0, 2, 1, 3, 4)            # (B, C, D, Hf, Wf)
 
         # Depth reduction conv
-        feat = self.depth_reduce(feat)                # (B, Cout, D', Hf, Wf)
+        feat = self.depth_reduce(feat)                # (B, Cout, D', H, Wf)
 
         # Prepare sequence for ConvGRU
         feat = feat.permute(0, 2, 1, 3, 4)            # (B, T=D', C, Hf, Wf)
