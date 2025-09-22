@@ -3,6 +3,7 @@
 Preprocessing:
     - DICOM -> HU -> per-slice min-max -> uint8 (BGR for YOLO inference)
     - BGR mode: stacks 3 consecutive slices [i-1, i, i+1] as 3-channel images
+    - Volume resize mode: loads entire series as 3D volume and resizes to target shape (default: 128x512x512)
 
 Series scores:
     - Aneurysm Present = max detection confidence across ALL 13 classes over processed slices/MIP windows
@@ -13,9 +14,14 @@ Outputs:
     - Location macro AUC (macro over 13 classes)
     - Optional CSV with per-series predictions
 
+Fold Management:
+    - If train.csv has no 'fold_id' column, automatically generates stratified folds using StratifiedKFold
+    - Uses N_FOLDS=5 and SEED=42 from configs/data_config.py for consistent fold generation
+    - Updates train.csv with the generated fold_id column for future runs
+
 Notes:
     - Requires ultralytics (YOLOv8/11) and 13-class weights.
-    - Use --mip-window > 0 for sliding-window MIPs; 0 for per-slice; --bgr-mode for 3-slice stacking.
+    - Use --mip-window > 0 for sliding-window MIPs; 0 for per-slice; --bgr-mode for 3-slice stacking; --use-volume-resize for volume resizing.
 """
 import argparse
 from pathlib import Path
@@ -28,15 +34,17 @@ import pandas as pd
 import pydicom
 import cv2
 from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.model_selection import StratifiedKFold
 from tqdm import tqdm
 import time
+from scipy import ndimage
 sys.path.insert(0, "ultralytics-timm")
 from ultralytics import YOLO
 
 # Project root & config imports
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'src'))
-from configs.data_config import data_path, LABELS_TO_IDX  # type: ignore
+from configs.data_config import data_path, LABELS_TO_IDX, N_FOLDS, SEED  # type: ignore
 
 LOCATION_LABELS = sorted(list(LABELS_TO_IDX.keys()))
 N_LOC = len(LOCATION_LABELS)
@@ -71,8 +79,43 @@ def parse_args():
     ap.add_argument('--bgr-mode', action='store_true', help='Use BGR mode (3-channel images from stacked slices)')
     ap.add_argument('--bgr-non-overlapping', action='store_true', help='Use non-overlapping 3-slice windows in BGR mode (e.g., [1,2,3],[4,5,6],[7,8,9])')
     ap.add_argument('--wandb-resume-id', type=str, default='', help='Resume W&B run id (optional)')
-    ap.add_argument('--single-cls', action='store_true', help='Single class mode: only classify aneurysm present/absent (no location prediction)')
+    # Volume resizing arguments
+    ap.add_argument('--use-volume-resize', default=True, action='store_true', help='Enable volume resizing using scipy.ndimage.zoom')
+    ap.add_argument('--volume-target-depth', type=int, default=128, help='Target depth for volume resizing')
+    ap.add_argument('--volume-target-height', type=int, default=512, help='Target height for volume resizing')
+    ap.add_argument('--volume-target-width', type=int, default=512, help='Target width for volume resizing')
     return ap.parse_args()
+
+
+def load_folds(root: Path) -> Dict[str, int]:
+    """Map SeriesInstanceUID -> fold_id using stratified folds from train.csv.
+
+    Requirements:
+      - data/train.csv must exist
+      - Columns: 'SeriesInstanceUID', 'Aneurysm Present'
+      - Will create N_FOLDS stratified splits on the series-level label
+    """
+    df_path = root / "train.csv"
+
+    df = pd.read_csv(df_path)
+
+    series_df = df[["SeriesInstanceUID", "Aneurysm Present"]].drop_duplicates().reset_index(drop=True)
+    series_df["SeriesInstanceUID"] = series_df["SeriesInstanceUID"].astype(str)
+
+    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
+    fold_map: Dict[str, int] = {}
+    for i, (_, test_idx) in enumerate(
+        skf.split(series_df["SeriesInstanceUID"], series_df["Aneurysm Present"]) 
+    ):
+        for uid in series_df.loc[test_idx, "SeriesInstanceUID"].tolist():
+            fold_map[uid] = i
+    
+    # Update train.csv with the new folds
+    df["fold_id"] = df["SeriesInstanceUID"].astype(str).map(fold_map)
+    df.to_csv(df_path, index=False)
+    print(f"Updated {df_path} with new fold_id column based on N_FOLDS={N_FOLDS}")
+    
+    return fold_map
 
 
 def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
@@ -85,12 +128,9 @@ def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
         img = pix.astype(np.float32)
         frames.append(img * slope + intercept)
     elif pix.ndim == 3:
-        # RGB or multi-frame
+        # If RGB (H,W,3), take first channel; else assume multi-frame (N,H,W)
         if pix.shape[-1] == 3 and pix.shape[0] != 3:
-            try:
-                gray = cv2.cvtColor(pix.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
-            except Exception:
-                gray = pix[..., 0].astype(np.float32)
+            gray = pix[..., 0].astype(np.float32)
             frames.append(gray * slope + intercept)
         else:
             for i in range(pix.shape[0]):
@@ -107,8 +147,112 @@ def min_max_normalize(img: np.ndarray) -> np.ndarray:
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
 
 
+def min_max_normalize_volume(volume: np.ndarray) -> np.ndarray:
+    """Normalize entire volume consistently to uint8."""
+    mn, mx = float(volume.min()), float(volume.max())
+    if mx - mn < 1e-6:
+        return np.zeros_like(volume, dtype=np.uint8)
+    norm = (volume - mn) / (mx - mn)
+    return (norm * 255.0).clip(0, 255).astype(np.uint8)
+
+
 def collect_series_slices(series_dir: Path) -> List[Path]:
     return sorted(series_dir.glob('*.dcm'))
+
+
+def calculate_partial_aucs(cls_labels: List[int], series_probs: Dict[str, float], 
+                          loc_labels: List[np.ndarray], series_pred_loc_probs: List[np.ndarray]) -> Tuple[float, float]:
+    """Calculate partial AUC scores for classification and location prediction.
+    
+    Returns:
+        Tuple of (cls_auc, loc_macro_auc)
+    """
+    if len(cls_labels) < 2:
+        return float('nan'), float('nan')
+    
+    try:
+        # Classification AUC
+        y_true = np.array(cls_labels)
+        y_scores = np.array([series_probs[sid] for sid in series_probs.keys()])
+        cls_auc = roc_auc_score(y_true, y_scores)
+    except Exception:
+        cls_auc = float('nan')
+    
+    try:
+        # Location macro AUC
+        if len(loc_labels) >= 2 and len(series_pred_loc_probs) >= 2:
+            loc_labels_arr = np.stack(loc_labels)
+            loc_pred_arr = np.stack(series_pred_loc_probs)
+            per_loc_aucs = []
+            for i in range(N_LOC):
+                try:
+                    auc_i = roc_auc_score(loc_labels_arr[:, i], loc_pred_arr[:, i])
+                except ValueError:
+                    auc_i = float('nan')
+                per_loc_aucs.append(auc_i)
+            loc_macro_auc = np.nanmean(per_loc_aucs)
+        else:
+            loc_macro_auc = float('nan')
+    except Exception:
+        loc_macro_auc = float('nan')
+    
+    return cls_auc, loc_macro_auc
+
+
+def resize_volume_to_target(volume: np.ndarray, target_shape: Tuple[int, int, int] = (128, 512, 512)) -> np.ndarray:
+    """Resize a 3D volume to target shape using scipy.ndimage.zoom.
+    
+    Args:
+        volume: Input 3D volume of shape (D, H, W)
+        target_shape: Target shape (target_D, target_H, target_W)
+    
+    Returns:
+        Resized volume with target shape
+    """
+    if volume.ndim != 3:
+        raise ValueError(f"Expected 3D volume, got {volume.ndim}D array")
+    
+    current_shape = volume.shape
+    zoom_factors = tuple(target_shape[i] / current_shape[i] for i in range(3))
+    
+    # Use scipy.ndimage.zoom for smooth resizing
+    resized_volume = ndimage.zoom(volume, zoom_factors, order=1, mode='nearest')
+    
+    return resized_volume
+
+
+def load_series_as_volume(series_dir: Path) -> np.ndarray | None:
+    """Load entire series as a 3D volume (D, H, W).
+    
+    Args:
+        series_dir: Directory containing DICOM files
+    
+    Returns:
+        3D numpy array of shape (D, H, W) or None if loading fails
+    """
+    dicom_files = sorted(series_dir.glob('*.dcm'))
+    if not dicom_files:
+        return None
+    
+    slices = []
+    for dcm_path in dicom_files:
+        try:
+            frames = read_dicom_frames_hu(dcm_path)
+            if frames:
+                # Take first frame from each DICOM (most common case)
+                slices.append(frames[0])
+        except Exception:
+            continue
+    
+    if not slices:
+        return None
+    
+    # Stack slices into volume (D, H, W)
+    try:
+        volume = np.stack(slices, axis=0)
+        return volume
+    except Exception:
+        return None
 
 
 def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_id: int) -> Tuple[Dict[str, float], pd.DataFrame]:
@@ -116,16 +260,26 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
     # Load split
     data_root = Path(data_path)
     series_root = data_root / 'series'
-    train_df = pd.read_csv(data_root / 'train_df.csv') if (data_root / 'train_df.csv').exists() else pd.read_csv(data_root / 'train.csv')
+    train_df = pd.read_csv(data_root / 'train.csv')
     if 'Aneurysm Present' not in train_df.columns:
-        raise SystemExit("train_df.csv requires 'Aneurysm Present' column for classification label")
+        raise SystemExit("train.csv requires 'Aneurysm Present' column for classification label")
+    
+    # Check if fold_id column exists, if not generate folds using StratifiedKFold
+    if 'fold_id' not in train_df.columns:
+        print("fold_id column not found in train.csv, generating stratified folds...")
+        fold_map = load_folds(data_root)
+        # Reload the dataframe with the new fold_id column
+        train_df = pd.read_csv(data_root / 'train.csv')
 
     val_series = train_df[train_df['fold_id'] == fold_id]['SeriesInstanceUID'].unique().tolist()
     if args.series_limit:
         val_series = val_series[:args.series_limit]
 
     print(f"Validation fold {fold_id}: {len(val_series)} series")
-    print(f"Processing every {args.slice_step} slice(s); MIP half-window={args.mip_window}")
+    if args.use_volume_resize:
+        print(f"Processing with volume resizing to {args.volume_target_depth}x{args.volume_target_height}x{args.volume_target_width}; every {args.slice_step} slice(s)")
+    else:
+        print(f"Processing every {args.slice_step} slice(s); MIP half-window={args.mip_window}")
     model = YOLO(weights_path)
 
     series_probs: Dict[str, float] = {}
@@ -134,58 +288,12 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
     series_pred_loc_probs: List[np.ndarray] = []
     series_pred_counts: Dict[str, int] = {}
     
-    # For partial AUC tracking
+    # For partial AUC calculation every 10 tomograms
     processed_count = 0
-    partial_auc_interval = 10
-
-    def compute_partial_metrics(series_ids, probs_dict, cls_labels_list, loc_labels_list, loc_probs_list):
-        """Compute partial AUC metrics with current data"""
-        if len(cls_labels_list) < 2:
-            return float('nan'), float('nan'), float('nan')
-        
-        # Classification AUC
-        try:
-            y_true = np.array(cls_labels_list)
-            y_scores = np.array([probs_dict[sid] for sid in series_ids])
-            if len(np.unique(y_true)) < 2:  # Need both classes
-                cls_auc = float('nan')
-            else:
-                cls_auc = roc_auc_score(y_true, y_scores)
-        except Exception:
-            cls_auc = float('nan')
-        
-        # Location macro AUC (skip in single-cls mode)
-        if args.single_cls or len(loc_labels_list) == 0:
-            loc_macro_auc = float('nan')
-            competition_score = cls_auc
-        else:
-            try:
-                loc_labels_arr = np.stack(loc_labels_list)
-                loc_pred_arr = np.stack(loc_probs_list)
-                per_loc_aucs = []
-                for i in range(N_LOC):
-                    try:
-                        auc_i = roc_auc_score(loc_labels_arr[:, i], loc_pred_arr[:, i])
-                    except ValueError:
-                        auc_i = float('nan')
-                    per_loc_aucs.append(auc_i)
-                loc_macro_auc = np.nanmean(per_loc_aucs)
-                
-                # Compute competition score
-                valid_loc_aucs = [auc for auc in per_loc_aucs if not math.isnan(auc)]
-                if valid_loc_aucs:
-                    aneurysm_weight = 13
-                    location_weight = 1
-                    total_weights = aneurysm_weight + location_weight * N_LOC
-                    weighted_sum = aneurysm_weight * cls_auc + location_weight * sum(valid_loc_aucs)
-                    competition_score = weighted_sum / total_weights
-                else:
-                    competition_score = cls_auc
-            except Exception:
-                loc_macro_auc = float('nan')
-                competition_score = cls_auc
-                
-        return cls_auc, loc_macro_auc, competition_score
+    partial_series_probs: Dict[str, float] = {}
+    partial_cls_labels: List[int] = []
+    partial_loc_labels: List[np.ndarray] = []
+    partial_series_pred_loc_probs: List[np.ndarray] = []
 
     for sid in tqdm(val_series, desc="Validating series", unit="series"):
         series_dir = series_root / sid
@@ -228,8 +336,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                         k = int(clses[i].item())
                         if c > max_conf_all:
                             max_conf_all = c
-                        # In single-cls mode, all detections are treated as aneurysm class
-                        if not args.single_cls and 0 <= k < N_LOC and c > per_class_max[k]:
+                        if 0 <= k < N_LOC and c > per_class_max[k]:
                             per_class_max[k] = c
                 except Exception:
                     # Fallback: just use max conf
@@ -241,7 +348,50 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     except Exception:
                         pass
 
-        if args.mip_window > 0:
+        if args.use_volume_resize:
+            # Volume resizing mode: load entire series as volume, resize, and run inference
+            volume = load_series_as_volume(series_dir)
+            if volume is None:
+                series_probs[sid] = 0.0
+                series_pred_loc_probs.append(np.zeros(N_LOC, dtype=np.float32))
+                series_pred_counts[sid] = 0
+                continue
+            
+            # Resize volume to target shape
+            target_shape = (args.volume_target_depth, args.volume_target_height, args.volume_target_width)
+            try:
+                resized_volume = resize_volume_to_target(volume, target_shape)
+            except Exception as e:
+                if args.verbose:
+                    print(f"[SKIP] {sid}: Volume resize failed: {e}")
+                series_probs[sid] = 0.0
+                series_pred_loc_probs.append(np.zeros(N_LOC, dtype=np.float32))
+                series_pred_counts[sid] = 0
+                continue
+            
+            # Normalize entire volume consistently to match training data preparation
+            resized_volume_normalized = min_max_normalize_volume(resized_volume)
+            
+            # Process slices from resized volume
+            for slice_idx in range(0, resized_volume_normalized.shape[0], args.slice_step):
+                if args.max_slices and len(batch) >= args.max_slices:
+                    break
+                    
+                slice_img = resized_volume_normalized[slice_idx]
+                
+                # Convert to BGR format
+                if slice_img.ndim == 2:
+                    slice_img = cv2.cvtColor(slice_img, cv2.COLOR_GRAY2BGR)
+                
+                batch.append(slice_img)
+                if len(batch) >= args.batch_size:
+                    flush_batch(batch)
+                    batch.clear()
+            flush_batch(batch)
+            
+            if args.verbose:
+                print(f"  Volume {sid}: Resized from {volume.shape} to {target_shape}, processed {resized_volume_normalized.shape[0]} slices")
+        elif args.mip_window > 0:
             # Build HU slices and slide MIP
             slices_hu: list[np.ndarray] = []
             shapes_count: Dict[tuple[int, int], int] = {}
@@ -264,6 +414,10 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
             target_shape = max(shapes_count.items(), key=lambda kv: kv[1])[0]
             th, tw = target_shape
             n = len(slices_hu)
+            
+            # Stack into volume for consistent normalization
+            volume_hu = np.stack([cv2.resize(s, (tw, th), interpolation=cv2.INTER_LINEAR) if s.shape != target_shape else s for s in slices_hu], axis=0)
+            volume_normalized = min_max_normalize_volume(volume_hu)
             if args.mip_no_overlap:
                 w = max(0, int(args.mip_window))
                 window_size = 2 * w + 1
@@ -281,22 +435,14 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
             if args.max_slices and len(centers) > args.max_slices:
                 centers = centers[:args.max_slices]
 
-            resized_cache: Dict[int, np.ndarray] = {}
             w = args.mip_window
             for c in centers:
                 lo = max(0, c - w)
                 hi = min(n - 1, c + w)
-                mip_hu = None
+                mip_u8 = None
                 for i in range(lo, hi + 1):
-                    arr = resized_cache.get(i)
-                    if arr is None:
-                        a = slices_hu[i]
-                        if a.shape != target_shape:
-                            a = cv2.resize(a, (tw, th), interpolation=cv2.INTER_LINEAR)
-                        resized_cache[i] = a
-                        arr = a
-                    mip_hu = arr if mip_hu is None else np.maximum(mip_hu, arr)
-                mip_u8 = min_max_normalize(mip_hu)
+                    slice_u8 = volume_normalized[i]
+                    mip_u8 = slice_u8 if mip_u8 is None else np.maximum(mip_u8, slice_u8)
                 if args.mip_img_size > 0 and (mip_u8.shape[0] != args.mip_img_size or mip_u8.shape[1] != args.mip_img_size):
                     mip_u8 = cv2.resize(mip_u8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
                 mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2BGR) if mip_u8.ndim == 2 else mip_u8
@@ -308,6 +454,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
         elif getattr(args, 'bgr_mode', False):
             # BGR mode: stack 3 consecutive slices as channels
             slices_hu: list[np.ndarray] = []
+            shapes_count: Dict[tuple[int, int], int] = {}
             for dcm_path in dicoms:
                 try:
                     frames = read_dicom_frames_hu(dcm_path)
@@ -318,6 +465,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                 for f in frames:
                     f = f.astype(np.float32)
                     slices_hu.append(f)
+                    shapes_count[f.shape] = shapes_count.get(f.shape, 0) + 1
 
             if len(slices_hu) < 3:
                 # Not enough slices for BGR mode, skip this series
@@ -325,6 +473,12 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                 series_pred_loc_probs.append(np.zeros(N_LOC, dtype=np.float32))
                 series_pred_counts[sid] = 0
                 continue
+                
+            # Stack into volume for consistent normalization
+            target_shape = max(shapes_count.items(), key=lambda kv: kv[1])[0]
+            th, tw = target_shape
+            volume_hu = np.stack([cv2.resize(s, (tw, th), interpolation=cv2.INTER_LINEAR) if s.shape != target_shape else s for s in slices_hu], axis=0)
+            volume_normalized = min_max_normalize_volume(volume_hu)
 
             if getattr(args, 'bgr_non_overlapping', False):
                 # Non-overlapping 3-slice windows: [0,1,2], [3,4,5], [6,7,8], etc.
@@ -444,24 +598,26 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     loc_vec[idx] = 0.0
         loc_labels.append(loc_vec)
         
-        # Track partial AUC every 10 series
+        # Update partial tracking
+        partial_series_probs[sid] = max_conf_all
+        partial_cls_labels.append(label)
+        partial_loc_labels.append(loc_vec.copy())
+        partial_series_pred_loc_probs.append(per_class_max.copy())
         processed_count += 1
-        if processed_count % partial_auc_interval == 0:
-            current_series = list(series_probs.keys())
-            partial_cls_auc, partial_loc_auc, partial_comp_score = compute_partial_metrics(
-                current_series, series_probs, cls_labels, loc_labels, series_pred_loc_probs
+        
+        # Print partial AUC every 10 tomograms
+        if processed_count % 10 == 0:
+            partial_cls_auc, partial_loc_macro_auc = calculate_partial_aucs(
+                partial_cls_labels, partial_series_probs, 
+                partial_loc_labels, partial_series_pred_loc_probs
             )
-            
-            if not math.isnan(partial_cls_auc):
-                if args.single_cls:
-                    print(f"[Partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}")
-                else:
-                    if not math.isnan(partial_loc_auc):
-                        print(f"[Partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}, Loc AUC: {partial_loc_auc:.4f}, Comp Score: {partial_comp_score:.4f}")
-                    else:
-                        print(f"[Partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}, Loc AUC: insufficient data")
-            else:
-                print(f"[Partial after {processed_count} series]: insufficient data")
+            print(f"\n--- Partial AUC after {processed_count} tomograms ---")
+            print(f"Classification AUC: {partial_cls_auc:.4f}")
+            print(f"Location macro AUC: {partial_loc_macro_auc:.4f}")
+            if not (math.isnan(partial_cls_auc) or math.isnan(partial_loc_macro_auc)):
+                combined_partial = (partial_cls_auc + partial_loc_macro_auc) / 2
+                print(f"Combined metric: {combined_partial:.4f}")
+            print("---" + "-" * 40 + "\n")
 
     if not series_probs:
         print("No series processed.")
@@ -485,65 +641,38 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
     except Exception:
         cls_ap = float('nan')
 
-    # In single-cls mode, skip location metrics
-    if args.single_cls:
-        per_loc_aucs = []
-        loc_macro_auc = float('nan')
-        competition_score = cls_auc  # Only aneurysm classification matters
-        combined_mean = cls_auc
+    loc_labels_arr = np.stack(loc_labels)
+    loc_pred_arr = np.stack(series_pred_loc_probs)
+    per_loc_aucs = []
+    for i in range(N_LOC):
+        try:
+            auc_i = roc_auc_score(loc_labels_arr[:, i], loc_pred_arr[:, i])
+        except ValueError:
+            auc_i = float('nan')
+        per_loc_aucs.append(auc_i)
+    loc_macro_auc = np.nanmean(per_loc_aucs)
+
+    # Compute competition-style weighted metric
+    # Competition weights: 13 for aneurysm present, 1 for each location
+    aneurysm_weight = 13
+    location_weight = 1
+    total_weights = aneurysm_weight + location_weight * N_LOC  # 13 + 13 = 26
+
+    valid_loc_aucs = [auc for auc in per_loc_aucs if not math.isnan(auc)]
+    if valid_loc_aucs:
+        weighted_sum = aneurysm_weight * cls_auc + location_weight * sum(valid_loc_aucs)
+        competition_score = weighted_sum / total_weights
     else:
-        loc_labels_arr = np.stack(loc_labels)
-        loc_pred_arr = np.stack(series_pred_loc_probs)
-        per_loc_aucs = []
-        for i in range(N_LOC):
-            try:
-                auc_i = roc_auc_score(loc_labels_arr[:, i], loc_pred_arr[:, i])
-            except ValueError:
-                auc_i = float('nan')
-            per_loc_aucs.append(auc_i)
-        loc_macro_auc = np.nanmean(per_loc_aucs)
+        competition_score = cls_auc  # fallback if no location AUCs
 
-        # Compute competition-style weighted metric
-        # Competition weights: 13 for aneurysm present, 1 for each location
-        aneurysm_weight = 13
-        location_weight = 1
-        total_weights = aneurysm_weight + location_weight * N_LOC  # 13 + 13 = 26
-
-        valid_loc_aucs = [auc for auc in per_loc_aucs if not math.isnan(auc)]
-        if valid_loc_aucs:
-            weighted_sum = aneurysm_weight * cls_auc + location_weight * sum(valid_loc_aucs)
-            competition_score = weighted_sum / total_weights
-        else:
-            competition_score = cls_auc  # fallback if no location AUCs
-
-        # For backward compatibility, also compute the simple average
-        combined_mean = (cls_auc + (loc_macro_auc if not math.isnan(loc_macro_auc) else 0)) / 2
-
-    # Final partial AUC report if not already printed at this exact count
-    if processed_count % partial_auc_interval != 0:
-        current_series = list(series_probs.keys())
-        partial_cls_auc, partial_loc_auc, partial_comp_score = compute_partial_metrics(
-            current_series, series_probs, cls_labels, loc_labels, series_pred_loc_probs
-        )
-        
-        if not math.isnan(partial_cls_auc):
-            if args.single_cls:
-                print(f"[Final partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}")
-            else:
-                if not math.isnan(partial_loc_auc):
-                    print(f"[Final partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}, Loc AUC: {partial_loc_auc:.4f}, Comp Score: {partial_comp_score:.4f}")
-                else:
-                    print(f"[Final partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}, Loc AUC: insufficient data")
+    # For backward compatibility, also compute the simple average
+    combined_mean = (cls_auc + (loc_macro_auc if not math.isnan(loc_macro_auc) else 0)) / 2
 
     print(f"Classification AUC (aneurysm present): {cls_auc:.4f}")
     print(f"Classification AP (PR AUC): {cls_ap:.4f}")
-    if args.single_cls:
-        print("Single-cls mode: Location metrics skipped")
-        print(f"Final score (classification only): {cls_auc:.4f}")
-    else:
-        print(f"Location macro AUC: {loc_macro_auc:.4f}")
-        print(f"Competition score (weighted): {competition_score:.4f}")
-        print(f"Combined (mean) metric: {combined_mean:.4f}")  # Should be same as competition_score
+    print(f"Location macro AUC: {loc_macro_auc:.4f}")
+    print(f"Competition score (weighted): {competition_score:.4f}")
+    print(f"Combined (mean) metric: {combined_mean:.4f}")  # Should be same as competition_score
 
     # Build per-series dataframe
     out_rows = []
@@ -557,17 +686,15 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
             'label_aneurysm': label,
             'num_detections': int(series_pred_counts.get(sid, 0)),
         }
-        # Only add location data if not in single-cls mode
-        if not args.single_cls:
-            probs = series_pred_loc_probs[idx]
-            for i, name in enumerate(LOCATION_LABELS):
-                row[f'loc_prob_{i}'] = float(probs[i])
-                # add label if present
-                if name in row_df.columns:
-                    try:
-                        row[f'loc_label_{i}'] = float(row_df[name].iloc[0])
-                    except Exception:
-                        row[f'loc_label_{i}'] = 0.0
+        probs = series_pred_loc_probs[idx]
+        for i, name in enumerate(LOCATION_LABELS):
+            row[f'loc_prob_{i}'] = float(probs[i])
+            # add label if present
+            if name in row_df.columns:
+                try:
+                    row[f'loc_label_{i}'] = float(row_df[name].iloc[0])
+                except Exception:
+                    row[f'loc_label_{i}'] = 0.0
         out_rows.append(row)
     per_series_df = pd.DataFrame(out_rows)
 
@@ -579,8 +706,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
         'competition_score': float(competition_score) if not math.isnan(competition_score) else float('nan'),
         'combined_mean': float(combined_mean) if not math.isnan(combined_mean) else float('nan'),
         'mean_num_detections': float(np.mean(list(series_pred_counts.values())) if series_pred_counts else 0.0),
-        'per_loc_aucs': {} if args.single_cls else {LOCATION_LABELS[i]: (float(per_loc_aucs[i]) if not math.isnan(per_loc_aucs[i]) else float('nan')) for i in range(N_LOC)},
-        'single_cls_mode': bool(args.single_cls),
+        'per_loc_aucs': {LOCATION_LABELS[i]: (float(per_loc_aucs[i]) if not math.isnan(per_loc_aucs[i]) else float('nan')) for i in range(N_LOC)},
         'num_series': int(len(keys)),
     }
     return metrics, per_series_df
@@ -611,7 +737,10 @@ def _maybe_init_wandb(args: argparse.Namespace, fold_id: int, weights_path: str)
         'batch_size': args.batch_size,
         'series_limit': args.series_limit,
         'max_slices': args.max_slices,
-        'single_cls': args.single_cls,
+        'use_volume_resize': args.use_volume_resize,
+        'volume_target_depth': args.volume_target_depth,
+        'volume_target_height': args.volume_target_height,
+        'volume_target_width': args.volume_target_width,
     }
     project = (args.wandb_project or 'rsna_iad').replace('/', '_')
     wandb.init(
@@ -647,7 +776,15 @@ def main():
     folds: List[int]
     if args.cv or args.folds:
         data_root = Path(data_path)
-        train_df = pd.read_csv(data_root / 'train_df.csv') if (data_root / 'train_df.csv').exists() else pd.read_csv(data_root / 'train.csv')
+        train_df = pd.read_csv(data_root / 'train.csv')
+        
+        # Check if fold_id column exists, if not generate folds using StratifiedKFold
+        if 'fold_id' not in train_df.columns:
+            print("fold_id column not found in train.csv, generating stratified folds...")
+            fold_map = load_folds(data_root)
+            # Reload the dataframe with the new fold_id column
+            train_df = pd.read_csv(data_root / 'train.csv')
+        
         if args.folds:
             folds = [int(x) for x in args.folds.split(',') if x.strip() != '']
         else:
@@ -769,3 +906,7 @@ if __name__ == '__main__':
 #Classification AUC (aneurysm present): 0.7189
 #Location macro AUC: 0.7840
 #Combined (mean) metric: 0.7514
+
+# Volume resizing examples:
+# python yolo_multiclass_validation_with_resize.py --weights path/to/weights.pt --val-fold 1 --use-volume-resize
+# python yolo_multiclass_validation_with_resize.py --weights path/to/weights.pt --val-fold 1 --use-volume-resize --volume-target-depth 64 --volume-target-height 256 --volume-target-width 256

@@ -103,13 +103,13 @@ def parse_args():
     ap.add_argument(
         "--neg-per-series",
         type=int,
-        default=1,
+        default=2,
         help="Number of negative slices to sample per series without positives (fallback when pos-neg-ratio=0).",
     )
     ap.add_argument(
         "--pos-neg-ratio",
         type=float,
-        default=0,
+        default=1,
         help=(
             "Negatives per positive for positive series (sampled from the same series). "
             "E.g., 2.0 adds ~2 negative slices for each positive slice (capped by available slices)."
@@ -133,14 +133,14 @@ def parse_args():
 
 
 def load_folds(root: Path) -> Dict[str, int]:
-    """Map SeriesInstanceUID -> fold_id using stratified folds from train_df.csv.
+    """Map SeriesInstanceUID -> fold_id using stratified folds from train.csv.
 
     Requirements:
-      - data/train_df.csv must exist
+      - data/train.csv must exist
       - Columns: 'SeriesInstanceUID', 'Aneurysm Present'
       - Will create N_FOLDS stratified splits on the series-level label
     """
-    df_path = root / "train_df.csv"
+    df_path = root / "train.csv"
 
     df = pd.read_csv(df_path)
 
@@ -155,7 +155,7 @@ def load_folds(root: Path) -> Dict[str, int]:
         for uid in series_df.loc[test_idx, "SeriesInstanceUID"].tolist():
             fold_map[uid] = i
     
-    # Update train_df.csv with the new folds
+    # Update train.csv with the new folds
     df["fold_id"] = df["SeriesInstanceUID"].astype(str).map(fold_map)
     df.to_csv(df_path, index=False)
     print(f"Updated {df_path} with new fold_id column based on N_FOLDS={N_FOLDS}")
@@ -285,7 +285,7 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
         )
 
     all_series: List[str] = []
-    train_df_path = root / "train_df.csv"
+    train_df_path = root / "train.csv"
     if train_df_path.exists():
         try:
             train_csv = pd.read_csv(train_df_path)
@@ -456,7 +456,7 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
             if args.pos_neg_ratio > 0 and n_slices > 0 and pos_saved > 0:
                 # Candidate indices are slices without a positive label
                 pos_indices: Set[int] = set()
-                for (sop, _x, _y, _cid) in labels_for_series:
+                for (sop, _x, _y, _cid, _f_idx) in labels_for_series:
                     idx = sop_to_idx.get(sop)
                     if idx is not None:
                         pos_indices.add(idx)
@@ -556,8 +556,8 @@ def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_sc
     yaml_text = "\n".join(
         [
             f"path: {relative_path}",
-            f"train: {relative_path}/images/train",
-            f"val: {relative_path}/images/val",
+            f"train: images/train",
+            f"val: images/val",
             "",
             "names:",
             *names_lines,
@@ -574,7 +574,7 @@ if __name__ == "__main__":
     rng = random.Random(args.seed)
     if args.generate_all_folds:
         # Generate per-fold datasets and YAMLs
-        for f in range(N_FOLDS):
+        for f in range(0,1):
             out_base, _ = generate_for_fold(f, args)
             yaml_dir = Path(args.yaml_out_dir)
             yaml_name = args.yaml_name_template.format(fold=f)

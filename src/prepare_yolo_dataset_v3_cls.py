@@ -5,6 +5,7 @@ import math
 import multiprocessing as mp
 import random
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple, Set
 
@@ -14,6 +15,15 @@ import pandas as pd
 import pydicom
 from scipy import ndimage
 from sklearn.model_selection import StratifiedKFold
+
+# Try to import CuPy for GPU acceleration, fallback to CPU if not available
+try:
+    import cupy as cp
+    CUPY_AVAILABLE = True
+    print("CuPy available - will use for 3D resizing when z-axis changes")
+except ImportError:
+    CUPY_AVAILABLE = False
+    print("CuPy not available - using CPU/OpenCV processing")
 
 # Allow importing project configs
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,8 +85,13 @@ def min_max_normalize_volume(volume: np.ndarray) -> np.ndarray:
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
 
 
-def load_and_process_volume(paths: List[Path], target_shape: Tuple[int, int, int] = (128, 512, 512), verbose: bool = False) -> Tuple[np.ndarray, Tuple[float, float, float], Dict[Tuple[int, int], int]]:
+def load_and_process_volume(paths: List[Path], target_shape: Tuple[int | None, int, int] = (None, 512, 512), verbose: bool = False) -> Tuple[np.ndarray, Tuple[float, float, float], Dict[Tuple[int, int], int]]:
     """Load DICOM slices, sort, stack, normalize and resize to target shape.
+    
+    Args:
+        paths: List of DICOM file paths
+        target_shape: (z, y, x) target shape. If z is None, keep original z dimension
+        verbose: Whether to print debug information
     
     Returns:
         volume: Processed volume of shape target_shape as uint8
@@ -127,25 +142,65 @@ def load_and_process_volume(paths: List[Path], target_shape: Tuple[int, int, int
     
     # Calculate zoom factors for resizing
     original_shape = volume.shape
+    if target_shape[0] is None:
+        # Keep original z dimension
+        final_target_shape = (original_shape[0], target_shape[1], target_shape[2])
+    else:
+        final_target_shape = target_shape
+    
     zoom_factors = (
-        target_shape[0] / original_shape[0],  # z factor
-        target_shape[1] / original_shape[1],  # y factor  
-        target_shape[2] / original_shape[2]   # x factor
+        final_target_shape[0] / original_shape[0],  # z factor
+        final_target_shape[1] / original_shape[1],  # y factor  
+        final_target_shape[2] / original_shape[2]   # x factor
     )
     
-    # Resize volume using scipy zoom
-    resized_volume = ndimage.zoom(volume, zoom_factors, order=1)  # Linear interpolation
+    # Choose optimal resizing method based on whether z-axis needs resizing
+    z_needs_resize = abs(zoom_factors[0] - 1.0) > 1e-6
+    
+    if z_needs_resize:
+        # Always use CuPy for GPU processing to match inference - no CPU fallback
+        if not CUPY_AVAILABLE:
+            raise RuntimeError("CuPy is required for GPU processing but not available. Please install CuPy.")
+        
+        
+        # Import CuPy's scipy-compatible ndimage module
+        from cupyx.scipy import ndimage as cp_ndimage
+        # Move volume to GPU
+        volume_gpu = cp.asarray(volume)
+        # Use CuPy's zoom function
+        resized_volume_gpu = cp_ndimage.zoom(volume_gpu, zoom_factors, order=1)
+        # Move back to CPU
+        resized_volume = cp.asnumpy(resized_volume_gpu)
+        # Clean up GPU memory immediately
+        del volume_gpu, resized_volume_gpu
+        cp.get_default_memory_pool().free_all_blocks()
+        if verbose:
+            print(f"[DEBUG] Used CuPy for 3D resize with z-factor={zoom_factors[0]:.3f}")
+    else:
+        # Use OpenCV for per-slice 2D resizing when z-axis unchanged (faster per experiments)
+        target_h, target_w = final_target_shape[1], final_target_shape[2]
+        if verbose:
+            print(f"[DEBUG] Using OpenCV for per-slice resize to {target_h}x{target_w} (z unchanged)")
+        
+        resized_slices = []
+        for slice_idx in range(volume.shape[0]):
+            slice_2d = volume[slice_idx]  # Shape: (H, W)
+            resized_slice = cv2.resize(slice_2d, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            resized_slices.append(resized_slice)
+        
+        resized_volume = np.stack(resized_slices, axis=0)
+        del resized_slices
     
     # Clear original volume to free memory
     del volume
     
     # Ensure exact target shape (zoom might have slight rounding differences)
-    if resized_volume.shape != target_shape:
+    if resized_volume.shape != final_target_shape:
         # Pad or crop to exact target shape
-        final_volume = np.zeros(target_shape, dtype=np.float32)
-        min_z = min(resized_volume.shape[0], target_shape[0])
-        min_y = min(resized_volume.shape[1], target_shape[1]) 
-        min_x = min(resized_volume.shape[2], target_shape[2])
+        final_volume = np.zeros(final_target_shape, dtype=np.float32)
+        min_z = min(resized_volume.shape[0], final_target_shape[0])
+        min_y = min(resized_volume.shape[1], final_target_shape[1]) 
+        min_x = min(resized_volume.shape[2], final_target_shape[2])
         final_volume[:min_z, :min_y, :min_x] = resized_volume[:min_z, :min_y, :min_x]
         resized_volume = final_volume
     
@@ -156,14 +211,15 @@ def load_and_process_volume(paths: List[Path], target_shape: Tuple[int, int, int
     origin_to_resized: Dict[Tuple[int, int], int] = {}
     for sorted_position, origin in enumerate(frame_origins):
         resized_position = round(sorted_position * zoom_factors[0])
-        resized_position = max(0, min(target_shape[0] - 1, resized_position))
+        resized_position = max(0, min(final_target_shape[0] - 1, resized_position))
         origin_to_resized[origin] = resized_position
     
     if verbose:
         print(f"[DEBUG] original volume shape: {original_shape}")
         print(f"[DEBUG] resized volume shape: {resized_volume.shape}")
-        print(f"[DEBUG] target shape: {target_shape}")
+        print(f"[DEBUG] target shape: {final_target_shape}")
         print(f"[DEBUG] zoom factors: {zoom_factors}")
+        print(f"[DEBUG] using CuPy: {CUPY_AVAILABLE}")
     
     return normalized_volume, zoom_factors, origin_to_resized
 
@@ -183,12 +239,12 @@ def build_box(x: float, y: float, box_size: int, w: int, h: int) -> Tuple[float,
 
 
 def ensure_yolo_dirs(base: Path):
-    for sub in ["images/train", "images/val", "labels/train", "labels/val"]:
+    for sub in ["train", "val"]:
         (base / sub).mkdir(parents=True, exist_ok=True)
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Prepare per-slice YOLO aneurysm dataset (no MIP/BGR)")
+    ap = argparse.ArgumentParser(description="Prepare per-slice classification dataset from DICOM volumes (no boxes)")
     ap.add_argument("--seed", type=int, default=SEED, help="Random seed")
     ap.add_argument("--val-fold", type=int, default=0, help="Fold id used for validation (ignored if --generate-all-folds)")
     ap.add_argument("--generate-all-folds", action="store_true", help="Generate one dataset per fold and write per-fold YAMLs")
@@ -198,7 +254,9 @@ def parse_args():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--workers", type=int, default=mp.cpu_count(), help="Number of worker processes for parallel processing")
     ap.add_argument("--mip-img-size", type=int, default=512, help="Final square image size for saved samples (0 = keep original)")
+    ap.add_argument("--z-axis-size", type=int, default=32, help="Final z-axis size for 3D volumes (None = keep original)")
     ap.add_argument("--fold-output-name", type=str, default="yolo_dataset", help="Base subdirectory under data/ for outputs; when --generate-all-folds, becomes {base}_fold{fold}")
+    ap.add_argument("--rgb", action="store_true", help="Save 3-channel rgb slices: B=next slice, G=current, R=previous")
     # Labeling scheme
     ap.add_argument(
         "--label-scheme",
@@ -207,17 +265,19 @@ def parse_args():
         default="locations",
         help="Use location-specific classes (from LABELS_TO_IDX) or single binary class 'aneurysm_present'",
     )
+    # baseline = 10
     # Negative sampling controls
     ap.add_argument(
         "--neg-per-series",
         type=int,
-        default=10,
+        default=2,
         help="Number of negative slices to sample per series without positives (fallback when pos-neg-ratio=0).",
     )
+    # baseline = 5
     ap.add_argument(
         "--pos-neg-ratio",
         type=float,
-        default=5,
+        default=1,
         help=(
             "Negatives per positive for positive series (sampled from the same series). "
             "E.g., 2.0 adds ~2 negative slices for each positive slice (capped by available slices)."
@@ -351,11 +411,15 @@ def process_series_worker(args_tuple):
         verbose,
         pos_neg_ratio,
         neg_per_series,
-        seed
+        seed,
+        use_rgb,
+        z_axis_size
     ) = args_tuple
     
     # Create local random generator for this worker
     local_rng = random.Random(seed + hash(uid) % 1000000)
+    # Build reverse mapping for location labels when needed
+    idx_to_label = {idx: name for name, idx in LABELS_TO_IDX.items()}
     
     try:
         if verbose:
@@ -370,9 +434,9 @@ def process_series_worker(args_tuple):
         if verbose:
             print(f"[DEBUG] Loading and processing volume for series {uid} with {len(paths)} files")
         
-        # Process entire volume using fixed strategy
+        # Process entire volume using configurable z-axis size
         volume, zoom_factors, origin_to_resized = load_and_process_volume(
-            paths, target_shape=(128, 512, 512), verbose=verbose
+            paths, target_shape=(z_axis_size, 512, 512), verbose=verbose
         )
         
         if verbose:
@@ -381,6 +445,15 @@ def process_series_worker(args_tuple):
         
         pos_saved = 0
         neg_saved = 0
+
+        # Helper to resolve class folder name by scheme
+        def class_name_for_id(class_id: int, is_negative: bool = False) -> str:
+            if label_scheme == "aneurysm_present":
+                return "no_aneurysm" if is_negative else "aneurysm_present"
+            # locations scheme
+            if is_negative:
+                return "background"
+            return idx_to_label.get(class_id, f"class_{class_id}")
         
         if labels_for_series:
             # Process positive series with labels
@@ -413,6 +486,13 @@ def process_series_worker(args_tuple):
                 
                 # Extract the positive slice from the processed volume
                 positive_slice = volume[resized_slice_idx]  # Shape: (512, 512)
+                if use_rgb:
+                    prev_idx = max(0, resized_slice_idx - 1)
+                    next_idx = min(volume.shape[0] - 1, resized_slice_idx + 1)
+                    r = volume[prev_idx]
+                    g = volume[resized_slice_idx]
+                    b = volume[next_idx]
+                    positive_slice = np.stack([r, g, b], axis=-1)
                 
                 # Scale coordinates to the resized image space
                 # Original coordinates are in the original slice dimensions
@@ -434,31 +514,23 @@ def process_series_worker(args_tuple):
                 scaled_x = x * (512.0 / original_width)
                 scaled_y = y * (512.0 / original_height)
                 
-                # Create naming for positive slice
+                # Create naming for positive slice and destination class directory
                 slice_stem = f"{uid}_{sop}_slice{resized_slice_idx}"
-                img_path = out_base / "images" / split / f"{slice_stem}.{image_ext}"
-                label_path = out_base / "labels" / split / f"{slice_stem}.txt"
+                class_dir = out_base / split / class_name_for_id(cls_id, is_negative=False)
+                img_path = class_dir / f"{slice_stem}.{image_ext}"
                 
-                if img_path.exists() and label_path.exists() and not overwrite:
+                if img_path.exists() and not overwrite:
                     pos_saved += 1
                     continue
-                    
-                # Ensure directories exist
-                img_path.parent.mkdir(parents=True, exist_ok=True)
-                label_path.parent.mkdir(parents=True, exist_ok=True)
-                    
+                
+                # Ensure directory exists
+                class_dir.mkdir(parents=True, exist_ok=True)
+                
                 # Save the positive slice as image
                 cv2.imwrite(str(img_path), positive_slice)
                 if verbose:
                     print(f"[DEBUG] saved positive slice to {img_path}")
                     print(f"[DEBUG] original coords: ({x}, {y}), scaled coords: ({scaled_x}, {scaled_y})")
-                
-                # Create bounding box for the scaled position
-                xc, yc, bw, bh = build_box(scaled_x, scaled_y, box_size, 512, 512)
-                
-                # Write label file
-                with open(label_path, "w") as f:
-                    f.write(f"{cls_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
                 
                 pos_saved += 1
             
@@ -488,7 +560,18 @@ def process_series_worker(args_tuple):
                     pos_slice_indices.add(resized_slice_idx)
                 
                 # Sample negative slices from processed volume
-                candidates = [i for i in range(128) if i not in pos_slice_indices]
+                n_slices = volume.shape[0]
+                candidates = [i for i in range(n_slices) if i not in pos_slice_indices]
+                # In RGB mode, ensure neither neighbor channel includes a positive slice
+                if use_rgb:
+                    candidates = [
+                        i for i in candidates
+                        if (max(0, i - 1) not in pos_slice_indices)
+                        and (min(n_slices - 1, i + 1) not in pos_slice_indices)
+                    ]
+                # Further reduce to non-overlapping RGB triplets: use only centers with valid neighbors, spaced by 3
+                if use_rgb:
+                    candidates = [i for i in candidates if 0 < i < n_slices - 1 and (i % 3 == 1)]
                 if candidates:
                     need = int(math.ceil(pos_neg_ratio * pos_saved))
                     k = min(need, len(candidates))
@@ -497,44 +580,59 @@ def process_series_worker(args_tuple):
                     
                     for slice_idx in pick:
                         neg_slice = volume[slice_idx]
+                        if use_rgb:
+                            prev_idx = max(0, slice_idx - 1)
+                            next_idx = min(volume.shape[0] - 1, slice_idx + 1)
+                            r = volume[prev_idx]
+                            g = volume[slice_idx]
+                            b = volume[next_idx]
+                            neg_slice = np.stack([r, g, b], axis=-1)
                         slice_stem = f"{uid}_slice{slice_idx}_neg"
-                        img_path = out_base / "images" / split / f"{slice_stem}.{image_ext}"
-                        label_path = out_base / "labels" / split / f"{slice_stem}.txt"
+                        class_dir = out_base / split / class_name_for_id(0, is_negative=True)
+                        img_path = class_dir / f"{slice_stem}.{image_ext}"
                         
-                        if img_path.exists() and label_path.exists() and not overwrite:
+                        if img_path.exists() and not overwrite:
                             continue
-                            
-                        # Ensure directories exist
-                        img_path.parent.mkdir(parents=True, exist_ok=True)
-                        label_path.parent.mkdir(parents=True, exist_ok=True)
-                            
+                        
+                        # Ensure directory exists
+                        class_dir.mkdir(parents=True, exist_ok=True)
+                        
                         cv2.imwrite(str(img_path), neg_slice)
-                        open(label_path, "w").close()  # Empty label file
                         neg_saved += 1
         else:
             # Negative series - sample random slices from processed volume
             need = max(0, int(neg_per_series))
             if need > 0:
                 # Sample random slice indices from processed volume
-                indices = list(range(128))  # Volume has 128 slices
+                n_slices = volume.shape[0]
+                if use_rgb:
+                    # Non-overlapping RGB triplets: centers at every 3rd slice with valid neighbors
+                    indices = [i for i in range(1, n_slices - 1) if (i % 3 == 1)]
+                else:
+                    indices = list(range(n_slices))
                 local_rng.shuffle(indices)
-                pick = indices[:min(need, 128)]
+                pick = indices[:min(need, len(indices))]
                 
                 for slice_idx in pick:
                     neg_slice = volume[slice_idx]
+                    if use_rgb:
+                        prev_idx = max(0, slice_idx - 1)
+                        next_idx = min(volume.shape[0] - 1, slice_idx + 1)
+                        r = volume[prev_idx]
+                        g = volume[slice_idx]
+                        b = volume[next_idx]
+                        neg_slice = np.stack([r, g, b], axis=-1)
                     slice_stem = f"{uid}_slice{slice_idx}_neg"
-                    img_path = out_base / "images" / split / f"{slice_stem}.{image_ext}"
-                    label_path = out_base / "labels" / split / f"{slice_stem}.txt"
+                    class_dir = out_base / split / class_name_for_id(0, is_negative=True)
+                    img_path = class_dir / f"{slice_stem}.{image_ext}"
                     
-                    if img_path.exists() and label_path.exists() and not overwrite:
+                    if img_path.exists() and not overwrite:
                         continue
-                        
-                    # Ensure directories exist
-                    img_path.parent.mkdir(parents=True, exist_ok=True)
-                    label_path.parent.mkdir(parents=True, exist_ok=True)
-                        
+                    
+                    # Ensure directory exists
+                    class_dir.mkdir(parents=True, exist_ok=True)
+                    
                     cv2.imwrite(str(img_path), neg_slice)
-                    open(label_path, "w").close()  # Empty label file
                     neg_saved += 1
         
         return {
@@ -567,8 +665,7 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
     ensure_yolo_dirs(out_base)
     if args.verbose:
         print(f"[DEBUG] output base: {out_base}")
-        print(f"[DEBUG] images: {out_base / 'images' / 'train'} | {out_base / 'images' / 'val'}")
-        print(f"[DEBUG] labels: {out_base / 'labels' / 'train'} | {out_base / 'labels' / 'val'}")
+        print(f"[DEBUG] train dir: {out_base / 'train'} | val dir: {out_base / 'val'}")
 
     # Ignore only known problematic series
     ignore_uids: Set[str] = set(
@@ -594,8 +691,8 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                 # Skip entries without a recognized location label
                 continue
         else:
-            # Binary: any annotation is class 0
-            cls_id = 0
+            # Binary classification: 1 = aneurysm_present (0 reserved for no_aneurysm)
+            cls_id = 1
         # Frame index can be NA/None; convert to Python int or None
         f_val = r.get("f", None)
         try:
@@ -661,15 +758,29 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
             args.verbose,
             args.pos_neg_ratio,
             args.neg_per_series,
-            args.seed
+            args.seed,
+            args.rgb,
+            args.z_axis_size
         ))
 
-    # Process series in parallel
+    # Process series in parallel with chunking for better memory management
     total_series = 0
     total_pos = 0
     total_neg = 0
     
-    print(f"Starting processing of {len(work_items)} series with {args.workers} workers...")
+    # Ensure CuPy is available for mandatory GPU processing
+    if not CUPY_AVAILABLE:
+        raise RuntimeError("CuPy is required for GPU processing but not available. Please install CuPy with: pip install cupy-cuda11x (or cupy-cuda12x)")
+    
+    # Limit workers when using GPU to avoid GPU memory contention
+    effective_workers = min(args.workers, 2)  # Always limit to max 2 workers for GPU processing
+    if args.workers > 2:
+        print(f"[INFO] Limiting to {effective_workers} workers for GPU processing (was {args.workers})")
+    
+    print(f"Starting processing of {len(work_items)} series with {effective_workers} workers...")
+    
+    # Process in chunks to avoid memory issues
+    chunk_size = max(1, min(50, len(work_items) // max(1, effective_workers)))
     
     if args.workers == 1:
         # Single-threaded processing for debugging
@@ -680,21 +791,23 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
             result = process_series_worker(item)
             results.append(result)
     else:
-        # Multi-threaded processing with timeout and progress reporting
+        # Multi-threaded processing with chunking and progress reporting
+        results = []
         try:
-            with mp.Pool(processes=args.workers) as pool:
-                # Use map_async with timeout to prevent hanging
-                async_result = pool.map_async(process_series_worker, work_items)
+            # Process in chunks to manage memory and provide progress feedback
+            for chunk_start in range(0, len(work_items), chunk_size):
+                chunk_end = min(chunk_start + chunk_size, len(work_items))
+                chunk = work_items[chunk_start:chunk_end]
                 
-                # Wait with progress reporting
-                completed = False
-                while not completed:
-                    try:
-                        results = async_result.get(timeout=30)  # 30 second timeout
-                        completed = True
-                    except mp.TimeoutError:
-                        print(f"Still processing... ({len(work_items)} series total)")
-                        continue
+                print(f"Processing chunk {chunk_start//chunk_size + 1}/{(len(work_items) + chunk_size - 1)//chunk_size} ({len(chunk)} series)")
+                
+                with mp.Pool(processes=effective_workers) as pool:
+                    chunk_results = pool.map(process_series_worker, chunk)
+                    results.extend(chunk_results)
+                
+                # Show progress
+                processed_so_far = len(results)
+                print(f"Completed {processed_so_far}/{len(work_items)} series")
         except Exception as e:
             print(f"Error in multiprocessing: {e}")
             print("Falling back to single-threaded processing...")
@@ -723,14 +836,14 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                     pos_neg_str = f"pos={result['pos']}, neg={result['neg']}"
                     print(f"  [DONE] {result['uid']} ({pos_neg_str})")
 
-    print(f"Series processed: {total_series}  (positive label files: {total_pos}, negative: {total_neg})")
-    print(f"YOLO dataset root: {out_base}")
+    print(f"Series processed: {total_series}  (pos images: {total_pos}, neg images: {total_neg})")
+    print(f"YOLO-cls dataset root: {out_base}")
     stats = {}
     for split in ["train", "val"]:
-        n_imgs = len(list((out_base / "images" / split).glob(f"*.{args.image_ext}")))
-        n_lbls = len(list((out_base / "labels" / split).glob("*.txt")))
-        print(f"{split}: images={n_imgs} labels={n_lbls}")
-        stats[split] = {"images": n_imgs, "labels": n_lbls}
+        # Count all images recursively under class subfolders
+        n_imgs = sum(1 for _ in (out_base / split).rglob(f"*.{args.image_ext}"))
+        print(f"{split}: images={n_imgs}")
+        stats[split] = {"images": n_imgs}
     return out_base, folds
 
 
@@ -741,19 +854,22 @@ def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_sc
     # Names section depends on labeling scheme
     names_lines: List[str] = []
     if label_scheme == "aneurysm_present":
-        names_lines.append("  0: aneurysm_present")
+        # Binary classification: infer from folders is possible, but provide names
+        names_lines.append("  0: no_aneurysm")
+        names_lines.append("  1: aneurysm_present")
     else:
-        # Invert LABELS_TO_IDX to ensure correct index order (locations)
+        # Invert LABELS_TO_IDX to ensure correct index order (locations) + background
         idx_to_label = {idx: name for name, idx in LABELS_TO_IDX.items()}
         max_idx = max(idx_to_label.keys()) if idx_to_label else -1
         for i in range(max_idx + 1):
             label = idx_to_label.get(i, f"class_{i}")
             names_lines.append(f"  {i}: {label}")
+        names_lines.append(f"  {max_idx + 1}: background")
     yaml_text = "\n".join(
         [
             f"path: {relative_path}",
-            f"train: images/train",
-            f"val: images/val",
+            f"train: train",
+            f"val: val",
             "",
             "names:",
             *names_lines,
@@ -761,8 +877,8 @@ def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_sc
         ]
     )
     with open(yaml_dir / yaml_name, "w") as f:
-        f.write("# Auto-generated by prepare_yolo_dataset_v3.py\n")
-        f.write("# NOTE: Images are 512x512 slices extracted from volumes processed as: load->normalize->sort->stack->resize(128x512x512)\n")
+        f.write("# Auto-generated by prepare_yolo_dataset_v3_cls.py\n")
+        f.write("# NOTE: YOLO classification format: train/val/<class_name>/*.{jpg|png} with 512x512 slices.\n")
         f.write(yaml_text)
 
 
@@ -771,7 +887,7 @@ if __name__ == "__main__":
     rng = random.Random(args.seed)
     if args.generate_all_folds:
         # Generate per-fold datasets and YAMLs
-        for f in range(N_FOLDS):
+        for f in range(0,1):
             out_base, _ = generate_for_fold(f, args)
             yaml_dir = Path(args.yaml_out_dir)
             yaml_name = args.yaml_name_template.format(fold=f)
@@ -780,13 +896,32 @@ if __name__ == "__main__":
         print(f"YAMLs written under: {args.yaml_out_dir}")
     else:
         out_base, _ = generate_for_fold(args.val_fold, args)
-        print("Done. To train, point Ultralytics to a YAML like:")
+        print("Done. To train (YOLO-cls), point Ultralytics to a YAML like:")
         print(f"  path: {out_base}")
-        print("  train: images/train\n  val: images/val")
+        print("  train: train\n  val: val")
 
 
-# Volume-processed slice extraction (load->normalize->sort->stack->resize(128x512x512) then extract positive slices)
-#Locations (multiclass, original behavior):
-#Example: python3 -m src.prepare_yolo_dataset_v3 --generate-all-folds --fold-output-name yolo_resize_128_512_512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_resize_128_512_512_fold{fold}.yaml --overwrite --workers 8
-#Binary (single class "aneurysm_present"):
-#Example: python3 -m src.prepare_yolo_dataset_v3 --generate-all-folds --fold-output-name yolo_resize_128_512_512_bin --label-scheme aneurysm_present --yaml-out-dir configs --yaml-name-template yolo_resize_128_512_512_bin_fold{fold}.yaml --overwrite --workers 8
+#python3 -m src.prepare_yolo_dataset_v3_cls \
+#  --generate-all-folds \
+#  --label-scheme aneurysm_present \
+#  --fold-output-name yolo_cls_bgr \
+#  --yaml-out-dir configs \
+#  --yaml-name-template yolo_cls_bgr_fold{fold}.yaml \
+#  --rgb --overwrite --workers 2 \
+#  --z-axis-size 64
+#
+# Note: This script supports configurable z-axis resizing and uses optimized resizing:
+# - When --z-axis-size is not specified: keeps original z-axis dimension
+# - When --z-axis-size is specified: resizes to the target z dimension
+# - OpenCV for per-slice resizing when z-axis unchanged (faster per experiments)
+# - CuPy for 3D resizing when z-axis changes (better for 3D operations)
+# CuPy will automatically fallback to CPU if not available.
+
+
+
+#  python3 -m src.prepare_yolo_dataset_v3_cls \
+#    --workers 2 \
+#    --rgb \
+#    --z-axis-size 32 \
+#    --label-scheme aneurysm_present \
+#    --generate-all-folds

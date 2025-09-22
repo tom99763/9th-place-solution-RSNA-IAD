@@ -19,7 +19,8 @@ from monai.transforms import (
     Activations,
     AsDiscrete,
     RandFlipd,
-    RandRotate90d
+    RandRotate90d,
+    RandSpatialCropSamplesd
 )
 from monai.data import CacheDataset, decollate_batch, list_data_collate
 from monai.inferers import sliding_window_inference
@@ -40,7 +41,7 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
-class UNetDataset(Dataset):
+class AneurysmCubesDataset(Dataset):
     def __init__(self, npz_files, transform=None, label_threshold=1e-6):
         self.npz_files = npz_files
         self.transform = transform
@@ -51,8 +52,10 @@ class UNetDataset(Dataset):
 
     def __getitem__(self, idx):
         data = np.load(self.npz_files[idx])
-        volume = data['volume']
-        mask = data['mask']
+        
+        # Convert uint8 volume back to float [0, 1] range
+        volume = data['volume'].astype(np.float32) / 255.0
+        mask = data['mask'].astype(np.float32)
         
         sample = {'image': volume, 'label': mask}
 
@@ -68,10 +71,72 @@ class UNetDataset(Dataset):
         
         return sample
 
+import torch.nn.functional as F
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+    
+    def forward(self, inputs, targets):
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-bce_loss)
+        focal_loss = self.alpha * (1-pt)**self.gamma * bce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1e-6):
+        super().__init__()
+        self.smooth = smooth
+    
+    def forward(self, inputs, targets):
+        inputs = torch.sigmoid(inputs)
+        
+        # Flatten tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        
+        intersection = (inputs * targets).sum()
+        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
+        
+        return 1 - dice
+
+class CombinedLoss(nn.Module):
+    def __init__(self, focal_weight=1.0, dice_weight=1.0, alpha=1, gamma=2):
+        super().__init__()
+        self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma)
+        self.dice_loss = DiceLoss()
+        self.focal_weight = focal_weight
+        self.dice_weight = dice_weight
+    
+    def forward(self, inputs, targets):
+        focal = self.focal_loss(inputs, targets)
+        dice = self.dice_loss(inputs, targets)
+        return self.focal_weight * focal + self.dice_weight * dice
+
 class UNetModel(pl.LightningModule):
     def __init__(self, lr: float = 1e-4, pos_weight: float = 3.0):
         super().__init__()
         self.save_hyperparameters()
+        #self.model = UNet(
+        #    spatial_dims=3,
+        #    in_channels=1,
+        #    out_channels=1,
+        #    channels= (32, 64, 128, 256),
+        #    strides=(2, 2, 1),
+        #    num_res_units=2,
+        #    dropout=0.1,
+        #)
+
         self.model = DynUNet(
             spatial_dims=3,
             in_channels=1,
@@ -79,14 +144,15 @@ class UNetModel(pl.LightningModule):
             kernel_size=[3, 3, 3, 3],
             strides=[1, 2, 2, 2],
             upsample_kernel_size=[2, 2, 2],
-            filters=[32, 64, 128, 256],  # This is your "channels" equivalent
+            filters=[64, 128, 256, 512], 
             dropout=0.1,
         )
-        # BCE with logits for soft Gaussian labels; support class imbalance via pos_weight
+        # BCE with logits for soft Gaussian labels; class imbalance via pos_weight
         self.register_buffer("bce_pos_weight", torch.tensor(float(pos_weight)))
         self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.bce_pos_weight)
+        #self.loss_fn = CombinedLoss(focal_weight=1.0, dice_weight=1.0, gamma=2)
         self.dice_metric = DiceMetric(include_background=False, reduction="mean")
-        # For metrics: threshold predictions and labels when computing Dice
+        # Use 0.1 threshold for tiny lesion sensitivity
         self.post_pred = Compose([Activations(sigmoid=True), AsDiscrete(threshold=0.1)])
         self.post_label = Compose([AsDiscrete(threshold=0.1)]) 
         # For classification accuracy based on max confidence
@@ -106,7 +172,7 @@ class UNetModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx: int):
         x, y = batch["image"], batch["label"]
-        y_hat = sliding_window_inference(x, (256, 256, 16), 4, self.model, overlap=0.125)
+        y_hat = sliding_window_inference(x, (32, 128, 128), 4, self.model, overlap=0.25)
         val_loss = self.loss_fn(y_hat, y)
         self.log("val_loss", val_loss, prog_bar=True, on_step=False, on_epoch=True)
 
@@ -170,6 +236,29 @@ class UNetModel(pl.LightningModule):
             "lr_scheduler": {"scheduler": scheduler, "monitor": "val_loss"},
         }
 
+def load_fold_files(cubes_dir: Path, val_fold: int = 0):
+    """Load NPZ files from aneurysm cubes, using specified fold as validation."""
+    cubes_dir = Path(cubes_dir)
+    
+    # Get all fold directories
+    fold_dirs = [d for d in cubes_dir.iterdir() if d.is_dir() and d.name.startswith('fold_')]
+    
+    train_files = []
+    val_files = []
+    
+    for fold_dir in fold_dirs:
+        fold_num = int(fold_dir.name.split('_')[1])
+        npz_files = list(fold_dir.glob('*.npz'))
+        
+        if fold_num == val_fold:
+            val_files.extend(npz_files)
+            print(f"Validation fold {fold_num}: {len(npz_files)} files")
+        else:
+            train_files.extend(npz_files)
+            print(f"Training fold {fold_num}: {len(npz_files)} files")
+    
+    return train_files, val_files
+
 def main(args):
     set_determinism(seed=42)
     # Silence MONAI sampler warnings like "Num foregrounds 0..."
@@ -181,12 +270,11 @@ def main(args):
     except Exception:
         pass
 
-    # Get label threshold from args (default 0.5)
-    label_threshold = getattr(args, 'label_threshold', 0)
+    # Get label threshold from args (default 0.1 for aneurysm cubes)
+    label_threshold = getattr(args, 'label_threshold', 0.1)
 
-    # Load file paths
-    train_files = list(Path(args.train_dir).glob('*.npz'))
-    val_files = list(Path(args.val_dir).glob('*.npz'))
+    # Load file paths using fold-based splitting
+    train_files, val_files = load_fold_files(args.cubes_dir, args.val_fold)
 
     # Use small dataset if specified
     if getattr(args, 'small_dataset', False):
@@ -198,12 +286,11 @@ def main(args):
         try:
             d = np.load(npz_path)
             m = d['mask']
-            print(f"Max mask value in {npz_path.name}: {m.max():.6f},  np.sum(mask > 0) = {np.sum(m > 0)}")
             return bool((m > thr).any())
         except Exception:
             return False
 
-    pos_thr = float(getattr(args, 'pos_thr', 1e-6))
+    pos_thr = float(getattr(args, 'pos_thr', 0.1))
     pos_files = [p for p in train_files if has_foreground(p, pos_thr)]
     neg_files = [p for p in train_files if p not in set(pos_files)]
 
@@ -211,7 +298,7 @@ def main(args):
     val_pos_files = [p for p in val_files if has_foreground(p, pos_thr)]
     val_neg_files = [p for p in val_files if p not in set(val_pos_files)]
 
-    print(f"Train vols: {len(train_files)} (pos={len(pos_files)}, neg={len(neg_files)}), Val vols: {len(val_files)} (pos={len(val_pos_files)}), pos_thr={pos_thr}")
+    print(f"Train vols: {len(train_files)} (pos={len(pos_files)}, neg={len(neg_files)}), Val vols: {len(val_files)} (pos={len(val_pos_files)}, neg={len(val_neg_files)}), pos_thr={pos_thr}")
 
     # Optionally keep only positive volumes for train/val
     if getattr(args, 'only_positive', False):
@@ -224,22 +311,21 @@ def main(args):
         val_files = val_pos_files
         val_neg_files = []
 
-
-    # Transforms
+    # Transforms - adapted for aneurysm cubes (32x128x128)
     train_transforms = Compose([
         EnsureChannelFirstd(keys=["image", "label"], channel_dim="no_channel"),
         NormalizeIntensityd(keys="image"),
         Orientationd(keys=["image", "label"], axcodes="RAS"),
-
-        RandCropByPosNegLabeld(
+        # rotate
+        RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=(1,2)),
+        # flip
+        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
+        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
+        # Random spatial cropping - simpler and more reliable
+        RandSpatialCropSamplesd(
             keys=['image', 'label'],
-            label_key='label',
-            spatial_size=(32, 128, 128),
-            pos=1,
-            neg=1,
-            num_samples=2,
-            image_key='image',
-            image_threshold=0
+            roi_size=(32, 128, 128),  # Smaller crops to fit in 32x128x128 volumes
+            num_samples=8
         ),
         EnsureTyped(keys=["image", "label"]),
     ])
@@ -252,12 +338,12 @@ def main(args):
     ])
 
     # Datasets
-    train_ds = UNetDataset(train_files, transform=train_transforms, label_threshold=label_threshold)
-    val_ds = UNetDataset(val_files, transform=val_transforms, label_threshold=label_threshold)
+    train_ds = AneurysmCubesDataset(train_files, transform=train_transforms, label_threshold=label_threshold)
+    val_ds = AneurysmCubesDataset(val_files, transform=val_transforms, label_threshold=label_threshold)
 
     # Optional: visualize transformed training samples
     if getattr(args, "viz_samples", 0) and args.viz_samples > 0:
-        out_dir = Path(getattr(args, "viz_dir", "outputs/transform_viz"))
+        out_dir = Path(getattr(args, "viz_dir", "outputs/aneurysm_cubes_viz"))
         out_dir.mkdir(parents=True, exist_ok=True)
         viz_loader = DataLoader(
             train_ds,
@@ -303,29 +389,6 @@ def main(args):
                         ax.axis("off")
                         fig.savefig(out_dir / f"train_transform_{sample_count:03d}_z{z:03d}.png", bbox_inches="tight", dpi=150)
                         plt.close(fig)
-                elif xi.ndim == 3:  # C,H,W
-                    img2d = xi[0]
-                    lbl2d = yi[0] if yi.ndim == 3 else yi
-                    fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-                    ax.imshow(img2d, cmap="gray")
-                    thr = 0.5  # Use 0.5 since labels are binarized to 0/1
-                    mask_vis = np.ma.masked_where(lbl2d <= thr, lbl2d)
-                    ax.imshow(mask_vis, cmap="turbo", alpha=0.65)
-                    bin_lbl = (lbl2d > thr).astype(np.uint8)
-                    if bin_lbl.any():
-                        ax.contour(bin_lbl, levels=[0.5], colors="lime", linewidths=0.8)
-                        pos_idx = np.argwhere(lbl2d > thr)
-                        if pos_idx.size > 0:
-                            y_max, x_max = np.unravel_index(lbl2d.argmax(), lbl2d.shape)
-                            print(f"[viz] sample {sample_count}: label_n={len(pos_idx)}, max@(y={y_max}, x={x_max})")
-                    else:
-                        print(f"[viz] sample {sample_count}: no label > {thr}")
-                    ax.set_title(f"sample {sample_count}")
-                    ax.axis("off")
-                    fig.savefig(out_dir / f"train_transform_{sample_count:03d}.png", bbox_inches="tight", dpi=150)
-                    plt.close(fig)
-                else:
-                    continue
                 sample_count += 1
             if sample_count >= args.viz_samples:
                 break
@@ -336,12 +399,11 @@ def main(args):
     # DataLoaders
     train_loader = DataLoader(
         train_ds,
-        batch_size=8,
+        batch_size=2,  # Smaller batch size for 3D data
         shuffle=True,
         num_workers=4,
         collate_fn=list_data_collate,
         pin_memory=False,  
-
     )
     val_loader = DataLoader(
         val_ds,
@@ -350,7 +412,6 @@ def main(args):
         num_workers=2,
         collate_fn=list_data_collate,
         pin_memory=False,  
-
     )
 
     # Model
@@ -381,45 +442,25 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train-dir', type=str, required=True, help='Training data directory')
-    parser.add_argument('--val-dir', type=str, required=True, help='Validation data directory')
+    parser.add_argument('--cubes-dir', type=str, default='aneurysm_cubes_v2', help='Aneurysm cubes directory')
+    parser.add_argument('--val-fold', type=int, default=0, help='Fold to use for validation (0-4)')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--epochs', type=int, default=500, help='Number of epochs')
     parser.add_argument('--viz-samples', type=int, default=0, help='Save this many transformed training samples and exit after saving')
-    parser.add_argument('--viz-dir', type=str, default='outputs/transform_viz', help='Directory to save transform visualizations')
-    parser.add_argument('--pos-weight', type=float, default=128.0, help='Positive weight for BCE loss (higher for foreground)')
+    parser.add_argument('--viz-dir', type=str, default='outputs/aneurysm_cubes_viz', help='Directory to save transform visualizations')
+    parser.add_argument('--pos-weight', type=float, default=1024.0, help='Positive weight for BCE loss (higher for foreground)')
     parser.add_argument('--small-dataset', action='store_true', help='Use 10% of the dataset for quick testing')
     parser.add_argument('--wandb', default=True, action='store_true', help='Enable W&B logging')
-    parser.add_argument('--wandb-project', type=str, default='unet_training', help='W&B project name')
+    parser.add_argument('--wandb-project', type=str, default='unet_aneurysm_cubes', help='W&B project name')
     parser.add_argument('--wandb-entity', type=str, default='', help='W&B entity (team/user)')
     parser.add_argument('--wandb-name', type=str, default='', help='W&B run name')
     parser.add_argument('--wandb-group', type=str, default='', help='W&B group')
-    parser.add_argument('--label-threshold', type=float, default=1e-6, help='Threshold for binarizing labels to hard (0 or 1)')
-    parser.add_argument('--only-positive', default=True, action='store_true', help='Keep only positive training volumes (mask > pos-thr)')
-    parser.add_argument('--only-positive-val', default=True, action='store_true', help='Keep only positive validation volumes (mask > pos-thr)')
+    parser.add_argument('--label-threshold', type=float, default=0.1, help='Threshold for binarizing labels to hard (0 or 1)')
+    parser.add_argument('--pos-thr', type=float, default=0.1, help='Threshold for identifying positive volumes')
+    parser.add_argument('--only-positive', default=False, action='store_true', help='Keep only positive training volumes (mask > pos-thr)')
+    parser.add_argument('--only-positive-val', default=False, action='store_true', help='Keep only positive validation volumes (mask > pos-thr)')
     args = parser.parse_args()
-    import time
-    time.sleep(60*60)
     main(args)
 
-
-#python train_unet_concise.py \
-#  --train-dir data/unet_dataset/train \
-#  --val-dir data/unet_dataset/val \
-#  --lr 1e-4 \
-#  --epochs 100
-# Now uses RandCropByLabelClassesd for focused training patches
-
-
-#python3 train_unet_concise.py \
-#  --train-dir data/unet_dataset/train \
-#  --val-dir data/unet_dataset/val \
-#  --lr 1e-4 \
-#  --epochs 100 \
-#  --small-dataset
-
-# python3 train_unet_concise.py --train-dir data/unet_dataset/train --val-dir data/unet_dataset/val --lr 1e-4 --epochs 100 
-#$ cd /home/sersasj/RSNA-IAD-Codebase && python3 train_unet_concise.py --train-dir data/Dataset001_unet_isotropic_resize/train --val-dir data/Dataset001_unet_isotropic_resize/test --small-dataset
-
-
-#sersasj@DESKTOP-8U9D0KJ:~/RSNA-IAD-Codebase$ python3 '/home/sersasj/RSNA-IAD-Codebase/train_unet_concise.py' --train-dir /home/sersasj/RSNA-IAD-Codebase/data/Dataset001_unet_isotropic_resize/train --val-dir /home/sersasj/RSNA-IAD-Codebase/data/Dataset001_unet_isotropic_resize/test
+# Example usage:
+# python3 train_unet_aneurysm_cubes.py --cubes-dir aneurysm_cubes --val-fold 0 --lr 1e-4 --epochs 500 --small-dataset
