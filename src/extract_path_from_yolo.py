@@ -179,6 +179,9 @@ def main():
             os.makedirs(data_path/f'patch_data/fold{i}')
 
     for uid in tqdm(uids):
+        series_path = data_path / f'series/{uid}'
+        if not os.path.exists(series_path):
+            continue
         count_next = 0
         for i in range(len(YOLO_MODELS)):
             if not os.path.exists(data_path / f'patch_data/fold{i}/{uid}'):
@@ -187,9 +190,6 @@ def main():
                 count_next += 1
                 continue
         if count_next == 2:
-            continue
-        series_path = data_path/f'series/{uid}'
-        if not os.path.exists(series_path):
             continue
         all_slices = process_dicom_for_yolo(series_path)
         vol = load_dicom_series(series_path)
