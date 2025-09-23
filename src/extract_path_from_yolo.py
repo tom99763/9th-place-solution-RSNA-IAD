@@ -195,6 +195,7 @@ def main():
                                                    YOLO_MODELS= YOLO_MODELS,
                                                    iou_thresh=iou_thresh, k=k_candi)
         except Exception as e:
+            print(uid)
             print(e)
             continue
 
