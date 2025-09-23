@@ -83,9 +83,9 @@ class AneurysmVolumeProcessor3Planes:
             return {
                 'cartesian': torch.from_numpy(np.stack(cartesian_channels, axis=0)).float(),
                 'logpolar': torch.from_numpy(np.stack(logpolar_channels, axis=0)).float(),
-                'axial': torch.from_numpy(planes['axial'][0]).unsqueeze(0).float(),     # (1, K, N, N)
-                'sagittal': torch.from_numpy(planes['sagittal'][0]).unsqueeze(0).float(),
-                'coronal': torch.from_numpy(planes['coronal'][0]).unsqueeze(0).float()
+                'axial': torch.from_numpy(planes['axial'][0]).float(),
+                'sagittal': torch.from_numpy(planes['sagittal'][0]).float(),
+                'coronal': torch.from_numpy(planes['coronal'][0]).float()
             }
 
         # --- Parallel execution ---
