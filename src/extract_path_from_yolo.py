@@ -192,6 +192,8 @@ def main():
         if count_next == 2:
             continue
         all_slices = process_dicom_for_yolo(series_path)
+        if len(all_slices) == 0:
+            continue
         vol = load_dicom_series(series_path)
         vol_norm = normalize_vol(vol)
         try:

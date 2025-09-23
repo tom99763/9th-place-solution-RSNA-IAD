@@ -17,6 +17,7 @@ class LitTimmClassifier(pl.LightningModule):
         self.model = model
         self.cfg = cfg
         self.loc_loss_fn = torch.nn.BCEWithLogitsLoss()
+        #BCELoss * 0.2 + DICELoss * 0.8.
         self.cls_loss_fn = torch.nn.BCEWithLogitsLoss()
 
         self.num_classes = self.cfg.params.num_classes
