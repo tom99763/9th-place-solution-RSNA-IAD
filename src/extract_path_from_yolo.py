@@ -203,13 +203,13 @@ def main():
                 npz_path = data_path / f'patch_data/fold{idx}/{uid}/patch_{patch_id}.npz'
                 np.savez_compressed(
                     npz_path,
-                    cartesian=cartesian,
-                    logpolar=logpolar,
-                    axial=axial,
-                    sagittal=sagittal,
-                    coronal=coronal
+                    cartesian=cartesian, #center slice, mip, vessel mip
+                    logpolar=logpolar, #center slice, mip, vessel mip
+                    axial=axial, #(1, patch_depth, patch_size, patch_size)
+                    sagittal=sagittal, #(1, patch_depth, patch_size, patch_size)
+                    coronal=coronal #(1, patch_depth, patch_size, patch_size)
                 )
 
 
 if __name__ == '__main__':
-    pass
+    main()
