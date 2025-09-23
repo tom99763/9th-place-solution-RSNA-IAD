@@ -27,19 +27,37 @@ def load_dicom_series(series_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
 
     slices = [pydicom.dcmread(str(p), force=True) for p in dcm_paths]
 
-    # Orientation & sorting
-    orientation = np.array(slices[0].ImageOrientationPatient).reshape(2, 3)
+    # --- Orientation ---
+    orientation = slices[0].get("ImageOrientationPatient", [1, 0, 0, 0, 1, 0])
+    orientation = np.array(orientation, dtype=np.float32).reshape(2, 3)
     row_cos, col_cos = orientation
     normal = np.cross(row_cos, col_cos)
-    slices.sort(key=lambda ds: np.dot(ds.ImagePositionPatient, normal))
 
-    # HU scaling
+    # --- Sorting ---
+    if hasattr(slices[0], "ImagePositionPatient"):
+        slices.sort(key=lambda ds: np.dot(ds.get("ImagePositionPatient", [0, 0, 0]), normal))
+    else:
+        # fallback: sort by InstanceNumber if available
+        slices.sort(key=lambda ds: getattr(ds, "InstanceNumber", 0))
+
+    # --- HU scaling ---
     slope = float(getattr(slices[0], "RescaleSlope", 1.0))
     intercept = float(getattr(slices[0], "RescaleIntercept", 0.0))
     volume = np.stack([ds.pixel_array for ds in slices]).astype(np.float32)
     volume = volume * slope + intercept
-    return volume
 
+    # # --- Spacing & affine ---
+    # dz = float(getattr(slices[0], "SliceThickness", 1.0))
+    # dy, dx = getattr(slices[0], "PixelSpacing", [1.0, 1.0])
+    # spacing = np.array([dz, dy, dx], dtype=np.float32)
+    #
+    # affine = np.eye(4, dtype=np.float32)
+    # affine[0:3, 0] = row_cos * dx
+    # affine[0:3, 1] = col_cos * dy
+    # affine[0:3, 2] = normal * dz
+    # affine[0:3, 3] = slices[0].get("ImagePositionPatient", [0.0, 0.0, 0.0])
+
+    return volume
 
 def normalize_vol(vol):
     p2, p98 = np.percentile(vol, (2, 98))
