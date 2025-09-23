@@ -1,3 +1,5 @@
+import os.path
+
 from procs.proc_read_series import *
 from procs.proc_patch_exraction import *
 from ultralytics import YOLO
@@ -187,6 +189,8 @@ def main():
         if count_next == 2:
             continue
         series_path = data_path/f'series/{uid}'
+        if not os.path.exists(series_path):
+            continue
         all_slices = process_dicom_for_yolo(series_path)
         vol = load_dicom_series(series_path)
         vol_norm = normalize_vol(vol)
@@ -213,8 +217,8 @@ def main():
                 npz_path = data_path / f'patch_data/fold{idx}/{uid}/patch_{patch_id}.npz'
                 np.savez_compressed(
                     npz_path,
-                    cartesian=cartesian, #(num_patches, 3, patch_size, patch_size); 3: center slice, mip, vessel mip
-                    logpolar=logpolar, #(num_patches, 3, patch_size, patch_size); 3: center slice, mip, vessel mip
+                    cartesian=cartesian, #(num_patches, 2, patch_size, patch_size); 3: center slice, mip
+                    logpolar=logpolar, #(num_patches, 2, patch_size, patch_size); 3: center slice, mip
                     axial=axial, #(patch_depth, patch_size, patch_size)
                     sagittal=sagittal, #(patch_depth, patch_size, patch_size)
                     coronal=coronal #(patch_depth, patch_size, patch_size)
