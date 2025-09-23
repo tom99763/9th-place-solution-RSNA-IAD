@@ -176,7 +176,7 @@ def main():
         if not os.path.exists(data_path/f'patch_data/fold{i}'):
             os.makedirs(data_path/f'patch_data/fold{i}')
 
-    for uid in tqdm(uids.values()):
+    for uid in tqdm(uids):
         for i in range(len(YOLO_MODELS)):
             if not os.path.exists(data_path / f'patch_data/fold{i}/{uid}'):
                 os.makedirs(data_path / f'patch_data/fold{i}/{uid}')
