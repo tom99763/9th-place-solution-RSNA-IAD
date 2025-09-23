@@ -4,26 +4,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
-# class MultiBackboneModel(nn.Module):
-#     """Flexible model that can use different backbones"""
-#     def __init__(self, model_name, **kwargs):
-#         super().__init__()
-#         '''
-#         2D: Input volume with size Depth(as channel) x Height x Width -> dxhxw feature map
-#         3D: expand channel to 1xdxhxw -> lstm along depth -> cls predictions
-#         '''
-#         self.model_name = model_name
-#         self.loc_classifier = timm.create_model(
-#              model_name,
-#              num_classes=num_classes,
-#              pretrained=pretrained,
-#              in_chans=in_chans,
-#             drop_rate= drop_rate,
-#             drop_path_rate= drop_path_rate
-#         )
-#
-#     def forward(self, image):
-#         return self.loc_classifier(image)
+class MultiBackboneModel(nn.Module):
+    """Flexible model that can use different backbones"""
+    def __init__(self, model_name, num_classes, pretrained, in_chans, drop_rate, drop_path_rate):
+        super().__init__()
+        '''
+        2D: Input volume with size Depth(as channel) x Height x Width -> dxhxw feature map
+        3D: expand channel to 1xdxhxw -> lstm along depth -> cls predictions
+        '''
+        self.model_name = model_name
+        self.loc_classifier = timm.create_model(
+             model_name,
+             num_classes=num_classes,
+             pretrained=pretrained,
+             in_chans=in_chans,
+            drop_rate= drop_rate,
+            drop_path_rate= drop_path_rate
+        )
+
+    def forward(self, image):
+        return self.loc_classifier(image)
 
 # ------------------------
 # ConvGRUCell
@@ -100,7 +100,7 @@ class ConvGRU(nn.Module):
 # ------------------------
 # MultiBackboneModel with ConvGRU
 # ------------------------
-class MultiBackboneModel(nn.Module):
+class ConvGRUModel(nn.Module):
     def __init__(self,
                  model_name="tf_efficientnetv2_s.in21k_ft_in1k",
                  num_classes=14,
