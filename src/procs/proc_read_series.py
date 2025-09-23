@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # If you use MAX_WORKERS in process_dicom_for_yolo, define it somewhere:
 MAX_WORKERS = os.cpu_count() or 4
-def load_dicom_series(series_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
+def load_dicom_series(series_dir: Path):
     """
     Load a DICOM series into a 3D HU volume with affine matrix.
 
@@ -46,6 +46,9 @@ def load_dicom_series(series_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
     volume = np.stack([ds.pixel_array for ds in slices]).astype(np.float32)
     volume = volume * slope + intercept
 
+    if volume.ndim == 4 and volume.shape[0] == 1:
+        volume = volume[0]  # remove extra batch dimension
+
     # # --- Spacing & affine ---
     # dz = float(getattr(slices[0], "SliceThickness", 1.0))
     # dy, dx = getattr(slices[0], "PixelSpacing", [1.0, 1.0])
@@ -56,7 +59,6 @@ def load_dicom_series(series_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
     # affine[0:3, 1] = col_cos * dy
     # affine[0:3, 2] = normal * dz
     # affine[0:3, 3] = slices[0].get("ImagePositionPatient", [0.0, 0.0, 0.0])
-
     return volume
 
 def normalize_vol(vol):

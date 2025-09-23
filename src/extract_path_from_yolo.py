@@ -177,18 +177,27 @@ def main():
             os.makedirs(data_path/f'patch_data/fold{i}')
 
     for uid in tqdm(uids):
+        count_next = 0
         for i in range(len(YOLO_MODELS)):
             if not os.path.exists(data_path / f'patch_data/fold{i}/{uid}'):
                 os.makedirs(data_path / f'patch_data/fold{i}/{uid}')
             else:
+                count_next += 1
                 continue
+        if count_next == 2:
+            continue
         series_path = data_path/f'series/{uid}'
         all_slices = process_dicom_for_yolo(series_path)
         vol = load_dicom_series(series_path)
         vol_norm = normalize_vol(vol)
-        location_preds = predict_yolo_ensemble(all_slices, conf_yolo=0.01,
-                                               YOLO_MODELS= YOLO_MODELS,
-                                               iou_thresh=iou_thresh, k=k_candi)
+        try:
+            location_preds = predict_yolo_ensemble(all_slices, conf_yolo=0.01,
+                                                   YOLO_MODELS= YOLO_MODELS,
+                                                   iou_thresh=iou_thresh, k=k_candi)
+        except Exception as e:
+            print(e)
+            continue
+
         for idx, (key, value) in enumerate(location_preds.items()):
             yolo_points = location_preds[key][:, [2, 1, 0]].astype('int32')
             outputs = aneurysm_proc(vol_norm, yolo_points) #list:[patch0, ...]
