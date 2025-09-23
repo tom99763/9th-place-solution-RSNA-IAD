@@ -2,6 +2,7 @@ from procs.proc_read_series import *
 from procs.proc_patch_exraction import *
 from ultralytics import YOLO
 import pandas as pd
+from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -17,8 +18,13 @@ torch.backends.cudnn.allow_tf32 = True
 
 
 # ====================================================
-# YOLO Configuration
+# Configuration
 # ====================================================
+patch_size = 128
+patch_depth = 31
+iou_thresh = 20.0
+k_candi = 3
+
 IMG_SIZE = 512
 BATCH_SIZE = int(os.getenv("YOLO_BATCH_SIZE", "32"))
 MAX_WORKERS = 4
@@ -44,19 +50,18 @@ YOLO_LABELS = sorted(list(YOLO_LABELS_TO_IDX.keys()))
 
 YOLO_MODEL_CONFIGS = [
     {
-        "path": "/kaggle/input/rsna-sergio-models/cv_y11m_with_mix_up_mosaic_fold0/weights/best.pt",
+        "path": "../models/yolo/yolo11m_fold0.pt",
         "fold": "0",
         "weight": 1.0,
         "name": "YOLOv11n_fold0"
     },
     {
-        "path": "/kaggle/input/rsna-sergio-models/cv_y11m_with_mix_up_mosaic_fold1/weights/best.pt",
+        "path": "../models/yolo/yolo11m_fold1.pt",
         "fold": "1",
         "weight": 1.0,
         "name": "YOLOv11n_fold1"
     }
 ]
-
 
 def load_yolo_models():
     """Load all YOLO models"""
@@ -154,8 +159,56 @@ def predict_yolo_ensemble(slices, conf_yolo, YOLO_MODELS, iou_thresh=2.0, k = 3)
 
 
 def main():
+    data_path = Path('./data')
+    df = pd.read_csv(data_path/'train_df.csv')
+    df_loc = pd.read_csv(data_path/'train_localizers.csv')
+    df_multi_frame = pd.read_csv(data_path/'multiframe_dicoms.csv')
     YOLO_MODELS = load_yolo_models()
+    aneurysm_proc = AneurysmVolumeProcessor3Planes(N=patch_size,
+                 K_axial=patch_depth, K_sagittal=patch_depth, K_coronal=patch_depth,
+                 Nr=patch_size, Ntheta=patch_size, augment=False, device='cpu')
+    uids = df[~df.SeriesInstanceUID.isin(df_multi_frame.SeriesInstanceUID.unique())].SeriesInstanceUID.unique()
 
+    if not os.path.exists(data_path/'patch_data'):
+        os.makedirs(data_path/'patch_data')
+
+    for i in range(len(YOLO_MODELS)):
+        if not os.path.exists(data_path/f'patch_data/fold{i}'):
+            os.makedirs(data_path/f'patch_data/fold{i}')
+
+    for uid in tqdm(uids.values()):
+        for i in range(len(YOLO_MODELS)):
+            if not os.path.exists(data_path / f'patch_data/fold{i}/{uid}'):
+                os.makedirs(data_path / f'patch_data/fold{i}/{uid}')
+            else:
+                continue
+        series_path = data_path/f'series/{uid}'
+        all_slices = process_dicom_for_yolo(series_path)
+        vol = load_dicom_series(series_path)
+        vol_norm = normalize_vol(vol)
+        location_preds = predict_yolo_ensemble(all_slices, conf_yolo=0.01,
+                                               YOLO_MODELS= YOLO_MODELS,
+                                               iou_thresh=iou_thresh, k=k_candi)
+        for idx, (key, value) in enumerate(location_preds.items()):
+            yolo_points = location_preds[key][:, [2, 1, 0]].astype('int32')
+            outputs = aneurysm_proc(vol_norm, yolo_points) #list:[patch0, ...]
+            for patch_id, output in enumerate(outputs):
+                cartesian = output['cartesian'].numpy()
+                logpolar = output['logpolar'].numpy()
+                axial = output['axial'].numpy()
+                sagittal = output['sagittal'].numpy()
+                coronal = output['coronal'].numpy()
+
+                # Save to .npz file
+                npz_path = data_path / f'patch_data/fold{idx}/{uid}/patch_{patch_id}.npz'
+                np.savez_compressed(
+                    npz_path,
+                    cartesian=cartesian,
+                    logpolar=logpolar,
+                    axial=axial,
+                    sagittal=sagittal,
+                    coronal=coronal
+                )
 
 
 if __name__ == '__main__':
