@@ -29,10 +29,6 @@ class LitTimmClassifier(pl.LightningModule):
             torchmetrics.AUROC(task="binary") for _ in range(4)
         ])
 
-        # Location AUROC (multilabel, for aneurysm locations)
-        self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes - 1)
-        self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes - 1)
-
     def forward(self, x):
         return self.model(x)  # returns list of [logit0, logit1, logit2]
 
