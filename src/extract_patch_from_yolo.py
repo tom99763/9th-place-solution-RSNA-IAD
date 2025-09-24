@@ -148,7 +148,7 @@ def predict_yolo_ensemble(slices, conf_yolo, YOLO_MODELS, iou_thresh=2.0, k = 3)
     final_preds = {f'MODEL{i}': [] for i in range(len(YOLO_MODELS))}
     for model_key, points in location_preds.items():
         points = np.array(points)
-        if points.shape[0] == 0:
+        if points.shape[0] < 3:
             continue
         for cls in np.unique(points[:,4]):
             cls_points = points[points[:,4]==cls]
