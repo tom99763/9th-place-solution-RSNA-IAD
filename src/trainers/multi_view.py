@@ -37,28 +37,22 @@ class LitTimmClassifier(pl.LightningModule):
         return self.model(x)  # returns list of [logit0, logit1, logit2]
 
     def compute_losses_and_metrics(self, logits_list, labels, stage="train"):
-        cls_labels, loc_labels = labels[:, 0], labels[:, 1:]
-
         # Merge logits: sum of 3 patches
         merged_logits = sum(logits_list)
 
         # Compute per-patch + merged losses
-        cls_losses = [self.cls_loss_fn(logit.squeeze(-1), cls_labels) for logit in logits_list]
-        cls_losses.append(self.cls_loss_fn(merged_logits.squeeze(-1), cls_labels))  # merged
+        cls_losses = [self.cls_loss_fn(logit.squeeze(-1), labels) for logit in logits_list]
+        cls_losses.append(self.cls_loss_fn(merged_logits.squeeze(-1), labels))  # merged
 
-        loc_loss = self.loc_loss_fn(merged_logits, loc_labels)  # only merged for loc prediction
-
-        total_loss = (sum(cls_losses) / len(cls_losses) + loc_loss) / 2
+        total_loss = sum(cls_losses) / len(cls_losses)
 
         # Update metrics
         if stage == "train":
-            self.train_loc_auroc.update(merged_logits, (loc_labels > 0.5).long())
             for i, logit in enumerate(logits_list + [merged_logits]):
-                self.train_cls_aurocs[i].update(logit.squeeze(-1), (cls_labels > 0.5).long())
+                self.train_cls_aurocs[i].update(logit.squeeze(-1), labels.long())
         else:
-            self.val_loc_auroc.update(merged_logits, loc_labels.long())
             for i, logit in enumerate(logits_list + [merged_logits]):
-                self.val_cls_aurocs[i].update(logit.squeeze(-1), cls_labels.long())
+                self.val_cls_aurocs[i].update(logit.squeeze(-1), labels.long())
 
         return total_loss
 
@@ -85,19 +79,12 @@ class LitTimmClassifier(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         cls_aucs = [metric.compute() for metric in self.val_cls_aurocs]
-        loc_auc = self.val_loc_auroc.compute()
 
         for i, auc in enumerate(cls_aucs):
             self.log(f"val_cls_auroc_{i}", auc, on_epoch=True, prog_bar=True)
 
-        kaggle_score = (sum(cls_aucs) / len(cls_aucs) + loc_auc) / 2
-        self.log("kaggle_score", kaggle_score, prog_bar=True)
-
-        self.log('val_loc_auroc', loc_auc, on_epoch=True, prog_bar=True)
-
         for metric in self.val_cls_aurocs:
             metric.reset()
-        self.val_loc_auroc.reset()
 
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())

@@ -81,7 +81,7 @@ class NpzPatchDataset(Dataset):
                     img_np = img.squeeze(0).numpy()
                     t = self.transform(image=img_np)
                     transformed.append(t["image"].unsqueeze(0))
-                data[k] = torch.stack(transformed, dim=0)
+                data[k] = torch.cat(transformed, dim=0)
 
         # Resize volumes spatially (H,W), keeping depth as channels
         for k in ["axial_vol", "sagittal_vol", "coronal_vol"]:
@@ -111,7 +111,7 @@ def patch_collate_fn(batch):
     for k in batch_dict:
         batch_dict[k] = torch.stack(batch_dict[k], dim=0)  # (B, 3, 1 & 31, 128, 128)
 
-    labels = torch.tensor(labels, dtype=torch.long)
+    labels = torch.tensor(labels, dtype=torch.float32)
     return batch_dict, labels
 
 
