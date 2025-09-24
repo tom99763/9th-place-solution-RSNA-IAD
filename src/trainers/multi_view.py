@@ -70,8 +70,6 @@ class LitTimmClassifier(pl.LightningModule):
         for i, metric in enumerate(self.train_cls_aurocs):
             self.log(f"train_cls_auroc_{i}", metric.compute(), on_epoch=True, prog_bar=True)
             metric.reset()
-        self.log('train_loc_auroc', self.train_loc_auroc.compute(), on_epoch=True, prog_bar=True)
-        self.train_loc_auroc.reset()
 
     def on_validation_epoch_end(self):
         cls_aucs = [metric.compute() for metric in self.val_cls_aurocs]

@@ -140,6 +140,9 @@ class NpzPatchDataModule(pl.LightningDataModule):
         train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"].tolist()
         val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"].tolist()
 
+        print(len(train_uids))
+        print(len(val_uids))
+
         self.train_dataset = NpzPatchDataset(uids=train_uids, cfg=self.cfg, transform=self.train_transforms)
         self.val_dataset = NpzPatchDataset(uids=val_uids, cfg=self.cfg, transform=self.val_transforms, mode="val")
 
@@ -156,8 +159,8 @@ class NpzPatchDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset,
-            batch_size=1,
-            num_workers=1,
+            batch_size=self.cfg.params.batch_size * 2,
+            num_workers=self.cfg.params.num_workers,
             pin_memory=True,
             collate_fn=patch_collate_fn,
         )

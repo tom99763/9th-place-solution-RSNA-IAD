@@ -86,8 +86,8 @@ def train(cfg: DictConfig) -> None:
     )
     wnb_logger.watch(model, log="all", log_freq=20)
 
-    trainer.fit(pl_model, datamodule=datamodule)
-    #trainer.validate(pl_model, datamodule=datamodule, ckpt_path="./models/ch32_effb2-epoch=08-kaggle_score=0.6675_fold_id=3.ckpt")
+    #trainer.fit(pl_model, datamodule=datamodule)
+    trainer.validate(pl_model, datamodule=datamodule)
 
 if __name__ == "__main__":
     train()
