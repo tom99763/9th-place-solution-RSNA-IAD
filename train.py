@@ -86,8 +86,8 @@ def train(cfg: DictConfig) -> None:
     )
     wnb_logger.watch(model, log="all", log_freq=20)
 
-    #trainer.fit(pl_model, datamodule=datamodule)
-    trainer.validate(pl_model, datamodule=datamodule)
+    trainer.fit(pl_model, datamodule=datamodule)
+    #trainer.validate(pl_model, datamodule=datamodule)
 
 if __name__ == "__main__":
     train()
