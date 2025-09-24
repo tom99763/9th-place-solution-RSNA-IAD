@@ -9,11 +9,9 @@ from pathlib import Path
 from configs.data_config import *
 from typing import Dict
 import os
+import torch.nn.functional as F
 
 torch.set_float32_matmul_precision('medium')
-
-
-import torch.nn.functional as F
 
 class NpzPatchDataset(Dataset):
     """
@@ -63,13 +61,13 @@ class NpzPatchDataset(Dataset):
 
         # Stack across patches
         data = {
-            "axial_mip": torch.stack([p["mip"][0] for p in patch_data], dim=0).unsqueeze(1),    # (3,1,128,128)
-            "sagittal_mip": torch.stack([p["mip"][1] for p in patch_data], dim=0).unsqueeze(1),
-            "coronal_mip": torch.stack([p["mip"][2] for p in patch_data], dim=0).unsqueeze(1),
-            "axial_lp": torch.stack([p["lp"][0] for p in patch_data], dim=0).unsqueeze(1),
-            "sagittal_lp": torch.stack([p["lp"][1] for p in patch_data], dim=0).unsqueeze(1),
-            "coronal_lp": torch.stack([p["lp"][2] for p in patch_data], dim=0).unsqueeze(1),
-            "axial_vol": torch.stack([torch.from_numpy(p["axial"]) for p in patch_data], dim=0),      # (3,31,128,128)
+            "axial_mip": torch.stack([torch.from_numpy(p["mip"][0]) for p in patch_data], dim=0).unsqueeze(1),
+            "sagittal_mip": torch.stack([torch.from_numpy(p["mip"][1]) for p in patch_data], dim=0).unsqueeze(1),
+            "coronal_mip": torch.stack([torch.from_numpy(p["mip"][2]) for p in patch_data], dim=0).unsqueeze(1),
+            "axial_lp": torch.stack([torch.from_numpy(p["lp"][0]) for p in patch_data], dim=0).unsqueeze(1),
+            "sagittal_lp": torch.stack([torch.from_numpy(p["lp"][1]) for p in patch_data], dim=0).unsqueeze(1),
+            "coronal_lp": torch.stack([torch.from_numpy(p["lp"][2]) for p in patch_data], dim=0).unsqueeze(1),
+            "axial_vol": torch.stack([torch.from_numpy(p["axial"]) for p in patch_data], dim=0),
             "sagittal_vol": torch.stack([torch.from_numpy(p["sagittal"]) for p in patch_data], dim=0),
             "coronal_vol": torch.stack([torch.from_numpy(p["coronal"]) for p in patch_data], dim=0),
         }

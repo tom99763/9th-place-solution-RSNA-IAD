@@ -7,6 +7,11 @@ from src.rsna_datasets.patch_datasets import *
 from lightning.pytorch.loggers import WandbLogger
 import pytorch_lightning as pl
 from hydra.utils import instantiate
+import warnings
+import os
+warnings.filterwarnings("ignore")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
 
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
 def train(cfg: DictConfig) -> None:
