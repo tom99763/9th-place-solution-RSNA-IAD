@@ -269,7 +269,11 @@ class MultiViewPatchModel(nn.Module):
         self.model_dim = model_dim
 
         # Linear projection to shared embedding space
-        self.project = nn.Linear(self.backbone_out_dim, self.model_dim)
+        self.project = nn.Sequential(
+            nn.Linear(self.backbone_out_dim * 2, self.model_dim),
+            nn.GELU(),
+            nn.LayerNorm(self.model_dim),
+        )
 
         # Positional embedding
         self.seq_len = 9 * self.k_candi
@@ -285,9 +289,6 @@ class MultiViewPatchModel(nn.Module):
             dropout=0
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
-
-        # Attention pooling
-        self.attn_pool = AttentionPool(self.model_dim)
 
         # Classifier head
         self.classifiers = nn.ModuleList([nn.Sequential(
@@ -329,7 +330,7 @@ class MultiViewPatchModel(nn.Module):
 
             feat_maps = self.backboneDict[key](x_flat)   # list of feature maps
             feat = feat_maps[-1]                        # take last stage (B*K, C, H, W)
-            feat = feat.mean(dim=(2, 3))                # global mean pool over spatial dims -> (B*K, C)
+            feat = torch.cat([feat.mean(dim=(2, 3)), feat.amax(dim=(2, 3))], dim=1)# (B*K, 2*C)
             feats_per_key.append(feat)
 
         if inferred_B is None:
@@ -341,9 +342,9 @@ class MultiViewPatchModel(nn.Module):
         B = inferred_B
         K = self.k_candi
 
-        stacked = torch.stack(feats_per_key, dim=1)      # (B*K, 9, C)
-        stacked = stacked.view(B, K, len(self.model_keys), self.backbone_out_dim)  # (B, K, 9, C)
-        tokens = stacked.view(B, K * len(self.model_keys), self.backbone_out_dim)   # (B, 9*K, C)
+        stacked = torch.stack(feats_per_key, dim=1)      # (B*K, 9, 2*C)
+        stacked = stacked.view(B, K, len(self.model_keys), 2 * self.backbone_out_dim)  # (B, K, 9, 2 * C)
+        tokens = stacked.view(B, K * len(self.model_keys), 2 * self.backbone_out_dim)   # (B, 9*K, 2 * C)
 
         tokens = self.project(tokens)                     # (B, 9*K, model_dim)
         seq_len = tokens.size(1)
@@ -355,7 +356,8 @@ class MultiViewPatchModel(nn.Module):
         #tokens_flat = tokens_per_candidate.view(B * K, len(self.model_keys), self.model_dim)
 
         #conditional separated attention pool: [(B, 1),...]
-        logits = [classifier(tokens_per_candidate[:, i]).squeeze(-1) for i, classifier in enumerate(self.classifiers)]
+        #classify target: Are these patches from a volume that contains aneurysm?
+        logits = [classifier(tokens_per_candidate[:, i]) for i, classifier in enumerate(self.classifiers)]
         return logits
 
 # === Example usage ===
@@ -368,7 +370,7 @@ if __name__ == "__main__":
         pretrained=True,
         k_candi=3,
         model_dim=256,
-        transformer_layers=1
+        transformer_layers=2
     ).to(device)
 
     # Example fake input tensors for one batch:
