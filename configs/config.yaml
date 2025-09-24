@@ -1,7 +1,7 @@
 # conf/config.yaml
 # These are some base parameters for the experiment
-project_name: "32-ch-reproduce"
-experiment: 32-ch-cnn
+project_name: "multi-view-model"
+experiment: logpolar-mip-vol-3-views
 seed: 42
 fold_id: 0
 offline: true
@@ -27,5 +27,5 @@ defaults:
   - preprocess: default
   - optimizer: AdamW
   - trainer: default
-  - model: MultiBackboneModel
+  - model: PatchModel
   - _self_
