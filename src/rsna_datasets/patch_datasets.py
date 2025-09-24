@@ -1,30 +1,28 @@
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import pandas as pd
-
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
 import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 from pathlib import Path
 from configs.data_config import *
-from typing import List, Tuple, Dict, Optional
+from typing import Dict
 import os
 
 torch.set_float32_matmul_precision('medium')
 
+
+import torch.nn.functional as F
 
 class NpzPatchDataset(Dataset):
     """
     Dataset to load .npz image volumes and serve random 2D slices.
     """
 
-    def __init__(self, uids, cfg, transform=None, mode="train"):
-
+    def __init__(self, uids, cfg, transform=None, mode="train", vol_size=(31, 128, 128)):
         self.uids = uids
         self.cfg = cfg
-
         self.data_path = Path(self.cfg.params.data_dir)
 
         self.train_df = pd.read_csv(self.data_path / "train_df.csv")
@@ -32,54 +30,91 @@ class NpzPatchDataset(Dataset):
 
         self.num_classes = cfg.params.num_classes
         self.transform = transform
-
         self.mode = mode
-        self.depth_mr = self.cfg.params.depth.mr
-        self.depth_ct = self.cfg.params.depth.ct
+        self.vol_size = vol_size  # (C, H, W) target volume size
 
     def __len__(self):
         return len(self.uids)
 
-    def __getitem__(self, idx):
+    def resize_vol2d(self, vol: torch.Tensor) -> torch.Tensor:
+        """
+        Resize a volume treating depth as channels.
+        Input:  (num_patch, C, H, W)
+        Output: (num_patch, C, H_out, W_out)
+        """
+        target_h, target_w = self.vol_size[1], self.vol_size[2]
+        return F.interpolate(vol, size=(target_h, target_w), mode="bilinear", align_corners=False)
 
+    def __getitem__(self, idx):
         uid = self.uids[idx]
         rowdf = self.train_df[self.train_df["SeriesInstanceUID"] == uid]
 
-        with np.load(self.data_path / "patch_data" / f"fold{self.cfg.fold_id}"/ f"{uid}/patch_0.npz") as data0:
-            mip_0 = data0['cartesian'].astype(np.float32)[:, 1] #(3, 128, 128)
-            mip_logpolar_0 = data0['logpolar'].astype(np.float32)[:, 1]
-            axial_vol_0 = data0['axial'].astype(np.float32)
-            sagittal_vol_0 = data0['sagittal'].astype(np.float32)
-            coronal_vol_0 = data0['coronal'].astype(np.float32)
+        # Load 3 patches
+        patch_data = []
+        for i in range(3):
+            with np.load(self.data_path / "patch_data" / f"fold{self.cfg.fold_id}" / f"{uid}" / f"patch_{i}.npz") as data:
+                patch_data.append({
+                    "mip": data["cartesian"].astype(np.float32)[:, 1],    # (3,128,128)
+                    "lp": data["logpolar"].astype(np.float32)[:, 1],
+                    "axial": data["axial"].astype(np.float32),           # (31,128,128)
+                    "sagittal": data["sagittal"].astype(np.float32),
+                    "coronal": data["coronal"].astype(np.float32),
+                })
 
-        with np.load(self.data_path / "patch_data" / f"fold{self.cfg.fold_id}"/ f"{uid}/patch_1.npz") as data1:
-            mip_1 = data1['cartesian'].astype(np.float32)[:, 1]
-            mip_logpolar_1 = data1['logpolar'].astype(np.float32)[:, 1]
-            axial_vol_1 = data1['axial'].astype(np.float32)
-            sagittal_vol_1 = data1['sagittal'].astype(np.float32)
-            coronal_vol_1 = data1['coronal'].astype(np.float32)
-
-        with np.load(self.data_path / "patch_data" / f"fold{self.cfg.fold_id}"/ f"{uid}/patch_2.npz") as data2:
-            mip_2 = data2['cartesian'].astype(np.float32)[:, 1]
-            mip_logpolar_2 = data2['logpolar'].astype(np.float32)[:, 1]
-            axial_vol_2 = data2['axial'].astype(np.float32)
-            sagittal_vol_2 = data2['sagittal'].astype(np.float32)
-            coronal_vol_2 = data2['coronal'].astype(np.float32)
-
-        #3 patches
+        # Stack across patches
         data = {
-            "axial_mip": torch.stack([mip_0[0], mip_1[0], mip_2[0]], dim=0).unsqueeze(1), #(3, 1, 128, 128)
-            "sagittal_mip": torch.stack([mip_0[1], mip_1[1], mip_2[1]], dim=0).unsqueeze(1),
-            "coronal_mip": torch.stack([mip_0[2], mip_1[2], mip_2[2]], dim=0).unsqueeze(1),
-            "axial_lp": torch.stack([mip_logpolar_0[0] , mip_logpolar_1[0], mip_logpolar_2[0]], dim=0).unsqueeze(1),
-            "sagittal_lp": torch.stack([mip_logpolar_0[1] , mip_logpolar_1[1], mip_logpolar_2[1]], dim=0).unsqueeze(1),
-            "coronal_lp": torch.stack([mip_logpolar_0[2] , mip_logpolar_1[2], mip_logpolar_2[2]], dim=0).unsqueeze(1),
-            "axial_vol": torch.stack([axial_vol_0, axial_vol_1, axial_vol_2], dim=0), #(3, 31, 128, 128)
-            "sagittal_vol": torch.stack([sagittal_vol_0, sagittal_vol_1, sagittal_vol_2], dim=0),
-            "coronal_vol": torch.stack([coronal_vol_0, coronal_vol_1, coronal_vol_2], dim=0)
+            "axial_mip": torch.stack([p["mip"][0] for p in patch_data], dim=0).unsqueeze(1),    # (3,1,128,128)
+            "sagittal_mip": torch.stack([p["mip"][1] for p in patch_data], dim=0).unsqueeze(1),
+            "coronal_mip": torch.stack([p["mip"][2] for p in patch_data], dim=0).unsqueeze(1),
+            "axial_lp": torch.stack([p["lp"][0] for p in patch_data], dim=0).unsqueeze(1),
+            "sagittal_lp": torch.stack([p["lp"][1] for p in patch_data], dim=0).unsqueeze(1),
+            "coronal_lp": torch.stack([p["lp"][2] for p in patch_data], dim=0).unsqueeze(1),
+            "axial_vol": torch.stack([torch.from_numpy(p["axial"]) for p in patch_data], dim=0),      # (3,31,128,128)
+            "sagittal_vol": torch.stack([torch.from_numpy(p["sagittal"]) for p in patch_data], dim=0),
+            "coronal_vol": torch.stack([torch.from_numpy(p["coronal"]) for p in patch_data], dim=0),
         }
+
+        # Apply transforms only on 2D slices (MIPs & LPs)
+        if self.transform is not None:
+            for k in ["axial_mip", "sagittal_mip", "coronal_mip",
+                      "axial_lp", "sagittal_lp", "coronal_lp"]:
+                transformed = []
+                for img in data[k]:
+                    img_np = img.squeeze(0).numpy()
+                    t = self.transform(image=img_np)
+                    transformed.append(t["image"].unsqueeze(0))
+                data[k] = torch.stack(transformed, dim=0)
+
+        # Resize volumes spatially (H,W), keeping depth as channels
+        for k in ["axial_vol", "sagittal_vol", "coronal_vol"]:
+            data[k] = self.resize_vol2d(data[k])  # (3,31,H_out,W_out)
+
         labels = int(rowdf["Aneurysm Present"].iloc[0])
         return data, labels
+
+def patch_collate_fn(batch):
+    """
+    Collate function for NpzPatchDataset.
+    Each batch item is (dict, label).
+    Output is (dict of batched tensors, labels).
+    """
+    batch_dict = {}
+    labels = []
+
+    # batch is a list of (data_dict, label)
+    for data, label in batch:
+        for k, v in data.items():
+            if k not in batch_dict:
+                batch_dict[k] = []
+            batch_dict[k].append(v)
+        labels.append(label)
+
+    # stack tensors
+    for k in batch_dict:
+        batch_dict[k] = torch.stack(batch_dict[k], dim=0)  # (B, 3, 1 & 31, 128, 128)
+
+    labels = torch.tensor(labels, dtype=torch.long)
+    return batch_dict, labels
 
 
 class NpzPatchDataModule(pl.LightningDataModule):
@@ -96,22 +131,35 @@ class NpzPatchDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str = None):
         data_path = Path(self.cfg.params.data_dir)
-        valid_uids = os.listdir(data_path/f'patch_data/{self.cfg.fold_id}')
+
+        # List all available uids (directories inside fold dir)
+        fold_path = data_path / "patch_data" / f"fold{self.cfg.fold_id}"
+        valid_uids = [d for d in os.listdir(fold_path) if (fold_path / d).is_dir()]
+
         df = pd.read_csv(data_path / "train_df.csv")
         df = df[df.SeriesInstanceUID.isin(valid_uids)]
-        train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"]
-        val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"]
 
-        self.train_dataset = NpzPatchDataset(uids=list(train_uids), cfg=self.cfg, transform=self.train_transforms)
-        self.val_dataset = NpzPatchDataset(uids=list(val_uids), cfg=self.cfg, transform=self.val_transforms,
-                                                 mode="val")
+        train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"].tolist()
+        val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"].tolist()
+
+        self.train_dataset = NpzPatchDataset(uids=train_uids, cfg=self.cfg, transform=self.train_transforms)
+        self.val_dataset = NpzPatchDataset(uids=val_uids, cfg=self.cfg, transform=self.val_transforms, mode="val")
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.cfg.params.batch_size, shuffle=True,
-                          num_workers=self.cfg.params.num_workers, pin_memory=True)
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.cfg.params.batch_size,
+            shuffle=True,
+            num_workers=self.cfg.params.num_workers,
+            pin_memory=True,
+            collate_fn=patch_collate_fn,
+        )
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset
-                          , batch_size=1
-                          , num_workers=1
-                          , pin_memory=True)
+        return DataLoader(
+            self.val_dataset,
+            batch_size=1,
+            num_workers=1,
+            pin_memory=True,
+            collate_fn=patch_collate_fn,
+        )

@@ -43,7 +43,7 @@ def train(cfg: DictConfig) -> None:
                         , mode="max"
                         , dirpath="./models"
                         , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_cls_auroc_0:.4f}'+f"_fold_id={cfg.fold_id}"
-                        , save_top_k=2
+                        , save_top_k=1
                         )
 
     auroc_score_1_ckpt_callback = pl.callbacks.ModelCheckpoint(
@@ -51,7 +51,7 @@ def train(cfg: DictConfig) -> None:
         , mode="max"
         , dirpath="./models"
         , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_cls_auroc_1:.4f}' + f"_fold_id={cfg.fold_id}"
-        , save_top_k=2
+        , save_top_k=1
     )
 
     auroc_score_2_ckpt_callback = pl.callbacks.ModelCheckpoint(
@@ -59,7 +59,15 @@ def train(cfg: DictConfig) -> None:
         , mode="max"
         , dirpath="./models"
         , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_cls_auroc_2:.4f}' + f"_fold_id={cfg.fold_id}"
-        , save_top_k=2
+        , save_top_k=1
+    )
+
+    auroc_score_3_ckpt_callback = pl.callbacks.ModelCheckpoint(
+        monitor="val_cls_auroc_3"
+        , mode="max"
+        , dirpath="./models"
+        , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_cls_auroc_3:.4f}' + f"_fold_id={cfg.fold_id}"
+        , save_top_k=1
     )
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
@@ -68,7 +76,8 @@ def train(cfg: DictConfig) -> None:
         **cfg.trainer,
         logger=wnb_logger,
         callbacks=[lr_monitor, loss_ckpt_callback, auroc_score_0_ckpt_callback,
-                   auroc_score_1_ckpt_callback, auroc_score_2_ckpt_callback]
+                   auroc_score_1_ckpt_callback, auroc_score_2_ckpt_callback,
+                   auroc_score_3_ckpt_callback]
     )
     wnb_logger.watch(model, log="all", log_freq=20)
 

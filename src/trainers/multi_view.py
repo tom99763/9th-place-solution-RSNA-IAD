@@ -12,84 +12,92 @@ torch.set_float32_matmul_precision('medium')
 class LitTimmClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
         super().__init__()
-        self.save_hyperparameters(ignore=['model'])  # Saves args to checkpoint
+        self.save_hyperparameters(ignore=['model'])
 
         self.model = model
         self.cfg = cfg
         self.loc_loss_fn = torch.nn.BCEWithLogitsLoss()
-        # BCELoss * 0.2 + DICELoss * 0.8.
         self.cls_loss_fn = torch.nn.BCEWithLogitsLoss()
 
         self.num_classes = self.cfg.params.num_classes
 
+        # Metrics for patches (3) + merged (1) = 4 AUROCs
+        self.train_cls_aurocs = nn.ModuleList([
+            torchmetrics.AUROC(task="binary") for _ in range(4)
+        ])
+        self.val_cls_aurocs = nn.ModuleList([
+            torchmetrics.AUROC(task="binary") for _ in range(4)
+        ])
+
+        # Location AUROC (multilabel, for aneurysm locations)
         self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes - 1)
         self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=self.num_classes - 1)
 
-        self.train_cls_auroc = torchmetrics.AUROC(task="binary")
-        self.val_cls_auroc = torchmetrics.AUROC(task="binary")
-
     def forward(self, x):
-        return self.model(x)
+        return self.model(x)  # returns list of [logit0, logit1, logit2]
+
+    def compute_losses_and_metrics(self, logits_list, labels, stage="train"):
+        cls_labels, loc_labels = labels[:, 0], labels[:, 1:]
+
+        # Merge logits: sum of 3 patches
+        merged_logits = sum(logits_list)
+
+        # Compute per-patch + merged losses
+        cls_losses = [self.cls_loss_fn(logit.squeeze(-1), cls_labels) for logit in logits_list]
+        cls_losses.append(self.cls_loss_fn(merged_logits.squeeze(-1), cls_labels))  # merged
+
+        loc_loss = self.loc_loss_fn(merged_logits, loc_labels)  # only merged for loc prediction
+
+        total_loss = (sum(cls_losses) / len(cls_losses) + loc_loss) / 2
+
+        # Update metrics
+        if stage == "train":
+            self.train_loc_auroc.update(merged_logits, (loc_labels > 0.5).long())
+            for i, logit in enumerate(logits_list + [merged_logits]):
+                self.train_cls_aurocs[i].update(logit.squeeze(-1), (cls_labels > 0.5).long())
+        else:
+            self.val_loc_auroc.update(merged_logits, loc_labels.long())
+            for i, logit in enumerate(logits_list + [merged_logits]):
+                self.val_cls_aurocs[i].update(logit.squeeze(-1), cls_labels.long())
+
+        return total_loss
 
     def training_step(self, batch, _):
         x, labels = batch
-        preds = self(x)
-
-        # Split labels
-        cls_labels, loc_labels = labels[:, 0], labels[:, 1:]
-        pred_cls, pred_locs = preds[:, 0], preds[:, 1:]
-
-        # BCE supports soft labels
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
-        loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-
-        loss = (cls_loss + loc_loss) / 2
-
-        # Metrics: AUROC expects hard labels
-        self.train_cls_auroc.update(pred_cls, (cls_labels > 0.5).long())
-        self.train_loc_auroc.update(pred_locs, (loc_labels > 0.5).long())
+        logits_list = self(x)
+        loss = self.compute_losses_and_metrics(logits_list, labels, stage="train")
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
-    def validation_step(self, sample, batch_idx):
-        x, labels = sample
-        # print(f"{uid}")
-        preds = self(x)
-        # print(f"{preds.sigmoid()}")
-
-        cls_labels, loc_labels = labels[:, 0], labels[:, 1:]
-        pred_cls, pred_locs = preds[:, 0], preds[:, 1:]
-
-        loc_loss = self.loc_loss_fn(pred_locs, loc_labels)
-        cls_loss = self.cls_loss_fn(pred_cls, cls_labels)
-
-        loss = (cls_loss + loc_loss) / 2
-
-        self.val_loc_auroc.update(pred_locs, loc_labels.long())
-        self.val_cls_auroc.update(pred_cls, cls_labels.long())
-
-        self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
-
+    def validation_step(self, batch, batch_idx):
+        x, labels = batch
+        logits_list = self(x)
+        loss = self.compute_losses_and_metrics(logits_list, labels, stage="val")
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     def on_train_epoch_end(self):
-        self.log('train_loc_auroc', self.train_loc_auroc.compute(), on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train_cls_auroc', self.train_cls_auroc.compute(), on_step=False, on_epoch=True, prog_bar=True)
+        for i, metric in enumerate(self.train_cls_aurocs):
+            self.log(f"train_cls_auroc_{i}", metric.compute(), on_epoch=True, prog_bar=True)
+            metric.reset()
+        self.log('train_loc_auroc', self.train_loc_auroc.compute(), on_epoch=True, prog_bar=True)
         self.train_loc_auroc.reset()
-        self.train_cls_auroc.reset()
 
     def on_validation_epoch_end(self):
+        cls_aucs = [metric.compute() for metric in self.val_cls_aurocs]
         loc_auc = self.val_loc_auroc.compute()
-        cls_auc = self.val_cls_auroc.compute()
-        kaggle_score = (loc_auc + cls_auc) / 2
 
+        for i, auc in enumerate(cls_aucs):
+            self.log(f"val_cls_auroc_{i}", auc, on_epoch=True, prog_bar=True)
+
+        kaggle_score = (sum(cls_aucs) / len(cls_aucs) + loc_auc) / 2
         self.log("kaggle_score", kaggle_score, prog_bar=True)
 
-        self.log('val_loc_auroc', loc_auc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_cls_auroc', cls_auc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val_loc_auroc', loc_auc, on_epoch=True, prog_bar=True)
 
+        for metric in self.val_cls_aurocs:
+            metric.reset()
         self.val_loc_auroc.reset()
-        self.val_cls_auroc.reset()
 
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
@@ -100,13 +108,14 @@ class LitTimmClassifier(pl.LightningModule):
             T_max=self.cfg.trainer.max_steps / frequency,
             eta_min=0.0
         )
-        return {"optimizer": optimizer
-            , "lr_scheduler": {
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
                 "scheduler": scheduler,
                 "interval": "step",
-                "frequency": frequency
+                "frequency": frequency,
             }
-                }
+        }
 
 
 class Mixup(object):
