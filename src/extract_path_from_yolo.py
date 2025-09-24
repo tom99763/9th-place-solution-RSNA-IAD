@@ -205,7 +205,12 @@ def main():
             print(e)
             continue
 
+        if isinstance(location_preds, tuple):
+            continue
+
         for idx, (key, value) in enumerate(location_preds.items()):
+            if len(value) == 0:
+                continue
             yolo_points = location_preds[key][:, [2, 1, 0]].astype('int32')
             outputs = aneurysm_proc(vol_norm, yolo_points) #list:[patch0, ...]
             for patch_id, output in enumerate(outputs):
