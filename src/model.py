@@ -387,4 +387,6 @@ if __name__ == "__main__":
         patch[key] = torch.randn(B, K, 31, H, W, device=device)
 
     logits = model(patch)  # (B, K)
-    print("logits", logits.shape)
+    for logit in logits:
+        print(logit.shape)
+        print(logit)
