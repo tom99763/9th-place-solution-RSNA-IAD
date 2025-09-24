@@ -224,8 +224,8 @@ def main():
                 npz_path = data_path / f'patch_data/fold{idx}/{uid}/patch_{patch_id}.npz'
                 np.savez_compressed(
                     npz_path,
-                    cartesian=cartesian, #(2, patch_size, patch_size); 2: center slice, mip
-                    logpolar=logpolar, #(2, patch_size, patch_size); 2: center slice, mip
+                    cartesian=cartesian, #(3, 2, patch_size, patch_size);3:axial, sagittal, cornoal; 2: center slice, mip
+                    logpolar=logpolar, #(2, patch_size, patch_size);3:axial, sagittal, cornoal; 2: center slice, mip
                     axial=axial, #(patch_depth, patch_size, patch_size)
                     sagittal=sagittal, #(patch_depth, patch_size, patch_size)
                     coronal=coronal #(patch_depth, patch_size, patch_size)

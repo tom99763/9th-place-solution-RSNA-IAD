@@ -1,7 +1,9 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from src.trainers.cnn_25D import *
+#from src.trainers.cnn_25D import *
+from src.trainers.multi_view import *
 from src.rsna_datasets.cnn_25D_v2 import *
+from src.rsna_datasets.patch_datasets import *
 from lightning.pytorch.loggers import WandbLogger
 import pytorch_lightning as pl
 from hydra.utils import instantiate
@@ -23,7 +25,7 @@ def train(cfg: DictConfig) -> None:
     )
 
     pl.seed_everything(cfg.seed)
-    datamodule = VolumeDataModule(cfg)
+    datamodule = NpzPatchDataModule(cfg)
 
     model = instantiate(cfg.model)
 
@@ -36,20 +38,37 @@ def train(cfg: DictConfig) -> None:
                         , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"_fold_id={cfg.fold_id}"
                         , save_top_k=2
                         )
-    kaggle_score_ckpt_callback = pl.callbacks.ModelCheckpoint(
-                          monitor="kaggle_score"
+    auroc_score_0_ckpt_callback = pl.callbacks.ModelCheckpoint(
+                          monitor="val_cls_auroc_0"
                         , mode="max"
                         , dirpath="./models"
-                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{kaggle_score:.4f}--{kaggle_score:.4f}'+f"_fold_id={cfg.fold_id}"
+                        , filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_cls_auroc_0:.4f}'+f"_fold_id={cfg.fold_id}"
                         , save_top_k=2
                         )
+
+    auroc_score_1_ckpt_callback = pl.callbacks.ModelCheckpoint(
+        monitor="val_cls_auroc_1"
+        , mode="max"
+        , dirpath="./models"
+        , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_cls_auroc_1:.4f}' + f"_fold_id={cfg.fold_id}"
+        , save_top_k=2
+    )
+
+    auroc_score_2_ckpt_callback = pl.callbacks.ModelCheckpoint(
+        monitor="val_cls_auroc_2"
+        , mode="max"
+        , dirpath="./models"
+        , filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_cls_auroc_2:.4f}' + f"_fold_id={cfg.fold_id}"
+        , save_top_k=2
+    )
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
 
     trainer = pl.Trainer(
         **cfg.trainer,
         logger=wnb_logger,
-        callbacks=[lr_monitor, loss_ckpt_callback, kaggle_score_ckpt_callback]
+        callbacks=[lr_monitor, loss_ckpt_callback, auroc_score_0_ckpt_callback,
+                   auroc_score_1_ckpt_callback, auroc_score_2_ckpt_callback]
     )
     wnb_logger.watch(model, log="all", log_freq=20)
 
