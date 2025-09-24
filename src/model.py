@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
+import math
 
 class MultiBackboneModel(nn.Module):
     """Flexible model that can use different backbones"""
@@ -199,6 +200,21 @@ class AttentionPool(nn.Module):
         return pooled, attn.squeeze(-1)  # return pooled and weights for debugging
 
 
+class SinusoidalPosEmb(nn.Module):
+    def __init__(self, dim: int = 16, M: int = 10000):
+        super().__init__()
+        self.dim = dim
+        self.M = M
+
+    def forward(self, x):
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(self.M) / half_dim
+        emb = torch.exp(torch.arange(half_dim, device=device) * (-emb))
+        emb = x[..., None] * emb[None, ...]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return emb
+
 class MultiViewPatchModel(nn.Module):
     def __init__(
         self,
@@ -268,12 +284,16 @@ class MultiViewPatchModel(nn.Module):
 
         # Positional embedding for (9 * k_candi) tokens
         self.seq_len = 9 * self.k_candi
-        self.pos_emb = nn.Parameter(torch.zeros(1, self.seq_len, self.model_dim))
-        nn.init.trunc_normal_(self.pos_emb, std=0.02)
+        self.pos_emb = SinusoidalPosEmb(self.model_dim)
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.model_dim, nhead=transformer_heads, dim_feedforward=self.model_dim * 4, batch_first=True
+            d_model=self.model_dim,
+            nhead=transformer_heads,
+            dim_feedforward=self.model_dim * 4,
+            activation=nn.GELU(),
+            batch_first=True,
+            norm_first=False
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
 
@@ -395,13 +415,13 @@ class MultiViewPatchModel(nn.Module):
         logits = self.classifier(pooled)  # (B, K, 1)
         logits = logits.squeeze(-1)  # (B, K)
 
-        return logits  # logits per candidate
+        return logits
 
 # === Example usage ===
 if __name__ == "__main__":
     # Example instantiation:
     model = MultiViewPatchModel(model_name="resnet18",
-                                pretrained=False,
+                                pretrained=True,
                                 k_candi=3,
                                 model_dim=512,
                                 transformer_layers=1)
