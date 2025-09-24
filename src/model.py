@@ -201,19 +201,22 @@ class AttentionPool(nn.Module):
 
 
 class SinusoidalPosEmb(nn.Module):
-    def __init__(self, dim: int = 16, M: int = 10000):
+    def __init__(self, dim: int = 512, M: int = 10000):
         super().__init__()
         self.dim = dim
         self.M = M
 
-    def forward(self, x):
-        device = x.device
+    def forward(self, seq_len: int, device=None):
+        device = device or torch.device("cpu")
         half_dim = self.dim // 2
         emb = math.log(self.M) / half_dim
         emb = torch.exp(torch.arange(half_dim, device=device) * (-emb))
-        emb = x[..., None] * emb[None, ...]
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb
+        positions = torch.arange(seq_len, device=device).unsqueeze(1)
+        emb = positions * emb[None, :]
+        emb = torch.cat([emb.sin(), emb.cos()], dim=-1)
+        if self.dim % 2 == 1:
+            emb = torch.cat([emb, torch.zeros(seq_len, 1, device=device)], dim=-1)
+        return emb.unsqueeze(0)  # (1, seq_len, dim)
 
 class MultiViewPatchModel(nn.Module):
     def __init__(
@@ -229,12 +232,6 @@ class MultiViewPatchModel(nn.Module):
         classifier_hidden: int = 256,
         dropout: float = 0.2,
     ):
-        """
-        Args:
-            model_name: timm model name used for each view backbone
-            k_candi: number of candidates per image (Top-K)
-            model_dim: final shared embedding dimension (transformer d_model)
-        """
         super().__init__()
         self.k_candi = k_candi
         self.model_keys = [
@@ -248,7 +245,6 @@ class MultiViewPatchModel(nn.Module):
             "sagittal_vol",
             "coronal_vol",
         ]
-        # in_chans for these 9 backbones: first 6 are 1-channel MIPs/LPs, last 3 are volumetric with 31 channels
         in_chans_list = [1] * 6 + [31] * 3
         assert len(in_chans_list) == len(self.model_keys)
 
@@ -259,30 +255,23 @@ class MultiViewPatchModel(nn.Module):
                 model_name,
                 pretrained=pretrained,
                 in_chans=in_ch,
-                num_classes=0,       # return features
-                global_pool="",
+                features_only=True,
                 drop_rate=drop_rate,
                 drop_path_rate=drop_path_rate,
             )
             self.backboneDict[key] = backbone
 
-        # Determine backbone output dim (try common attributes then fallback)
-        # We'll assume all backbones produce the same last feature dim (common for timm models)
+        # Determine backbone output dim from last stage feature channels
         sample_backbone = next(iter(self.backboneDict.values()))
-        out_dim = getattr(sample_backbone, "num_features", None)
-        if out_dim is None:
-            out_dim = getattr(sample_backbone, "embed_dim", None)
-        if out_dim is None:
-            # fallback
-            out_dim = 512
-
-        self.backbone_out_dim = out_dim
+        out_channels = sample_backbone.feature_info.channels()[-1] \
+            if hasattr(sample_backbone, "feature_info") else 512
+        self.backbone_out_dim = out_channels
         self.model_dim = model_dim
 
-        # Project each backbone output to shared model_dim
+        # Linear projection to shared embedding space
         self.project = nn.Linear(self.backbone_out_dim, self.model_dim)
 
-        # Positional embedding for (9 * k_candi) tokens
+        # Positional embedding
         self.seq_len = 9 * self.k_candi
         self.pos_emb = SinusoidalPosEmb(self.model_dim)
 
@@ -292,23 +281,21 @@ class MultiViewPatchModel(nn.Module):
             nhead=transformer_heads,
             dim_feedforward=self.model_dim * 4,
             activation=nn.GELU(),
-            batch_first=True,
-            norm_first=False
+            batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
 
-        # Attention pooling to aggregate 9 view tokens per candidate
+        # Attention pooling
         self.attn_pool = AttentionPool(self.model_dim)
 
-        # Classifier head (per candidate -> binary logit)
+        # Classifier head
         self.classifier = nn.Sequential(
             nn.Linear(self.model_dim, classifier_hidden),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(classifier_hidden, 1),
         )
 
-        # small init
         self._init_weights()
 
     def _init_weights(self):
@@ -319,112 +306,72 @@ class MultiViewPatchModel(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def _flatten_input_for_backbone(self, x):
-        """
-        Accept either:
-         - x shape = (B, K, C, H, W)  -> flatten to (B*K, C, H, W)
-         - x shape = (B*K, C, H, W)    -> keep as is
-        """
         if x.dim() == 5:
             B, K, C, H, W = x.shape
-            x_flat = x.view(B * K, C, H, W)
-            return x_flat, B
+            return x.view(B * K, C, H, W), B
         elif x.dim() == 4:
-            # caller passed already flattened
-            # cannot infer B directly; assume they pass B*K as first dim -> user must ensure consistency
             return x, None
         else:
-            raise ValueError("Unsupported input tensor shape for view patch. Expect 4D or 5D tensor.")
+            raise ValueError("Unsupported input shape.")
 
     def forward(self, patch: dict):
-        """
-        patch: dict[str -> tensor] mapping each key in self.model_keys to a tensor shaped:
-               (B, K, C, H, W)  OR  (B*K, C, H, W)
-               Order of keys must match self.model_keys.
-
-        Returns:
-            logits: (B, K) tensor of logits for each candidate in the batch.
-        """
         device = next(self.parameters()).device
-
-        # Collect features per key
         feats_per_key = []
         inferred_B = None
+
         for key in self.model_keys:
             if key not in patch:
-                raise KeyError(f"Missing expected key '{key}' in patch dict.")
+                raise KeyError(f"Missing key '{key}' in patch dict.")
             x = patch[key].to(device)
             x_flat, maybe_B = self._flatten_input_for_backbone(x)
             if inferred_B is None and maybe_B is not None:
                 inferred_B = maybe_B
-            # pass through backbone: many timm models when num_classes=0 return (N, feat_dim)
-            feat = self.backboneDict[key](x_flat)  # (B*K, backbone_out_dim)
-            if feat.dim() == 4:
-                # some backbones may return (N, C, 1, 1) depending - flatten
-                feat = feat.view(feat.size(0), -1)
+
+            feat_maps = self.backboneDict[key](x_flat)   # list of feature maps
+            feat = feat_maps[-1]                        # take last stage (B*K, C, H, W)
+            feat = feat.mean(dim=(2, 3))                # global mean pool over spatial dims -> (B*K, C)
             feats_per_key.append(feat)
 
         if inferred_B is None:
-            # If user passed flattened inputs, attempt to infer B from self.k_candi
-            # First backbone feature's first dim is expected to be B*K
             N_flat = feats_per_key[0].size(0)
             if (N_flat % self.k_candi) != 0:
-                raise ValueError("Cannot infer batch size from flattened inputs and k_candi. Ensure inputs shaped (B*K, C, H, W) or pass B*K divisible by k_candi.")
+                raise ValueError("Cannot infer batch size.")
             inferred_B = N_flat // self.k_candi
 
         B = inferred_B
         K = self.k_candi
-        # Stack features: list length = 9 ; each tensor shape = (B*K, out_dim)
-        stacked = torch.stack(feats_per_key, dim=1)  # (B*K, 9, out_dim)
 
-        # reshape to (B, K, 9, out_dim)
-        stacked = stacked.view(B, K, len(self.model_keys), self.backbone_out_dim)  # (B, K, 9, out_dim)
+        stacked = torch.stack(feats_per_key, dim=1)      # (B*K, 9, C)
+        stacked = stacked.view(B, K, len(self.model_keys), self.backbone_out_dim)  # (B, K, 9, C)
+        tokens = stacked.view(B, K * len(self.model_keys), self.backbone_out_dim)   # (B, 9*K, C)
 
-        # reorder to tokens grouped by candidate: (B, K*9, out_dim)
-        tokens = stacked.view(B, K * len(self.model_keys), self.backbone_out_dim)  # (B, 9*K, out_dim)
-
-        # project features
-        tokens = self.project(tokens)  # (B, 9*K, model_dim)
-
-        # add pos emb (pos_emb length must equal seq_len which is 9*K)
-        if tokens.size(1) != self.seq_len:
-            # If user passed K different than initialized, handle by slicing/expanding pos emb
-            if tokens.size(1) < self.seq_len:
-                pos = self.pos_emb[:, : tokens.size(1), :].to(device)
-            else:
-                # expand pos emb by repeating
-                repeats = int(tokens.size(1) / self.seq_len)
-                pos = self.pos_emb.repeat(1, repeats + 1, 1)[:, : tokens.size(1), :].to(device)
-        else:
-            pos = self.pos_emb.to(device)
+        tokens = self.project(tokens)                     # (B, 9*K, model_dim)
+        seq_len = tokens.size(1)
+        pos = self.pos_emb(seq_len, device=tokens.device)
         tokens = tokens + pos
 
-        # transformer expects (B, S, E) since we set batch_first=True
-        tokens = self.transformer(tokens)  # (B, 9*K, model_dim)
+        tokens = self.transformer(tokens)                 # (B, 9*K, model_dim)
+        tokens_per_candidate = tokens.view(B, K, len(self.model_keys), self.model_dim)
+        tokens_flat = tokens_per_candidate.view(B * K, len(self.model_keys), self.model_dim)
 
-        # reshape to (B, K, 9, model_dim) then pool across the 9 views per candidate
-        tokens_per_candidate = tokens.view(B, K, len(self.model_keys), self.model_dim)  # (B, K, 9, D)
+        pooled, attn_weights = self.attn_pool(tokens_flat)
+        pooled = pooled.view(B, K, self.model_dim)
 
-        # We'll pool across dim=2 (the 9 views)
-        # Perform attention pooling for each candidate
-        # flatten first two dims to run pooling in one go
-        tokens_flat = tokens_per_candidate.view(B * K, len(self.model_keys), self.model_dim)  # (B*K, 9, D)
-        pooled, attn_weights = self.attn_pool(tokens_flat)  # pooled: (B*K, D)
-        pooled = pooled.view(B, K, self.model_dim)  # (B, K, D)
-
-        # classify each candidate
-        logits = self.classifier(pooled)  # (B, K, 1)
-        logits = logits.squeeze(-1)  # (B, K)
-
+        logits = self.classifier(pooled).squeeze(-1)
         return logits
 
 # === Example usage ===
 if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     # Example instantiation:
-    model = MultiViewPatchModel(model_name="resnet18",
-                                pretrained=True,
-                                k_candi=3,
-                                model_dim=512,
-                                transformer_layers=1)
+    model = MultiViewPatchModel(
+        model_name="resnet18",
+        pretrained=True,
+        k_candi=3,
+        model_dim=256,
+        transformer_layers=1
+    ).to(device)
 
     # Example fake input tensors for one batch:
     B = 2
@@ -434,10 +381,10 @@ if __name__ == "__main__":
     patch = {}
     # first six keys are 1-channel 2D patches shaped (B, K, 1, H, W)
     for key in model.model_keys[:6]:
-        patch[key] = torch.randn(B, K, 1, H, W)
+        patch[key] = torch.randn(B, K, 1, H, W, device=device)
     # last three keys are volume patches with 31 channels shaped (B, K, 31, H, W)
     for key in model.model_keys[6:]:
-        patch[key] = torch.randn(B, K, 31, H, W)
+        patch[key] = torch.randn(B, K, 31, H, W, device=device)
 
     logits = model(patch)  # (B, K)
     print("logits", logits.shape)
