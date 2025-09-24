@@ -197,7 +197,7 @@ class AttentionPool(nn.Module):
             scores = scores.masked_fill(~mask, -1e9)
         attn = torch.softmax(scores, dim=-1).unsqueeze(-1)  # (B, T, 1)
         pooled = (x * attn).sum(dim=1)  # (B, D)
-        return pooled, attn.squeeze(-1)  # return pooled and weights for debugging
+        return pooled #, attn.squeeze(-1)  # return pooled and weights for debugging
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -281,7 +281,8 @@ class MultiViewPatchModel(nn.Module):
             nhead=transformer_heads,
             dim_feedforward=self.model_dim * 4,
             activation=nn.GELU(),
-            batch_first=True
+            batch_first=True,
+            dropout=0
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
 
@@ -289,12 +290,11 @@ class MultiViewPatchModel(nn.Module):
         self.attn_pool = AttentionPool(self.model_dim)
 
         # Classifier head
-        self.classifier = nn.Sequential(
-            nn.Linear(self.model_dim, classifier_hidden),
-            nn.GELU(),
+        self.classifiers = nn.ModuleList([nn.Sequential(
+            AttentionPool(self.model_dim),
             nn.Dropout(dropout),
-            nn.Linear(classifier_hidden, 1),
-        )
+            nn.Linear(self.model_dim, 1),
+        ) for _ in range(self.k_candi)])
 
         self._init_weights()
 
@@ -352,12 +352,10 @@ class MultiViewPatchModel(nn.Module):
 
         tokens = self.transformer(tokens)                 # (B, 9*K, model_dim)
         tokens_per_candidate = tokens.view(B, K, len(self.model_keys), self.model_dim)
-        tokens_flat = tokens_per_candidate.view(B * K, len(self.model_keys), self.model_dim)
+        #tokens_flat = tokens_per_candidate.view(B * K, len(self.model_keys), self.model_dim)
 
-        pooled, attn_weights = self.attn_pool(tokens_flat)
-        pooled = pooled.view(B, K, self.model_dim)
-
-        logits = self.classifier(pooled).squeeze(-1)
+        #conditional separated attention pool: [(B, 1),...]
+        logits = [classifier(tokens_per_candidate[:, i]).squeeze(-1) for i, classifier in enumerate(self.classifiers)]
         return logits
 
 # === Example usage ===
