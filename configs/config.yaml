@@ -3,7 +3,7 @@
 project_name: "multi-view-model"
 experiment: logpolar-mip-vol-3-views
 seed: 42
-fold_id: 1
+fold_id: 0
 offline: true
 
 

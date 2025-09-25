@@ -1,74 +1,74 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from src.trainers.cnn_25D import *
-from src.rsna_datasets.cnn_25D_v2 import *
-from lightning.pytorch.loggers import WandbLogger
 import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger
 from hydra.utils import instantiate
-import copy
-import os
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-
-def run_one_fold(cfg: DictConfig, fold_id: int):
-    print(f"\n===== 🚀 Running fold {fold_id} =====\n")
-    cfg = copy.deepcopy(cfg)   # make a copy so we don’t mutate original
-    cfg.fold_id = fold_id
-
-    print("✨ Configuration for this run: ✨")
-    print(OmegaConf.to_yaml(cfg))
-
-    wnb_logger = WandbLogger(
-        project=cfg.project_name,
-        name=f"{cfg.experiment}_fold{fold_id}",
-        config=OmegaConf.to_container(cfg),
-        offline=cfg.offline,
-    )
-
-    pl.seed_everything(cfg.seed)
-    datamodule = VolumeDataModule(cfg)
-    model = instantiate(cfg.model)
-    pl_model = LitTimmClassifier(model, cfg)
-
-    # loss_ckpt_callback = pl.callbacks.ModelCheckpoint(
-    #     monitor="val_loss",
-    #     mode="min",
-    #     dirpath="./models",
-    #     filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_loss:.4f}'+f"_fold_id={fold_id}",
-    #     save_top_k=2
-    # )
-    kaggle_score_ckpt_callback = pl.callbacks.ModelCheckpoint(
-        monitor="kaggle_score",
-        mode="max",
-        dirpath="./models",
-        filename=f'{cfg.experiment}'+'-{epoch:02d}-{kaggle_score:.4f}-{kaggle_score:.4f}'+f"_fold_id={fold_id}",
-        save_top_k=2
-    )
-    cls_score_ckpt_callback = pl.callbacks.ModelCheckpoint(
-        monitor="val_cls_auroc",
-        mode="max",
-        dirpath="./models",
-        filename=f'{cfg.experiment}' + '-{epoch:02d}-{val_cls_auroc:.4f}' + f"_fold_id={fold_id}",
-        save_top_k=2
-    )
-
-    lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
-
-    trainer = pl.Trainer(
-        **cfg.trainer,
-        logger=wnb_logger,
-        callbacks=[lr_monitor, kaggle_score_ckpt_callback, cls_score_ckpt_callback]
-    )
-    wnb_logger.watch(model, log="all", log_freq=20)
-
-    trainer.fit(pl_model, datamodule=datamodule)
-
+from src.trainers.multi_view import *
+from src.rsna_datasets.patch_datasets import *
 
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
 def train(cfg: DictConfig) -> None:
-    # run 5 folds
-    for fold in range(5):
-        run_one_fold(cfg, fold)
+    """
+    Main training with 5-fold cross validation.
+    """
+    print("✨ Base configuration for this run: ✨")
+    print(OmegaConf.to_yaml(cfg))
 
+    for fold_id in range(2):
+        print(f"\n🚀 Starting Fold {fold_id}...\n")
+
+        # Update fold_id in cfg (deepcopy to avoid mutation issues)
+        cfg_fold = cfg.copy()
+        cfg_fold.fold_id = fold_id
+
+        wnb_logger = WandbLogger(
+            project=cfg_fold.project_name,
+            name=f"{cfg_fold.experiment}_fold{fold_id}",
+            config=OmegaConf.to_container(cfg_fold),
+            offline=cfg_fold.offline,
+        )
+
+        pl.seed_everything(cfg_fold.seed + fold_id)  # optional: different seed per fold
+        datamodule = NpzPatchDataModule(cfg_fold)
+
+        model = instantiate(cfg_fold.model)
+        pl_model = LitTimmClassifier(model, cfg_fold)
+
+        # Callbacks
+        loss_ckpt_callback = pl.callbacks.ModelCheckpoint(
+            monitor="val_loss",
+            mode="min",
+            dirpath="./models",
+            filename=f'{cfg_fold.experiment}--{cfg_fold.model.model_name}'
+                     '-{epoch:02d}-{val_loss:.4f}' + f"_fold_id={fold_id}",
+            save_top_k=1,
+        )
+
+        auroc_callbacks = []
+        for cls_id in range(4):  # 0,1,2,3
+            auroc_callbacks.append(
+                pl.callbacks.ModelCheckpoint(
+                    monitor=f"val_cls_auroc_{cls_id}",
+                    mode="max",
+                    dirpath="./models",
+                    filename=f'{cfg_fold.experiment}--{cfg_fold.model.model_name}'
+                             f'-{{epoch:02d}}-{{val_cls_auroc_{cls_id}:.4f}}_fold_id={fold_id}',
+                    save_top_k=1,
+                )
+            )
+
+        lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
+
+        trainer = pl.Trainer(
+            **cfg_fold.trainer,
+            logger=wnb_logger,
+            callbacks=[lr_monitor, loss_ckpt_callback] + auroc_callbacks,
+        )
+
+        wnb_logger.watch(model, log="all", log_freq=20)
+
+        trainer.fit(pl_model, datamodule=datamodule)
+        # trainer.validate(pl_model, datamodule=datamodule)
 
 if __name__ == "__main__":
     train()

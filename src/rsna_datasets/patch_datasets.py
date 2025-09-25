@@ -154,6 +154,7 @@ class NpzPatchDataModule(pl.LightningDataModule):
             num_workers=self.cfg.params.num_workers,
             pin_memory=True,
             collate_fn=patch_collate_fn,
+            persistent_workers=True
         )
 
     def val_dataloader(self):
@@ -163,4 +164,5 @@ class NpzPatchDataModule(pl.LightningDataModule):
             num_workers=self.cfg.params.num_workers,
             pin_memory=True,
             collate_fn=patch_collate_fn,
+            persistent_workers=True
         )
