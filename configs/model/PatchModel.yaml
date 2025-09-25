@@ -1,5 +1,5 @@
 _target_: src.model.MultiViewPatchModel
-model_name: "convnextv2_pico.fcmae_ft_in1k"
+model_name: "tf_efficientnetv2_b0.in1k"
 pretrained: True
 drop_rate: 0.3
 drop_path_rate: 0.2

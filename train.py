@@ -42,6 +42,7 @@ def train(cfg: DictConfig) -> None:
                         , dirpath="./models"
                         , filename=f'{cfg.experiment}--{cfg.model.model_name}'+\
                                    '-{epoch:02d}-{val_loss:.4f}'+f"_fold_id={cfg.fold_id}"
+                                                                 f"_fold_id_yolo={cfg.fold_id_yolo}"
                         , save_top_k=2
                         )
     auroc_score_0_ckpt_callback = pl.callbacks.ModelCheckpoint(
@@ -50,6 +51,7 @@ def train(cfg: DictConfig) -> None:
                         , dirpath="./models"
                         , filename=f'{cfg.experiment}--{cfg.model.model_name}'+\
                                    '-{epoch:02d}-{val_cls_auroc_0:.4f}'+f"_fold_id={cfg.fold_id}"
+                                                                        f"_fold_id_yolo={cfg.fold_id_yolo}"
                         , save_top_k=1
                         )
 
@@ -59,6 +61,7 @@ def train(cfg: DictConfig) -> None:
         , dirpath="./models"
         , filename=f'{cfg.experiment}--{cfg.model.model_name}' +\
                    '-{epoch:02d}-{val_cls_auroc_1:.4f}' + f"_fold_id={cfg.fold_id}"
+                                                          f"_fold_id_yolo={cfg.fold_id_yolo}"
         , save_top_k=1
     )
 
@@ -68,6 +71,7 @@ def train(cfg: DictConfig) -> None:
         , dirpath="./models"
         , filename=f'{cfg.experiment}--{cfg.model.model_name}' +\
                    '-{epoch:02d}-{val_cls_auroc_2:.4f}' + f"_fold_id={cfg.fold_id}"
+                                                          f"_fold_id_yolo={cfg.fold_id_yolo}"
         , save_top_k=1
     )
 
@@ -77,6 +81,7 @@ def train(cfg: DictConfig) -> None:
         , dirpath="./models"
         , filename=f'{cfg.experiment}--{cfg.model.model_name}' +\
                    '-{epoch:02d}-{val_cls_auroc_3:.4f}' + f"_fold_id={cfg.fold_id}"
+                                                          f"_fold_id_yolo={cfg.fold_id_yolo}"
         , save_top_k=1
     )
 

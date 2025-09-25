@@ -50,7 +50,7 @@ class NpzPatchDataset(Dataset):
         # Load 3 patches
         patch_data = []
         for i in range(3):
-            with np.load(self.data_path / "patch_data" / f"fold{self.cfg.fold_id}" / f"{uid}" / f"patch_{i}.npz") as data:
+            with np.load(self.data_path / "patch_data" / f"fold{self.cfg.fold_id_yolo}" / f"{uid}" / f"patch_{i}.npz") as data:
                 patch_data.append({
                     "mip": data["cartesian"].astype(np.float32)[:, 1],    # (3,128,128)
                     "lp": data["logpolar"].astype(np.float32)[:, 1],
@@ -131,7 +131,7 @@ class NpzPatchDataModule(pl.LightningDataModule):
         data_path = Path(self.cfg.params.data_dir)
 
         # List all available uids (directories inside fold dir)
-        fold_path = data_path / "patch_data" / f"fold{self.cfg.fold_id}"
+        fold_path = data_path / "patch_data" / f"fold{self.cfg.fold_id_yolo}"
         valid_uids = [d for d in os.listdir(fold_path) if (fold_path / d).is_dir()]
 
         df = pd.read_csv(data_path / "train_df.csv")
