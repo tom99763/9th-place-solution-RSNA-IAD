@@ -1,16 +1,16 @@
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from src.trainers.cnn_25D import *
-from src.rsna_datasets.cnn_25D_v2 import *
+from src.rsna_datasets.cnn_seg_cls import *
+from src.models.segmentation_classification import *
+
 from lightning.pytorch.loggers import WandbLogger
 import pytorch_lightning as pl
-from hydra.utils import instantiate
-import copy
 
-def run_one_fold(cfg: DictConfig, fold_id: int):
+def run_one_fold(cfg: DictConfig):
+    fold_id = cfg.fold_id
     print(f"\n===== 🚀 Running fold {fold_id} =====\n")
-    cfg = copy.deepcopy(cfg)   # make a copy so we don’t mutate original
-    cfg.fold_id = fold_id
+
 
     print("✨ Configuration for this run: ✨")
     print(OmegaConf.to_yaml(cfg))
@@ -24,7 +24,7 @@ def run_one_fold(cfg: DictConfig, fold_id: int):
 
     pl.seed_everything(cfg.seed)
     datamodule = VolumeDataModule(cfg)
-    model = instantiate(cfg.model)
+    model = SegmentationClassifier()
     pl_model = LitTimmClassifier(model, cfg)
 
     loss_ckpt_callback = pl.callbacks.ModelCheckpoint(
@@ -35,10 +35,10 @@ def run_one_fold(cfg: DictConfig, fold_id: int):
         save_top_k=2
     )
     kaggle_score_ckpt_callback = pl.callbacks.ModelCheckpoint(
-        monitor="kaggle_score",
+        monitor="val_cls_auroc",
         mode="max",
         dirpath="./models",
-        filename=f'{cfg.experiment}'+'-{epoch:02d}-{kaggle_score:.4f}'+f"_fold_id={fold_id}",
+        filename=f'{cfg.experiment}'+'-{epoch:02d}-{val_cls_auroc:.4f}'+f"_fold_id={fold_id}",
         save_top_k=2
     )
 
@@ -52,13 +52,12 @@ def run_one_fold(cfg: DictConfig, fold_id: int):
     wnb_logger.watch(model, log="all", log_freq=20)
 
     trainer.fit(pl_model, datamodule=datamodule)
+    # trainer.validate(pl_model, datamodule=datamodule, ckpt_path="./models/ch32_segcls_effb0-epoch=04-val_cls_auroc=0.7053_fold_id=0.ckpt")
 
 
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
 def train(cfg: DictConfig) -> None:
-    # run 5 folds
-    for fold in range(5):
-        run_one_fold(cfg, fold)
+    run_one_fold(cfg)
 
 
 if __name__ == "__main__":

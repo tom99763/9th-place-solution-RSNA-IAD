@@ -8,12 +8,12 @@ offline: true
 
 
 params:
-  data_dir: ./src/data
+  data_dir: ./data
   num_classes: 14
   img_height: 512
   img_width: 512
-  batch_size: 16
-  num_workers: 16
+  batch_size: 4
+  num_workers: 8
   use_mip: False
 
   depth:

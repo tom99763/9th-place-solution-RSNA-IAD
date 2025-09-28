@@ -1,7 +1,7 @@
-max_epochs: 5
+max_epochs: 10
 accelerator: gpu
 devices: 1
-precision: 32
+precision: bf16-mixed
 check_val_every_n_epoch: 1
 gradient_clip_val: 1
-max_steps: 5_000
+max_steps: 10_000

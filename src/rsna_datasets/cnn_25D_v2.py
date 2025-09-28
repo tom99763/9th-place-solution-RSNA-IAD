@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 from pathlib import Path
-from configs.data_config import *
+
 from typing import List, Tuple, Dict, Optional
 import os
 import pydicom
@@ -17,12 +17,46 @@ from scipy import ndimage
 
 torch.set_float32_matmul_precision('medium')
 
+import ast
+
+
+data_path = './data'
+windows = {
+        'CT': (40, 80),
+        'CTA': (50, 350),
+        'MRA': (600, 1200),
+        'MRI': (40, 80),
+    }
+
+LABELS_TO_IDX = {
+            'Anterior Communicating Artery': 0,
+            'Basilar Tip': 1,
+            'Left Anterior Cerebral Artery': 2,
+            'Left Infraclinoid Internal Carotid Artery': 3,
+            'Left Middle Cerebral Artery': 4,
+            'Left Posterior Communicating Artery': 5,
+            'Left Supraclinoid Internal Carotid Artery': 6,
+            'Other Posterior Circulation': 7,
+            'Right Anterior Cerebral Artery': 8,
+            'Right Infraclinoid Internal Carotid Artery': 9,
+            'Right Middle Cerebral Artery': 10,
+            'Right Posterior Communicating Artery': 11,
+            'Right Supraclinoid Internal Carotid Artery': 12
+}
+
+IMG_SIZE = 512
+FACTOR = 3
+SEED = 42
+N_FOLDS = 5
+CORES = 16
+
 
 class DICOMPreprocessorKaggle:
     """DICOM preprocessing system for EfficientNet"""
 
-    def __init__(self, target_shape: Tuple[int, int, int] = (32, 384, 384)):
+    def __init__(self, target_shape: Tuple[int, int, int] = (96, 384, 384)):
         self.target_depth, self.target_height, self.target_width = target_shape
+        self.label_df = pd.read_csv("./data/train_localizers.csv")
 
     def load_dicom_series(self, series_path: str) -> Tuple[List[pydicom.Dataset], str]:
         """Load DICOM series"""
@@ -170,18 +204,44 @@ class DICOMPreprocessorKaggle:
 
         return resized_volume.astype(np.uint8)
 
+    def create_hard_ball_mask(self, mask, center, fill_value=1, radius=2):
+        volume_shape = mask.shape
+
+        # Create a 3D coordinate grid. `ogrid` is memory-efficient.
+        y, x = np.ogrid[:volume_shape[0], :volume_shape[1]]
+
+        # Unpack the center coordinates
+        cy, cx = center
+        
+        # Calculate the squared Euclidean distance from the center for every point
+        dist_sq = (y - cy)**2 + (x - cx)**2
+        mask[dist_sq <= radius ** 2] = fill_value
+        return mask
+
     def process_series(self, series_path: str) -> np.ndarray:
         """Process DICOM series and return as NumPy array"""
         try:
             datasets, series_name = self.load_dicom_series(series_path)
 
+            series_uid = series_path.split("/")[-1]
+
             first_ds = datasets[0]
             first_img = first_ds.pixel_array
 
             if len(datasets) == 1 and first_img.ndim == 3:
-                return self._process_single_3d_dicom(first_ds, series_name)
+                (_,orig_h,orig_w), final_vol = self._process_single_3d_dicom(first_ds, series_name)
             else:
-                return self._process_multiple_2d_dicoms(datasets, series_name)
+                (_,orig_h,orig_w), final_vol = self._process_multiple_2d_dicoms(datasets, series_name)
+
+            mask = np.zeros((384,384))
+            series_labels = self.label_df[self.label_df["SeriesInstanceUID"] == series_uid]
+           
+            for _, label in series_labels.iterrows():
+                coord = ast.literal_eval(label["coordinates"])
+                cx,cy = coord["x"], coord["y"]
+                mask += self.create_hard_ball_mask(mask, ((cy/orig_h) * 384, (cx/orig_w) * 384))
+
+            return final_vol, mask
 
         except Exception as e:
             raise
@@ -207,7 +267,7 @@ class DICOMPreprocessorKaggle:
         volume = np.stack(processed_slices, axis=0)
         final_volume = self.resize_volume_3d(volume)
 
-        return final_volume
+        return volume.shape, final_volume
 
     def _process_multiple_2d_dicoms(self, datasets: List[pydicom.Dataset], series_name: str) -> np.ndarray:
         """Process multiple 2D DICOM files"""
@@ -227,7 +287,7 @@ class DICOMPreprocessorKaggle:
         volume = np.stack(processed_slices, axis=0)
         final_volume = self.resize_volume_3d(volume)
 
-        return final_volume
+        return volume.shape, final_volume
 
 
 class VolumeSliceDataset(Dataset):

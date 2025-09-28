@@ -14,6 +14,8 @@ torch.set_float32_matmul_precision('medium')
 from src.trainers.cnn_25D import *
 from src.rsna_datasets.cnn_25D import *
 
+from src.models.segmentation_classification import *
+
 
 def create_mip(volume):
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape((1,3,1,1))
@@ -70,7 +72,7 @@ def validation(cfg: DictConfig) -> None:
 
     pl.seed_everything(cfg.seed)
 
-    model = instantiate(cfg.model)
+    model = SegmentationClassifier()
 
     import os
 
