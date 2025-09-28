@@ -36,3 +36,6 @@ timm_3d/
 
 MedicalNet-master/
 yolo_planes/*
+aneurysm_cubes_v2/
+aneurysm_cubes/
+rsna-iad-binary/
