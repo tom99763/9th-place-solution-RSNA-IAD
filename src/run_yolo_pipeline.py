@@ -54,9 +54,6 @@ def parse_args():
     # Validation settings
     ap.add_argument('--folds', type=str, default='0', help='Comma-separated fold IDs to validate (e.g., 0 or 0,1,2,3,4)')
     ap.add_argument('--slice-step', type=int, default=1, help='Process every Nth slice (for per-slice and BGR modes)')
-    ap.add_argument('--mip-window', type=int, default=0, help='Half-window for MIP; 0 = per-slice mode; use --bgr-mode for 3-slice stacking')
-    ap.add_argument('--mip-img-size', type=int, default=0)
-    ap.add_argument('--mip-no-overlap', action='store_true')
     ap.add_argument('--max-slices', type=int, default=0)
     ap.add_argument('--series-limit', type=int, default=0)
     ap.add_argument('--val-batch', type=int, default=16)
@@ -67,7 +64,6 @@ def parse_args():
     ap.add_argument('--wandb-entity', type=str, default='', help='W&B entity (team/user)')
     ap.add_argument('--wandb-group', type=str, default='', help='W&B group')
     ap.add_argument('--wandb-tags', type=str, default='', help='Comma-separated W&B tags')
-    ap.add_argument('--bgr-mode', action='store_true', help='Use BGR mode (3-channel images from stacked slices); overrides --mip-window')
     return ap.parse_args()
 
 
@@ -178,7 +174,7 @@ def run():
             '--out-dir', str(out_dir),
             '--batch-size', str(args.val_batch),
             '--slice-step', str(args.slice_step),
-            '--img-size', str(args.img_size),
+            '--img-size', str(args.img),
         ]
         if args.max_slices:
             cmd += ['--max-slices', str(args.max_slices)]
