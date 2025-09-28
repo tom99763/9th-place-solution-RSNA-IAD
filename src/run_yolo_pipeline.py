@@ -74,7 +74,7 @@ def parse_args():
 def run():
     print("waiting")
     import time
-    time.sleep(60*60*4)
+    #time.sleep(60*60*4)
     args = parse_args()
 
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']
