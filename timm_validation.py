@@ -11,14 +11,15 @@ import pydicom
 import torch
 import timm_3d
 from scipy import ndimage
+import cupy as cp
+import cupyx.scipy.ndimage as cpx_ndimage
 from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
 import warnings
 from sklearn.exceptions import UndefinedMetricWarning
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
-from monai.inferers import sliding_window_inference
-from monai.data import MetaTensor
+# Removed MONAI dependencies - using direct full volume inference
 import cv2
 # Project root & config imports
 ROOT = Path(__file__).resolve().parent
@@ -36,22 +37,22 @@ DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Series-level validation for timm3d models")
+    ap = argparse.ArgumentParser(description="Series-level validation for timm3d models (full volume inference)")
     ap.add_argument('--weights', type=str, required=True, help='Path to timm3d model checkpoint (.ckpt)')
     ap.add_argument('--val-fold', type=int, default=0, help='Fold id to evaluate (matches train.csv fold_id)')
     ap.add_argument('--series-limit', type=int, default=0, help='Optional limit on number of validation series (debug)')
     ap.add_argument('--save-csv', type=str, default='', help='Optional path to save per-series predictions CSV')
     ap.add_argument('--verbose', default=True, action='store_true')
-    # Volume processing settings
-    ap.add_argument('--target-spacing', type=float, default=1.0, help='Target isotropic spacing for volume resampling')
-    ap.add_argument('--crop-size', type=int, nargs=3, default=[32, 128, 128], help='Crop size for sliding window (D H W)')
-    ap.add_argument('--overlap', type=float, default=0.5, help='Overlap ratio for sliding window inference')
+    # Volume processing settings (simplified for full volume inference)
+    ap.add_argument('--target-shape', type=int, nargs=3, default=[128, 384, 384], help='Target volume shape (D H W)')
     ap.add_argument('--model-name', type=str, default='tf_efficientnetv2_s.in21k_ft_in1k', help='timm3d model name')
-    # Data preprocessing options
+    ap.add_argument('--normalization', type=str, default='minmax', choices=['minmax'], help='Normalization method (standardized to minmax)')
     # Plot arguments
     ap.add_argument('--save-plot', type=str, default='', help='Path to save AUC evolution plot (e.g., auc_evolution.png)')
     ap.add_argument('--show-plot', action='store_true', help='Display AUC evolution plot during validation')
     ap.add_argument('--plot-interval', type=int, default=10, help='Interval for AUC tracking (every N series)')
+    # Memory optimization
+    ap.add_argument('--use-int8', action='store_true', help='Use int8 quantization for memory savings (matches training data format)')
     return ap.parse_args()
 
 
@@ -111,9 +112,7 @@ def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
 
 def min_max_normalize(img: np.ndarray) -> np.ndarray:
     """
-    WARNING: This function creates inconsistency with training!
-    Training uses simple /255.0 normalization, but this does per-slice min-max.
-    Consider using simple /255.0 for consistency if your data is in 0-255 range.
+    Min-max normalization to [0,1] range - matches training pipeline exactly.
     """
     mn, mx = float(img.min()), float(img.max())
     if mx - mn < 1e-6:
@@ -123,8 +122,7 @@ def min_max_normalize(img: np.ndarray) -> np.ndarray:
 
 def simple_normalize_255(img: np.ndarray) -> np.ndarray:
     """
-    Simple normalization matching training pipeline: divide by 255.0
-    Use this if your DICOM data is in 0-255 range after HU conversion
+    Legacy normalization - no longer used. Data is now stored as float16 [0,1].
     """
     return (img.astype(np.float32) / 255.0).clip(0, 1)
 
@@ -171,16 +169,26 @@ def load_timm3d_model(weights_path: str, model_name: str) -> torch.nn.Module:
 def collect_series_slices(series_dir: Path) -> List[Path]:
     return sorted(series_dir.glob('*.dcm'))
 
-def resample_to_patch_size(vol: np.ndarray, target_shape: Tuple[int, int, int] = (128, 384, 384)) -> np.ndarray:
-    """Resample volume to target shape (Z, Y, X order)."""
+def resample_to_patch_size_gpu(vol: np.ndarray, target_shape: Tuple[int, int, int] = (128, 384, 384)) -> np.ndarray:
+    """Resample volume to target shape using GPU acceleration (Z, Y, X order)."""
     current_shape = vol.shape
     zoom = (target_shape[0] / current_shape[0], 
             target_shape[1] / current_shape[1], 
             target_shape[2] / current_shape[2])
-    return ndimage.zoom(vol, zoom, order=1, prefilter=False)
+    
+    # Move to GPU, resample, then back to CPU
+    vol_gpu = cp.asarray(vol)
+    vol_resampled_gpu = cpx_ndimage.zoom(vol_gpu, zoom, order=1, prefilter=False)
+    vol_resampled = cp.asnumpy(vol_resampled_gpu)
+    
+    # Free GPU memory
+    del vol_gpu, vol_resampled_gpu
+    cp.get_default_memory_pool().free_all_blocks()
+    
+    return vol_resampled
 
 
-def load_volume_from_series(series_dir: Path, target_spacing: float = 1.0, normalization: str = 'minmax'):
+def load_volume_from_series(series_dir: Path, target_shape: Tuple[int, int, int] = (128, 384, 384), normalization: str = 'minmax', use_int8: bool = False):
     """Load and process volume from DICOM series with isotropic resampling."""
     # Get ordered DICOM files
     files = list(series_dir.glob("*.dcm"))
@@ -205,7 +213,7 @@ def load_volume_from_series(series_dir: Path, target_spacing: float = 1.0, norma
     tmp.sort(key=lambda x: x[0])
     paths = [t[1] for t in tmp]
     
-    # Load volume
+    # Load volume without normalization
     slices = []
     spacing = None
     for p in paths:
@@ -221,9 +229,9 @@ def load_volume_from_series(series_dir: Path, target_spacing: float = 1.0, norma
             except Exception:
                 pass
             for f in frames:
-                slices.append(min_max_normalize(f))
+                slices.append(f)
         elif len(frames) == 1:
-            slices.append(min_max_normalize(frames[0]))
+            slices.append(frames[0])
             if spacing is None:
                 try:
                     ds = pydicom.dcmread(str(p), stop_before_pixels=True)
@@ -240,99 +248,53 @@ def load_volume_from_series(series_dir: Path, target_spacing: float = 1.0, norma
         raise RuntimeError(f"No readable frames in {series_dir}")
     
     vol = np.stack(slices, axis=0).astype(np.float32)
+    # Apply min-max normalization to [0,1] to match training pipeline exactly
+    vol = min_max_normalize(vol)
     print(f"Loaded volume shape: {vol.shape}")
-    vol = resample_to_patch_size(vol, target_shape=(128, 384, 384))
-    print(f"Resampled volume shape: {vol.shape}")
-    # Resample to isotropic spacing
-    #if spacing is not None:
-    #    sx, sy, sz = spacing
-    #    zoom = (sz / target_spacing, sy / target_spacing, sx / target_spacing)
-    #    vol = ndimage.zoom(vol, zoom, order=1, prefilter=False)
-    #    print(f"Resampled volume shape: {vol.shape}")
+    
+    # Resample and convert to target dtype if needed
+    output_dtype = np.uint8 if use_int8 else np.float32
+    vol = resample_to_patch_size_gpu(vol, target_shape=target_shape)
+    
+    # Convert to uint8 if quantization is enabled
+    if use_int8:
+        vol = (vol * 255).astype(np.uint8)
+    
+    print(f"Resampled volume shape: {vol.shape}, dtype: {vol.dtype}")
     
     return vol
 
 
-def model_wrapper(model):
-    """Wrapper to make timm3d model compatible with MONAI sliding window inference."""
-    def wrapped_model(x):
-        # x shape: (batch, channels, D, H, W)
-        with torch.no_grad():
-            logits = model(x)  # Shape: (batch, 1)
-            # Expand logits to match spatial dimensions for MONAI
-            # MONAI expects output shape to match input spatial dims
-            batch_size = x.shape[0]
-            spatial_dims = x.shape[2:]  # (D, H, W)
-            # Expand to (batch, 1, D, H, W) by repeating the scalar prediction
-            # Clone to avoid zero-stride expanded view errors during in-place ops in MONAI
-            expanded = (
-                logits.view(batch_size, 1, 1, 1, 1)
-                .expand(batch_size, 1, *spatial_dims)
-                .clone()
-            )
-            return expanded
-    return wrapped_model
-
-def sliding_window_inference_3d(model: torch.nn.Module, volume: np.ndarray, 
-                               crop_size: tuple, overlap: float = 0.5, 
-                               batch_size: int = 4) -> float:
+def full_volume_inference(model: torch.nn.Module, volume: np.ndarray) -> float:
     """
-    Optimized manual sliding window with batching.
-    FIXED: Now uses max over logits to match training validation aggregation.
+    Direct inference on full volume without sliding window.
+    Assumes volume is already resized to (128, 384, 384).
     """
+    # Ensure volume has the expected shape
+    if volume.shape != (128, 384, 384):
+        print(f"Warning: Volume shape {volume.shape} != expected (128, 384, 384)")
     
-    D, H, W = volume.shape
-    crop_d, crop_h, crop_w = crop_size
+    # Handle different input formats: uint8 [0,255] or float32 [0,1]
+    if volume.dtype == np.uint8:
+        # Convert uint8 [0,255] to float32 [0,1] for model inference
+        volume_normalized = volume.astype(np.float32) / 255.0
+    else:
+        # Already normalized float32
+        volume_normalized = volume.astype(np.float32)
     
-    step_d = max(1, int(crop_d * (1 - overlap)))
-    step_h = max(1, int(crop_h * (1 - overlap)))
-    step_w = max(1, int(crop_w * (1 - overlap)))
+    # Convert to tensor: (C, H, W, D) format for timm_3d
+    # volume shape: (128, 384, 384) = (D, H, W)
+    volume_transposed = volume_normalized.transpose(1, 2, 0)  # (H, W, D)
+    volume_tensor = torch.from_numpy(volume_transposed).unsqueeze(0).unsqueeze(0).to(DEVICE)  # (1, 1, H, W, D)
     
-    # Pre-compute all windows
-    windows = []
-    for d in range(0, max(1, D - crop_d + 1), step_d):
-        for h in range(0, max(1, H - crop_h + 1), step_h):
-            for w in range(0, max(1, W - crop_w + 1), step_w):
-                d_end = min(d + crop_d, D)
-                h_end = min(h + crop_h, H)
-                w_end = min(w + crop_w, W)
-                d_start = max(0, d_end - crop_d)
-                h_start = max(0, h_end - crop_h)
-                w_start = max(0, w_end - crop_w)
-                
-                window = volume[d_start:d_end, h_start:h_end, w_start:w_end]
-                
-                if window.shape != crop_size:
-                    padded = np.zeros(crop_size, dtype=np.float32)
-                    pd, ph, pw = window.shape
-                    padded[:pd, :ph, :pw] = window
-                    window = padded
-                
-                windows.append(window)
-    
-    if not windows:
-        return 0.0
-    
-    # Process in batches and collect logits (not probabilities)
-    all_logits = []
-    for i in range(0, len(windows), batch_size):
-        batch_windows = windows[i:i + batch_size]
-        batch_tensor = torch.from_numpy(np.stack(batch_windows)).unsqueeze(1).to(DEVICE)
+    with torch.no_grad():
+        logits = model(volume_tensor)  # Shape: (1, 1)
+        logit = logits.item()
         
-        with torch.no_grad():
-            batch_logits = model(batch_tensor)  # Shape: (batch, 1)
-            all_logits.extend(batch_logits.squeeze(-1).cpu().numpy())
-    
-    # FIXED: Use max over logits (like training), then apply sigmoid
-    # This matches the training validation aggregation method
-    all_logits = np.array(all_logits)
-    all_logits = np.nan_to_num(all_logits, nan=-np.inf, posinf=np.inf, neginf=-np.inf)
-    max_logit = np.max(all_logits)
-    
-    # Convert max logit to probability
-    max_prob = 1.0 / (1.0 + np.exp(-max_logit))  # sigmoid
-    print(f"Max prob: {max_prob}")
-    return float(max_prob)
+    # Convert logit to probability
+    prob = 1.0 / (1.0 + np.exp(-logit))  # sigmoid
+    print(f"Volume prob: {prob:.4f}")
+    return float(prob)
 
 
 def create_auc_evolution_plot(auc_tracking: Dict, save_path: str = '', show_plot: bool = False, plane: str = ''):
@@ -391,7 +353,7 @@ def main():
     
     data_root = Path(data_path)
     series_root = data_root / 'series'
-    train_df = pd.read_csv(data_root / 'train_df.csv') if (data_root / 'train_df.csv').exists() else pd.read_csv(data_root / 'train.csv')
+    train_df = pd.read_csv(data_root / 'train.csv')
     if 'Aneurysm Present' not in train_df.columns:
         raise SystemExit("train_df.csv requires 'Aneurysm Present' column for classification label")
 
@@ -402,8 +364,8 @@ def main():
     print(f"Validation fold {args.val_fold}: {len(val_series)} series")
     print(f"Model weights: {args.weights}")
     print(f"Model name: {args.model_name}")
-    print(f"Crop size: {args.crop_size}")
-    print(f"Overlap: {args.overlap}")
+    print(f"Target shape: {args.target_shape}")
+    print(f"Normalization: {args.normalization}")
 
 
     # Load timm3d model
@@ -436,8 +398,8 @@ def main():
             continue
         
         try:
-            # Load volume with isotropic resampling
-            vol = load_volume_from_series(series_dir, args.target_spacing, args.normalization)
+            # Load volume and resize to target shape
+            vol = load_volume_from_series(series_dir, tuple(args.target_shape), args.normalization, args.use_int8)
             
             # Check if volume is valid
             if vol is None or vol.size == 0:
@@ -445,12 +407,8 @@ def main():
                     print(f"[EMPTY] {sid}")
                 continue
             
-            # Run sliding window inference
-            prob = sliding_window_inference_3d(
-                model, vol, 
-                crop_size=tuple(args.crop_size), 
-                overlap=args.overlap
-            )
+            # Run full volume inference
+            prob = full_volume_inference(model, vol)
             
         except Exception as e:
             if args.verbose:
@@ -623,9 +581,8 @@ if __name__ == '__main__':
 #    --weights rsna-iad-binary/ez8q5xzs/checkpoints/best-fold0-epoch=4-val_weighted_auc=0.723.ckpt \
 #    --val-fold 0 \
 #    --model-name tf_efficientnetv2_s.in21k_ft_in1k \
-#    --crop-size 32 128 128 \
-#    --overlap 0.5 \
-#    --target-spacing 1.0 \
+#    --target-shape 128 384 384 \
+#    --normalization minmax \
 #    --save-csv predictions.csv
 
 # Original (potentially inconsistent with training):

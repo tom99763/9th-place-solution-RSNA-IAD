@@ -39,8 +39,6 @@ def set_seed(seed: int = 42):
     np.random.seed(seed)
 
 
-
-
 class VolumeDataset(Dataset):
     def __init__(self, data_dir: str, fold: int, mode: str = 'train', debug: bool = False):
         """
@@ -71,8 +69,8 @@ class VolumeDataset(Dataset):
         # Apply debug sampling if enabled
         if self.debug and len(self.items) > 0:
             original_count = len(self.items)
-            # Sample 1% of the data, but ensure at least 1 sample
-            sample_size = max(1, int(len(self.items) * 0.01))
+            # Sample 10% of the data, but ensure at least 1 sample
+            sample_size = max(1, int(len(self.items) * 0.1))
             if sample_size < len(self.items):
                 # Use deterministic sampling based on fold and mode for reproducibility
                 # This ensures same samples are selected even if setup() is called multiple times
@@ -83,7 +81,7 @@ class VolumeDataset(Dataset):
                 print(f"DEBUG MODE: Sampled {len(self.items)} out of {original_count} samples (1%)")
         
         print(f"Found {len(self.items)} samples for {mode} (folds: {train_folds})")
-        print(f"Full volume size: (128, 384, 384), Mode: {mode}")
+        print(f"Data format: float16 [0,1] -> float32 [0,1] for training. Volume: (128,384,384) -> Model: (1,384,384,128)")
         if self.debug:
             print(f"DEBUG MODE: Using reduced dataset for faster testing")
     
@@ -95,22 +93,36 @@ class VolumeDataset(Dataset):
         path = self.items[idx]
         
         with np.load(path) as npz:
-            volume = npz['volume']  # (128, 384, 384) full volume
+            volume = npz['volume']  # (128, 384, 384) full volume - float16 [0,1] or uint8 [0,255]
             mask = npz.get('mask', None)  # Mask if available
-            
-        # Normalize to [0, 1] more efficiently
-        volume_normalized = (volume / 255.0).astype(np.float32)
         
-        # Determine label from mask: positive if any mask value > 0.01
+        # Handle different data formats: uint8 [0,255] or float16 [0,1]
+        if volume.dtype == np.uint8:
+            # Convert uint8 [0,255] to float32 [0,1] for training
+            volume_normalized = (volume.astype(np.float32) / 255.0)
+        else:
+            # Ensure float32 for stable training (AMP handles casting)
+            volume_normalized = volume.astype(np.float32)
+        # Replace any NaNs/Infs that might exist in the source arrays
+        
+        # Determine label from mask: positive if any mask value > threshold
         if mask is not None:
-            label = 1 if np.any(mask > 0.01) else 0
+            # Handle different mask formats: uint8 [0,255] or float16 [0,1]
+            if mask.dtype == np.uint8:
+                threshold = 2  # For uint8, use threshold of 2/255
+                label = 1 if np.any(mask > threshold) else 0
+            else:
+                threshold = 0.01  # For float16, use threshold of 0.01
+                label = 1 if np.any(mask > threshold) else 0
         else:
             # Infer from filename if mask not available
             label = 1 if 'pos_' in path else 0
         
-        # Convert to tensor (no augmentations for speed)
-        x = torch.from_numpy(volume_normalized).unsqueeze(0)  # Add channel dim
-        
+        # Apply correct transpose for timm_3d: (D, H, W) -> (C, H, W, D)
+        # volume shape: (128, 384, 384) = (D, H, W)
+        volume_transposed = volume_normalized.transpose(1, 2, 0)  # (384, 384, 128) = (H, W, D)
+        x = torch.from_numpy(volume_transposed).unsqueeze(0).to(torch.float32)     # (1, 384, 384, 128) = (C, H, W, D)
+  
         y = torch.tensor(label, dtype=torch.float32)
         return x, y
     
@@ -129,16 +141,24 @@ class LightningModel(pl.LightningModule):
             num_classes=1,  # Single binary output
             global_pool="avg",
             in_chans=1,
-            drop_path_rate=0.05,  # Reduced for speed
-            drop_rate=0.05,       # Reduced for speed
+            drop_path_rate=0.2, 
+            drop_rate=0.2,      
         )
         
         # Disable gradient checkpointing for speed (trades memory for speed)
         if hasattr(self.model, 'set_grad_checkpointing'):
             self.model.set_grad_checkpointing(False)
         
+        # Enable torch.compile for PyTorch 2.0+ speedup
+        if hasattr(torch, 'compile') and torch.__version__ >= '2.0':
+            try:
+                self.model = torch.compile(self.model, mode='default')
+                print("Model compiled with torch.compile for faster training")
+            except Exception as e:
+                print(f"torch.compile failed: {e}. Continuing without compilation.")
+        
         # Store pos_weight for binary classification
-        self.register_buffer("pos_weight", torch.tensor(pos_weight, dtype=torch.float32))
+        self.register_buffer("pos_weight", torch.tensor(pos_weight, dtype=torch.float16))
         
         # For metrics tracking
         self.training_step_outputs = []
@@ -149,11 +169,22 @@ class LightningModel(pl.LightningModule):
     
     def compute_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         device = logits.device
-        # Guard against NaNs/Infs in logits
-        safe_logits = torch.nan_to_num(logits, nan=0.0, posinf=20.0, neginf=-20.0).float()
-        return F.binary_cross_entropy_with_logits(
-            safe_logits.squeeze(-1), targets.to(device).float(), pos_weight=self.pos_weight.to(device).float(), reduction="mean"
+        
+        # Check for numerical issues before clamping
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            print(f"Warning: Found NaN/Inf in logits: nan={torch.isnan(logits).sum()}, inf={torch.isinf(logits).sum()}")
+        
+
+        # Ensure we have valid targets
+        targets_clean = targets.to(device).float()
+        
+        loss = F.binary_cross_entropy_with_logits(
+            logits.squeeze(-1), targets_clean, 
+            pos_weight=self.pos_weight.to(device).float(), 
+            reduction="mean"
         )
+        
+        return loss
     
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -181,6 +212,10 @@ class LightningModel(pl.LightningModule):
         logits = self(x)
         loss = self.compute_loss(logits, y)
         
+        # Log validation loss
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, 
+                batch_size=x.size(0), sync_dist=True)
+        
         # Store outputs for epoch-end metrics calculation
         self.validation_step_outputs.append({
             'logits': logits.detach().cpu(),
@@ -207,22 +242,30 @@ class LightningModel(pl.LightningModule):
             # Binary classification metrics at threshold 0.5
             y_pred = (probs > 0.5).astype(int)
             
-            # Handle edge cases for metrics calculation
+            # Calculate per-class metrics and take their average
             if len(np.unique(targets_np)) > 1 and len(np.unique(y_pred)) > 1:
-                f1 = f1_score(targets_np, y_pred, average='binary', zero_division=0)
+                # F1 score for each class, then average
+                f1_per_class = f1_score(targets_np, y_pred, average=None, zero_division=0)
+                f1_macro = np.mean(f1_per_class)  # Average of no_aneurysm and aneurysm F1
+                
+                # Precision and recall for each class, then average
+                precision_per_class = precision_score(targets_np, y_pred, average=None, zero_division=0)
+                precision_macro = np.mean(precision_per_class)
+                
+                recall_per_class = recall_score(targets_np, y_pred, average=None, zero_division=0)
+                recall_macro = np.mean(recall_per_class)
             else:
-                f1 = 0.0
+                f1_macro = 0.0
+                precision_macro = 0.0
+                recall_macro = 0.0
+            
+            # Overall accuracy (unchanged)
             acc = accuracy_score(targets_np, y_pred)
             
-            self.log("train_f1", f1, on_epoch=True, prog_bar=True, sync_dist=True)
-            self.log("train_acc", acc, on_epoch=True, prog_bar=True, sync_dist=True)
-
-            # Balanced accuracy (sklearn handles class imbalance automatically)
-            balanced_acc = balanced_accuracy_score(targets_np, y_pred)
-            
-            # Log balanced metrics
-            self.log("train_balanced_acc", balanced_acc, on_epoch=True, prog_bar=True, sync_dist=True)
-
+            # Log macro-averaged metrics (average of both classes)
+            self.log("train_f1_macro", f1_macro, on_epoch=True, prog_bar=True, sync_dist=True)
+            self.log("train_precision_macro", precision_macro, on_epoch=True, prog_bar=True, sync_dist=True)
+            self.log("train_recall_macro", recall_macro, on_epoch=True, prog_bar=True, sync_dist=True)
             # AUC calculation if both classes present
             if len(np.unique(targets_np)) > 1:
                 auc = roc_auc_score(targets_np, probs)
@@ -255,14 +298,36 @@ class LightningModel(pl.LightningModule):
             # Binary classification metrics at threshold 0.5
             y_pred = (probs > 0.5).astype(int)
             
-            # Essential metrics only for speed
+            # Calculate per-class metrics and take their average
+            if len(np.unique(targets_np)) > 1 and len(np.unique(y_pred)) > 1:
+                # F1 score for each class, then average
+                f1_per_class = f1_score(targets_np, y_pred, average=None, zero_division=0)
+                f1_macro = np.mean(f1_per_class)  # Average of no_aneurysm and aneurysm F1
+                
+                # Precision and recall for each class, then average
+                precision_per_class = precision_score(targets_np, y_pred, average=None, zero_division=0)
+                precision_macro = np.mean(precision_per_class)
+                
+                recall_per_class = recall_score(targets_np, y_pred, average=None, zero_division=0)
+                recall_macro = np.mean(recall_per_class)
+            else:
+                f1_macro = 0.0
+                precision_macro = 0.0
+                recall_macro = 0.0
+            
+            # Overall accuracy and AUC
+            acc = accuracy_score(targets_np, y_pred)
+            
             if len(np.unique(targets_np)) > 1:
                 auc = roc_auc_score(targets_np, probs)
             else:
                 auc = 0.5
+                
+            # Log macro-averaged metrics (average of both classes)
+            self.log("val_f1_macro", f1_macro, prog_bar=True, sync_dist=True)
+            self.log("val_precision_macro", precision_macro, prog_bar=True, sync_dist=True)
+            self.log("val_recall_macro", recall_macro, prog_bar=True, sync_dist=True)
             self.log("val_auc", auc, prog_bar=True, sync_dist=True)
-            
-            acc = accuracy_score(targets_np, y_pred)
             self.log("val_acc", acc, prog_bar=True, sync_dist=True)
                 
         except Exception as e:
@@ -319,13 +384,13 @@ class DataModule(pl.LightningDataModule):
         
     def train_dataloader(self):
         return DataLoader(self.train_ds, batch_size=self.batch_size, shuffle=True, 
-                         num_workers=8, persistent_workers=True, pin_memory=True, 
-                         prefetch_factor=2)
+                         num_workers=4, persistent_workers=True, pin_memory=True, 
+                         prefetch_factor=2, drop_last=True)
     
     def val_dataloader(self):
         val_batch_size = self.batch_size     
        
-        return DataLoader(self.val_ds, batch_size=val_batch_size, num_workers=8, 
+        return DataLoader(self.val_ds, batch_size=val_batch_size, num_workers=4, 
                          persistent_workers=True, pin_memory=True, prefetch_factor=2)
 
 
@@ -335,7 +400,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", default="aneurysm_cubes_v2", help="Root directory with fold_0, fold_1, etc.")
     parser.add_argument("--fold", type=int, default=0, help="Validation fold (0-4)")
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--model-name", default="tf_efficientnetv2_s.in21k_ft_in1k")
@@ -380,9 +445,8 @@ def main():
                 "model_name": args.model_name,
                 "pos_weight": dm.pos_weight,
                 "task_type": "binary_aneurysm_detection_full_volumes",
-                "volume_size_d": 128,
-                "volume_size_h": 384,
-                "volume_size_w": 384,
+                "input_volume_shape_d_h_w": "(128, 384, 384)",
+                "model_input_shape_c_h_w_d": "(1, 384, 384, 128)",
                 "augmentations_disabled": True,
                 "debug_mode": args.debug,
                 "balanced_metrics": True,  # Indicate that balanced metrics are calculated
@@ -410,12 +474,12 @@ def main():
         logger=logger,
         precision="16-mixed",  # Use mixed precision for memory efficiency
         gradient_clip_val=1.0,  # Gradient clipping for stability
-        check_val_every_n_epoch=5,
+        check_val_every_n_epoch=1,
         enable_progress_bar=True,
         log_every_n_steps=10,  # Reduce logging frequency
         enable_model_summary=True,
         accumulate_grad_batches=1,  # No gradient accumulation for now
-        deterministic=False,  # Allow non-deterministic operations for speed
+        deterministic=True,  # Allow non-deterministic operations for speed
     )
     
     trainer.fit(model, dm)

@@ -78,9 +78,9 @@ if __name__ == "__main__":
     main()
 
 
-#python3 visualize_unet_data.py --npz-path data/unet_dataset/train/1.2.826.0.1.3680043.8.498.76479968083900503150635695368644295015.npz --num-slices 8 --output visualization.png
+#python3 visualize_unet_data.py --npz-path /home/sersasj/RSNA-IAD-Codebase/aneurysm_cubes_v2/fold_0/pos_1.2.826.0.1.3680043.8.498.16498069099052247846266977529556429324.npz --num-slices 8 --output visualization.png
 
-#python3 visualize_unet_data.py --npz-path data/Dataset001_unet_isotropic_resize/train/1.2.82
+#python3 visualize_unet_data.py --npz-path /home/sersasj/RSNA-IAD-Codebase/aneurysm_cubes_v2/fold_0/pos_1.2.826.0.1.3680043.8.498.10005158603912009425635473100344077317.npz
 #6.0.1.3680043.8.498.76479968083900503150635695368644295015.npz --num-slices 8 --output visualization.png
 
 #data/Dataset001_unet_isotropic_resize/train/1.2.826.0.1.3680043.8.498.10129540112106776730428126836684374398.npz

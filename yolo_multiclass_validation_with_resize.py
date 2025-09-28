@@ -41,6 +41,15 @@ from scipy import ndimage
 sys.path.insert(0, "ultralytics-timm")
 from ultralytics import YOLO
 
+# Try to import CuPy for GPU acceleration, fallback to CPU if not available
+try:
+    import cupy as cp
+    CUPY_AVAILABLE = True
+    print("CuPy available - will use for 3D resizing when z-axis changes")
+except ImportError:
+    CUPY_AVAILABLE = False
+    print("CuPy not available - using CPU/OpenCV processing")
+
 # Project root & config imports
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'src'))
@@ -81,7 +90,7 @@ def parse_args():
     ap.add_argument('--wandb-resume-id', type=str, default='', help='Resume W&B run id (optional)')
     # Volume resizing arguments
     ap.add_argument('--use-volume-resize', default=True, action='store_true', help='Enable volume resizing using scipy.ndimage.zoom')
-    ap.add_argument('--volume-target-depth', type=int, default=128, help='Target depth for volume resizing')
+    ap.add_argument('--volume-target-depth', type=int, default=32, help='Target depth for volume resizing')
     ap.add_argument('--volume-target-height', type=int, default=512, help='Target height for volume resizing')
     ap.add_argument('--volume-target-width', type=int, default=512, help='Target width for volume resizing')
     return ap.parse_args()
@@ -199,12 +208,17 @@ def calculate_partial_aucs(cls_labels: List[int], series_probs: Dict[str, float]
     return cls_auc, loc_macro_auc
 
 
-def resize_volume_to_target(volume: np.ndarray, target_shape: Tuple[int, int, int] = (128, 512, 512)) -> np.ndarray:
-    """Resize a 3D volume to target shape using scipy.ndimage.zoom.
+def resize_volume_to_target(volume: np.ndarray, target_shape: Tuple[int, int, int] = (128, 512, 512), verbose: bool = False) -> np.ndarray:
+    """Resize a 3D volume to target shape using CuPy or scipy.ndimage.zoom.
+    
+    Uses the same logic as prepare_yolo_dataset_v3.py for consistency:
+    - CuPy for GPU processing when z-axis needs resizing (matches training)
+    - OpenCV for per-slice resizing when z-axis unchanged
     
     Args:
         volume: Input 3D volume of shape (D, H, W)
         target_shape: Target shape (target_D, target_H, target_W)
+        verbose: Whether to print debug information
     
     Returns:
         Resized volume with target shape
@@ -215,8 +229,51 @@ def resize_volume_to_target(volume: np.ndarray, target_shape: Tuple[int, int, in
     current_shape = volume.shape
     zoom_factors = tuple(target_shape[i] / current_shape[i] for i in range(3))
     
-    # Use scipy.ndimage.zoom for smooth resizing
-    resized_volume = ndimage.zoom(volume, zoom_factors, order=1, mode='nearest')
+    # Check if z-axis needs resizing (same logic as training)
+    z_needs_resize = abs(zoom_factors[0] - 1.0) > 1e-6
+    
+    if z_needs_resize:
+        # Always use CuPy for GPU processing to match training - no CPU fallback
+        if not CUPY_AVAILABLE:
+            raise RuntimeError("CuPy is required for GPU processing but not available. Please install CuPy.")
+        
+        # Import CuPy's scipy-compatible ndimage module
+        from cupyx.scipy import ndimage as cp_ndimage
+        # Move volume to GPU
+        volume_gpu = cp.asarray(volume)
+        # Use CuPy's zoom function (same as training)
+        resized_volume_gpu = cp_ndimage.zoom(volume_gpu, zoom_factors, order=1)
+        # Move back to CPU
+        resized_volume = cp.asnumpy(resized_volume_gpu)
+        # Clean up GPU memory immediately
+        del volume_gpu, resized_volume_gpu
+        cp.get_default_memory_pool().free_all_blocks()
+        if verbose:
+            print(f"[DEBUG] Used CuPy for 3D resize with z-factor={zoom_factors[0]:.3f}")
+    else:
+        # Use OpenCV for per-slice 2D resizing when z-axis unchanged (matches training)
+        target_h, target_w = target_shape[1], target_shape[2]
+        if verbose:
+            print(f"[DEBUG] Using OpenCV for per-slice resize to {target_h}x{target_w} (z unchanged)")
+        
+        resized_slices = []
+        for slice_idx in range(volume.shape[0]):
+            slice_2d = volume[slice_idx]  # Shape: (H, W)
+            resized_slice = cv2.resize(slice_2d, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            resized_slices.append(resized_slice)
+        
+        resized_volume = np.stack(resized_slices, axis=0)
+        del resized_slices
+    
+    # Ensure exact target shape (zoom might have slight rounding differences)
+    if resized_volume.shape != target_shape:
+        # Pad or crop to exact target shape (same as training)
+        final_volume = np.zeros(target_shape, dtype=resized_volume.dtype)
+        min_z = min(resized_volume.shape[0], target_shape[0])
+        min_y = min(resized_volume.shape[1], target_shape[1]) 
+        min_x = min(resized_volume.shape[2], target_shape[2])
+        final_volume[:min_z, :min_y, :min_x] = resized_volume[:min_z, :min_y, :min_x]
+        resized_volume = final_volume
     
     return resized_volume
 
@@ -360,7 +417,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
             # Resize volume to target shape
             target_shape = (args.volume_target_depth, args.volume_target_height, args.volume_target_width)
             try:
-                resized_volume = resize_volume_to_target(volume, target_shape)
+                resized_volume = resize_volume_to_target(volume, target_shape, verbose=args.verbose)
             except Exception as e:
                 if args.verbose:
                     print(f"[SKIP] {sid}: Volume resize failed: {e}")

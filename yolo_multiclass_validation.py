@@ -45,7 +45,7 @@ N_LOC = len(LOCATION_LABELS)
 def parse_args():
     ap = argparse.ArgumentParser(description="Series-level validation for YOLO (13-class)")
     ap.add_argument('--weights', type=str, required=False, default='', help='Path to YOLO weights (.pt) with 13 classes')
-    ap.add_argument('--val-fold', type=int, default=1, help='Fold id to evaluate (matches train.csv fold_id)')
+    ap.add_argument('--val-fold', type=int, default=1, help='Fold id to evaluate (matches  fold_id)')
     ap.add_argument('--series-limit', type=int, default=0, help='Optional limit on number of validation series (debug)')
     ap.add_argument('--max-slices', type=int, default=0, help='Optional cap on number of slices/windows per series (debug)')
     ap.add_argument('--save-csv', type=str, default='', help='Optional path to save per-series predictions CSV (deprecated, prefer --out-dir)')
@@ -58,7 +58,7 @@ def parse_args():
     ap.add_argument('--mip-img-size', type=int, default=0, help='Optional resize of MIP/slice to this square size before inference (0 keeps original)')
     ap.add_argument('--mip-no-overlap', action='store_true', help='Use non-overlapping MIP windows (stride = 2*w+1 instead of slice_step)')
     # CV
-    ap.add_argument('--cv', action='store_true', help='Run validation across all folds found in train_df.csv/train.csv')
+    ap.add_argument('--cv', action='store_true', help='Run validation across all folds found in train_df.csv/')
     ap.add_argument('--folds', type=str, default='', help='Comma-separated fold ids to run (overrides --val-fold when provided)')
     # Weights & Biases
     ap.add_argument('--wandb', default=True, action='store_true', help='Log metrics and outputs to Weights & Biases')
@@ -116,7 +116,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
     # Load split
     data_root = Path(data_path)
     series_root = data_root / 'series'
-    train_df = pd.read_csv(data_root / 'train_df.csv') if (data_root / 'train_df.csv').exists() else pd.read_csv(data_root / 'train.csv')
+    train_df = pd.read_csv(data_root / 'train.csv')
     if 'Aneurysm Present' not in train_df.columns:
         raise SystemExit("train_df.csv requires 'Aneurysm Present' column for classification label")
 
@@ -647,7 +647,7 @@ def main():
     folds: List[int]
     if args.cv or args.folds:
         data_root = Path(data_path)
-        train_df = pd.read_csv(data_root / 'train_df.csv') if (data_root / 'train_df.csv').exists() else pd.read_csv(data_root / 'train.csv')
+        train_df = pd.read_csv(data_root / 'train.csv')
         if args.folds:
             folds = [int(x) for x in args.folds.split(',') if x.strip() != '']
         else:

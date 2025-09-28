@@ -12,11 +12,16 @@ from scipy import ndimage
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn.model_selection import StratifiedKFold
+# Multilabel stratification for better balance across modality and classes
+from iterstrat.ml_stratifiers import MultilabelStratifiedKFold  # type: ignore
+import cupy as cp
+import cupyx.scipy.ndimage as cpx_ndimage
+from tqdm import tqdm
 
 # Allow importing project configs
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
-from configs.data_config import data_path, SEED
+from configs.data_config import data_path, SEED, LABELS_TO_IDX
 
 
 def min_max_normalize(img: np.ndarray) -> np.ndarray:
@@ -50,23 +55,57 @@ def load_labels(root: Path) -> pd.DataFrame:
     if "x" not in label_df.columns or "y" not in label_df.columns:
         label_df["x"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["x"])  # type: ignore[arg-type]
         label_df["y"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s)["y"])  # type: ignore[arg-type]
+    # Parse frame index 'f' from coordinates when present
+    if "f" not in label_df.columns and "coordinates" in label_df.columns:
+        label_df["f"] = label_df["coordinates"].map(lambda s: ast.literal_eval(s).get("f"))  # type: ignore[arg-type]
+    # Coerce 'f' to nullable integer where possible
+    if "f" in label_df.columns:
+        try:
+            label_df["f"] = pd.to_numeric(label_df["f"], errors="coerce").astype("Int64")
+        except Exception:
+            # If coercion fails, leave as-is; downstream will handle None/NA
+            pass
     # Standardize dtypes
     label_df["SeriesInstanceUID"] = label_df["SeriesInstanceUID"].astype(str)
     label_df["SOPInstanceUID"] = label_df["SOPInstanceUID"].astype(str)
     return label_df
 
 def load_folds(root: Path, n_folds: int = 5) -> Dict[str, int]:
-    """Create stratified folds from train_df.csv."""
-    df = pd.read_csv(root / "train_df.csv")
-    series_df = df[["SeriesInstanceUID", "Aneurysm Present"]].drop_duplicates()
+    """Map SeriesInstanceUID -> fold_id using MultilabelStratifiedKFold.
+
+    Uses MultilabelStratifiedKFold over [Aneurysm Present] + all location columns + Modality one-hot
+    for optimal balance across modality and classes (same as YOLO stratification).
+    """
+    df_path = root / "train.csv"
+    df = pd.read_csv(df_path)
+
+    base_cols = ["SeriesInstanceUID", "Modality", "Aneurysm Present"]
+    ignore_cols = set(["PatientAge", "PatientSex", "fold_id"]) | set(base_cols)
+    location_cols = [c for c in df.columns if c not in ignore_cols]
+    series_df = df[base_cols + location_cols].drop_duplicates(subset=["SeriesInstanceUID"]).reset_index(drop=True)
     series_df["SeriesInstanceUID"] = series_df["SeriesInstanceUID"].astype(str)
 
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=SEED)
-    fold_map = {}
-    for i, (_, test_idx) in enumerate(skf.split(series_df["SeriesInstanceUID"], series_df["Aneurysm Present"])):
-        for uid in series_df.loc[test_idx, "SeriesInstanceUID"]:
+    fold_map: Dict[str, int] = {}
+
+    modality_onehot = pd.get_dummies(series_df["Modality"], prefix="mod").astype(int)
+    y_df = pd.concat(
+        [
+            series_df[["Aneurysm Present"]].astype(int),
+            series_df[location_cols].fillna(0).astype(int) if location_cols else pd.DataFrame(index=series_df.index),
+            modality_onehot,
+        ],
+        axis=1,
+    )
+    y = y_df.values
+    mskf = MultilabelStratifiedKFold(n_splits=n_folds, shuffle=True, random_state=SEED)
+    for i, (_, test_idx) in enumerate(mskf.split(np.zeros(len(series_df)), y)):
+        for uid in series_df.loc[test_idx, "SeriesInstanceUID"].tolist():
             fold_map[uid] = i
-    
+
+    df["fold_id"] = df["SeriesInstanceUID"].astype(str).map(fold_map)
+    df.to_csv(df_path, index=False)
+    print(f"Updated {df_path} with new fold_id column based on N_FOLDS={n_folds}")
+
     return fold_map
 
 def plot_examples(volumes: List[np.ndarray], masks: List[np.ndarray], series_ids: List[str], labels: List[int], output_dir: Path):
@@ -141,6 +180,7 @@ def ordered_dcm_paths(series_dir: Path) -> Tuple[List[Path], Dict[str, int]]:
     dicom_files = list(series_dir.glob("*.dcm"))
     
     if not dicom_files:
+        print(f"No DICOM files found in series directory: {series_dir}")
         return [], {}
     
     # First pass: collect all slices with their spatial information
@@ -181,25 +221,35 @@ def ordered_dcm_paths(series_dir: Path) -> Tuple[List[Path], Dict[str, int]]:
 
 
 
-
-def resample_isotropic(vol: np.ndarray, spacing: Tuple[float, float, float], target: float = 1.0) -> np.ndarray:
-    """Resample volume to isotropic voxels."""
-    sx, sy, sz = spacing
-    zoom = (sz / target, sy / target, sx / target)  # Z, Y, X order
-    return ndimage.zoom(vol, zoom, order=1, prefilter=False)
-
-def resample_to_patch_size(vol: np.ndarray, target_shape: Tuple[int, int, int] = (128, 384, 384)) -> np.ndarray:
-    """Resample volume to target shape (Z, Y, X order)."""
+def resample_to_patch_size_gpu(vol: np.ndarray, target_shape: Tuple[int, int, int] = (128, 384, 384), output_dtype: np.dtype = np.float16) -> np.ndarray:
+    """Resample volume to target shape using GPU acceleration (Z, Y, X order)."""
     current_shape = vol.shape
     zoom = (target_shape[0] / current_shape[0], 
             target_shape[1] / current_shape[1], 
             target_shape[2] / current_shape[2])
-    return ndimage.zoom(vol, zoom, order=1, prefilter=False)
+    
+    # Move to GPU, resample, then back to CPU with direct dtype conversion
+    vol_gpu = cp.asarray(vol, dtype=cp.float32)  # Ensure float32 for processing
+    vol_resampled_gpu = cpx_ndimage.zoom(vol_gpu, zoom, order=1)
+    
+    # Handle uint8 conversion properly by scaling to 0-255 range
+    if output_dtype == np.uint8:
+        # Scale from 0-1 to 0-255 for uint8
+        vol_resampled = cp.asnumpy((vol_resampled_gpu * 255).astype(cp.uint8))
+    else:
+        vol_resampled = cp.asnumpy(vol_resampled_gpu).astype(output_dtype)
+    
+    # Free GPU memory
+    del vol_gpu, vol_resampled_gpu
+    cp.get_default_memory_pool().free_all_blocks()
+    
+    return vol_resampled
 
 
 def get_spacing_from_paths(paths: List[Path]) -> Tuple[float, float, float]:
     """Extract spacing information from DICOM files."""
     if not paths:
+        print(f"No paths found for series: {paths}")
         return (1.0, 1.0, 1.0)
     
     try:
@@ -212,28 +262,59 @@ def get_spacing_from_paths(paths: List[Path]) -> Tuple[float, float, float]:
         return (1.0, 1.0, 1.0)
 
 
-def extract_aneurysm_cubes(uid: str, root: Path, series_to_labels: Dict[str, List[Tuple[str, float, float]]], 
-                          cube_shape: Tuple[int, int, int] = (32, 32, 32)) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """Extract cubes of specified shape centered on aneurysms."""
+def extract_aneurysm_volumes(uid: str, root: Path, series_to_labels: Dict[str, List[Tuple[str, float, float, int | None]]], 
+                            target_shape: Tuple[int, int, int] = (128, 384, 384), use_int8: bool = False) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Extract full resized volumes for aneurysm series with masks."""
     series_dir = root / "series" / uid
     if not series_dir.exists() or uid not in series_to_labels:
+        print(f"Series directory does not exist or uid not in series_to_labels: {series_dir}, {uid}")
         return []
 
     paths, sop_to_idx = ordered_dcm_paths(series_dir)
     if not paths:
+        print(f"No paths found for series: {series_dir}")
         return []
 
-    # Load and normalize slices
-    slices = []
+    # Load slices without normalization
+    # For multiframe DICOMs, we need to handle frame indices properly
+    # Create a mapping from SOP to frame data for proper handling
+    sop_to_frames = {}
     for path in paths:
         frames = read_dicom_frames_hu(path)
         if frames:
-            slices.append(min_max_normalize(frames[0]))
+            sop_to_frames[path.stem] = frames
+    
+    # Build volume by taking the appropriate frame from each SOP
+    # Check if this SOP has frame-specific annotations
+    sop_to_annotated_frame = {}
+    for sop, x, y, f_idx in series_to_labels[uid]:
+        if f_idx is not None:
+            sop_to_annotated_frame[sop] = f_idx
+    
+    slices = []
+    for path in paths:
+        sop_id = path.stem
+        frames = sop_to_frames.get(sop_id, [])
+        if frames:
+            # Use annotated frame if available, otherwise use first frame
+            frame_idx = 0
+            if sop_id in sop_to_annotated_frame:
+                annotated_frame = sop_to_annotated_frame[sop_id]
+                # Handle both 0-based and 1-based indexing
+                if 0 <= annotated_frame < len(frames):
+                    frame_idx = annotated_frame
+                elif 1 <= annotated_frame <= len(frames):
+                    frame_idx = annotated_frame - 1
+                    
+            slices.append(frames[frame_idx])
     
     if not slices:
+        print(f"No slices found for series: {uid}")
         return []
 
     volume = np.stack(slices, axis=0).astype(np.float32)
+    # Apply min-max normalization at volume level
+    volume = min_max_normalize(volume)
     # Free slice list ASAP
     del slices
     spacing = get_spacing_from_paths(paths)
@@ -241,72 +322,70 @@ def extract_aneurysm_cubes(uid: str, root: Path, series_to_labels: Dict[str, Lis
     # Store original shape for scaling calculations
     orig_shape = volume.shape
     
-    # Resample to isotropic (1mm) voxels
-    volume_iso = resample_to_patch_size(volume, target_shape=(128, 384, 384))
-    n_slices_iso, h_iso, w_iso = volume_iso.shape
+    # Determine output dtype based on quantization option
+    output_dtype = np.uint8 if use_int8 else np.float16
+    
+    # Resample using GPU acceleration to target shape with direct dtype conversion
+    volume_resized = resample_to_patch_size_gpu(volume, target_shape=target_shape, output_dtype=output_dtype)
+    d, h, w = volume_resized.shape
     
     # Free original volume memory immediately
     del volume
     
-    # Calculate scaling factors
-    sx, sy, sz = spacing
-    scale_x = w_iso / orig_shape[2]
-    scale_y = h_iso / orig_shape[1]  
-    scale_z = n_slices_iso / orig_shape[0]
+    # Calculate scaling factors for annotation coordinates
+    scale_x = w / orig_shape[2]
+    scale_y = h / orig_shape[1]  
+    scale_z = d / orig_shape[0]
     
-    cubes = []
-    d, h, w = cube_shape
-    half_d, half_h, half_w = d // 2, h // 2, w // 2
+    # Create combined mask for all aneurysms in this volume with target dtype
+    mask_dtype = np.uint8 if use_int8 else np.float16
+    combined_mask = np.zeros(target_shape, dtype=mask_dtype)
     
-    # Extract cube for each aneurysm
-    for sop, x, y in series_to_labels[uid]:
+    # Add Gaussian balls for each aneurysm location
+    for sop, x, y, f_idx in series_to_labels[uid]:
         idx = sop_to_idx.get(sop)
         if idx is None:
             continue
             
-        # Transform to isotropic space
-        x_iso = int(x * scale_x)
-        y_iso = int(y * scale_y)
-        z_iso = int(idx * scale_z)
+        # Frame handling is now done during volume construction above
+            
+        # Transform annotation coordinates to resized space
+        x_resized = int(x * scale_x)
+        y_resized = int(y * scale_y)
+        z_resized = int(idx * scale_z)
         
-        # Extract cube bounds
-        z_start = max(0, z_iso - half_d)
-        z_end = min(n_slices_iso, z_iso + half_d)
-        y_start = max(0, y_iso - half_h)
-        y_end = min(h_iso, y_iso + half_h)
-        x_start = max(0, x_iso - half_w)
-        x_end = min(w_iso, x_iso + half_w)
+        # Ensure coordinates are within bounds
+        x_resized = max(0, min(w - 1, x_resized))
+        y_resized = max(0, min(h - 1, y_resized))
+        z_resized = max(0, min(d - 1, z_resized))
         
-        # Extract and pad to exact size
-        cube = volume_iso[z_start:z_end, y_start:y_end, x_start:x_end]
+        # Create Gaussian mask at aneurysm location
+        center = (z_resized, y_resized, x_resized)
+        mask = create_gaussian_ball_mask(target_shape, center, radius=6)
         
-        # Pad if needed
-        pad_z = (max(0, half_d - z_iso), max(0, z_iso + half_d - n_slices_iso))
-        pad_y = (max(0, half_h - y_iso), max(0, y_iso + half_h - h_iso))
-        pad_x = (max(0, half_w - x_iso), max(0, x_iso + half_w - w_iso))
+        # Convert mask to target dtype and scale if needed
+        if use_int8:
+            mask_scaled = (mask * 255).astype(np.uint8)
+        else:
+            mask_scaled = mask.astype(np.float16)
         
-        if any(p[0] > 0 or p[1] > 0 for p in [pad_z, pad_y, pad_x]):
-            cube = np.pad(cube, [pad_z, pad_y, pad_x], mode='constant', constant_values=0)
-        
-        # Ensure exact size
-        cube = cube[:d, :h, :w]
-        # IMPORTANT: Detach from volume_iso to avoid keeping large base array in memory
-        cube = np.ascontiguousarray(cube).astype(np.float16, copy=False)
-        
-        # Create Gaussian mask at center
-        center = (d//2, h//2, w//2)
-        mask = create_gaussian_ball_mask(cube_shape, center, radius=6).astype(np.float16)
-        
-        cubes.append((cube, mask))
+        # Add to combined mask (max to handle overlaps)
+        combined_mask = np.maximum(combined_mask, mask_scaled)
     
-    # Free large resampled volume before returning
-    del volume_iso
+    # Volume is already in target dtype from resample function
+    volume_final = volume_resized
+    mask_final = combined_mask
+    
+    # Free GPU memory and intermediate arrays
+    del volume_resized, combined_mask
     gc.collect()
-    return cubes
+    
+    # Return single volume-mask pair
+    return [(volume_final, mask_final)]
 
-def extract_negative_cubes(uid: str, root: Path, cube_shape: Tuple[int, int, int] = (32, 128, 128), 
-                          num_patches: int = 1) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """Extract random patches from negative series (no aneurysms)."""
+def extract_negative_volumes(uid: str, root: Path, target_shape: Tuple[int, int, int] = (128, 384, 384),
+                           use_int8: bool = False) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Extract full resized volumes from negative series (no aneurysms)."""
     series_dir = root / "series" / uid
     if not series_dir.exists():
         return []
@@ -315,88 +394,56 @@ def extract_negative_cubes(uid: str, root: Path, cube_shape: Tuple[int, int, int
     if not paths:
         return []
 
-    # Load and normalize slices
+    # Load slices without normalization
     slices = []
     for path in paths:
         frames = read_dicom_frames_hu(path)
         if frames:
-            slices.append(min_max_normalize(frames[0]))
+            slices.append(frames[0])
     
     if not slices:
         return []
 
     volume = np.stack(slices, axis=0).astype(np.float32)
+    # Apply min-max normalization at volume level
+    volume = min_max_normalize(volume)
     # Free slice list ASAP
     del slices
-    spacing = get_spacing_from_paths(paths)
     
-    # Store original shape for scaling calculations  
-    orig_shape = volume.shape
+    # Determine output dtype based on quantization option
+    output_dtype = np.uint8 if use_int8 else np.float16
     
-    # Resample to isotropic (1mm) voxels
-    volume_iso = resample_to_patch_size(volume, target_shape=(128, 384, 384))
-    n_slices_iso, h_iso, w_iso = volume_iso.shape
+    # Resample using GPU acceleration to target shape with direct dtype conversion
+    volume_resized = resample_to_patch_size_gpu(volume, target_shape=target_shape, output_dtype=output_dtype)
     
     # Free original volume memory immediately
     del volume
     
-    cubes = []
-    d, h, w = cube_shape
-    half_d, half_h, half_w = d // 2, h // 2, w // 2
+    # Volume is already in target dtype from resample function
+    volume_final = volume_resized
     
-    # Extract random patches
-    np.random.seed(SEED + hash(uid) % 10000)  # Consistent but different per series
+    # Create empty mask for negative samples with target dtype
+    mask_dtype = np.uint8 if use_int8 else np.float16
+    mask = np.zeros(target_shape, dtype=mask_dtype)
     
-    for _ in range(num_patches):
-        # Random center coordinates (avoid edges)
-        z_center = np.random.randint(half_d, n_slices_iso - half_d) if n_slices_iso > d else n_slices_iso // 2
-        y_center = np.random.randint(half_h, h_iso - half_h) if h_iso > h else h_iso // 2
-        x_center = np.random.randint(half_w, w_iso - half_w) if w_iso > w else w_iso // 2
-        
-        # Extract cube bounds
-        z_start = max(0, z_center - half_d)
-        z_end = min(n_slices_iso, z_center + half_d)
-        y_start = max(0, y_center - half_h)
-        y_end = min(h_iso, y_center + half_h)
-        x_start = max(0, x_center - half_w)
-        x_end = min(w_iso, x_center + half_w)
-        
-        # Extract and pad to exact size
-        cube = volume_iso[z_start:z_end, y_start:y_end, x_start:x_end]
-        
-        # Pad if needed
-        pad_z = (max(0, half_d - z_center), max(0, z_center + half_d - n_slices_iso))
-        pad_y = (max(0, half_h - y_center), max(0, y_center + half_h - h_iso))
-        pad_x = (max(0, half_w - x_center), max(0, x_center + half_w - w_iso))
-        
-        if any(p[0] > 0 or p[1] > 0 for p in [pad_z, pad_y, pad_x]):
-            cube = np.pad(cube, [pad_z, pad_y, pad_x], mode='constant', constant_values=0)
-        
-        # Ensure exact size
-        cube = cube[:d, :h, :w]
-        # IMPORTANT: Detach from volume_iso to avoid keeping large base array in memory
-        cube = np.ascontiguousarray(cube).astype(np.float16, copy=False)
-        
-        # Create empty mask for negative samples
-        mask = np.zeros(cube_shape, dtype=np.float16)
-        
-        cubes.append((cube, mask))
-    
-    # Free large resampled volume before returning
-    del volume_iso
+    # Free GPU memory
+    del volume_resized
     gc.collect()
-    return cubes
+    
+    # Return single volume-mask pair
+    return [(volume_final, mask)]
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Extract aneurysm cubes with folds")
+    ap = argparse.ArgumentParser(description="Extract aneurysm volumes with folds (no cropping, just resize to target shape)")
     ap.add_argument("--output-dir", default="aneurysm_cubes_v2", help="Output directory")
-    ap.add_argument("--cube-shape", nargs=3, type=int, default=[128, 384, 384], 
-                    help="Cube dimensions as D H W (default: 128 384 384)")
-    ap.add_argument("--max-positive", type=int, default=3000, help="Max positive samples to process")
-    ap.add_argument("--max-negative", type=int, default=3000, help="Max negative samples to process")
-    ap.add_argument("--neg-patches-per-series", type=int, default=1, help="Number of random patches per negative series")
+    ap.add_argument("--target-shape", nargs=3, type=int, default=[128, 384, 384], 
+                    help="Target volume dimensions as D H W (default: 128 384 384)")
+    ap.add_argument("--max-positive", type=int, default=3000, help="Max positive series to process")
+    ap.add_argument("--max-negative", type=int, default=3000, help="Max negative series to process")
     ap.add_argument("--no-examples", action="store_true", help="Skip generating example plots to save memory")
-    ap.add_argument("--batch-size", type=int, default=100, help="Process in batches to control memory usage")
+    ap.add_argument("--batch-size", type=int, default=1, help="Process in batches to control memory usage")
+    ap.add_argument("--use-int8", action="store_true", 
+                    help="Use int8 quantization (0-255) instead of float16 for 50%% space savings")
     return ap.parse_args()
 
 
@@ -412,7 +459,7 @@ def main():
     
     # Load folds and train data
     folds = load_folds(root, n_folds=5)
-    train_df = pd.read_csv(root / "train_df.csv")
+    train_df = pd.read_csv(root / "train.csv")
     train_df["SeriesInstanceUID"] = train_df["SeriesInstanceUID"].astype(str)
     # Get positive and negative series
     positive_series = train_df[train_df["Aneurysm Present"] == 1]["SeriesInstanceUID"].unique()
@@ -422,8 +469,14 @@ def main():
     label_df = load_labels(root)
     series_to_labels = {}
     for _, r in label_df.iterrows():
+        # Frame index can be NA/None; convert to Python int or None
+        f_val = r.get("f", None)
+        try:
+            f_idx = int(f_val) if pd.notna(f_val) else None
+        except Exception:
+            f_idx = None
         series_to_labels.setdefault(r.SeriesInstanceUID, []).append(
-            (str(r.SOPInstanceUID), float(r.x), float(r.y))
+            (str(r.SOPInstanceUID), float(r.x), float(r.y), f_idx)
         )
     
     print(f"Found {len(positive_series)} positive series, {len(negative_series)} negative series")
@@ -438,7 +491,10 @@ def main():
     
     # Process positive samples (all aneurysms)
     processed_positive = 0
-    for uid in positive_series:
+    positive_to_process = positive_series[:args.max_positive]
+    
+    print("Processing positive series...")
+    for uid in tqdm(positive_to_process, desc="Positive series"):
         if processed_positive >= args.max_positive:
             break
             
@@ -447,115 +503,134 @@ def main():
             
         # Determine fold first for early skip check
         fold = folds.get(uid, 0)
-        # Early skip: if all expected files for this series already exist, avoid heavy processing
-        expected_pos = len(series_to_labels.get(uid, []))
-        if expected_pos > 0:
-            fold_dir = output_dir / f"fold_{fold}"
-            existing = list(fold_dir.glob(f"pos_{uid}_*.npz"))
-            if len(existing) >= expected_pos:
-                # Already processed this series
-                continue
+        # Early skip: if file for this series already exists, avoid heavy processing
+        fold_dir = output_dir / f"fold_{fold}"
+        existing_file = fold_dir / f"pos_{uid}.npz"
+        if existing_file.exists():
+            # Already processed this series
+            print(f"Skipping existing positive file: {uid}")
+            continue
 
-        cubes = extract_aneurysm_cubes(uid, root, series_to_labels, tuple(args.cube_shape))
+        volumes = extract_aneurysm_volumes(uid, root, series_to_labels, tuple(args.target_shape), 
+                                          args.use_int8)
         
-        # Skip if no cubes extracted
-        if not cubes:
+        # Skip if no volumes extracted
+        if not volumes:
             continue
         
-        for i, (volume, mask) in enumerate(cubes):
-            cube_id = f"pos_{uid}_{i:02d}"
-            output_file = output_dir / f"fold_{fold}" / f"{cube_id}.npz"
+        # Each series produces one volume (no cropping, just resizing)
+        volume, mask = volumes[0]  # Only one volume per series now
+        volume_id = f"pos_{uid}"
+        output_file = output_dir / f"fold_{fold}" / f"{volume_id}.npz"
+        
+        # Skip if file already exists
+        if output_file.exists():
+            print(f"Skipping existing positive file: {volume_id}")
+            continue
+        
+        # Save to fold directory with optimized compression
+        save_kwargs = {
+            'volume': volume,  # Already in target dtype
+            'mask': mask,      # Already in target dtype  
+            'label': np.uint8(1),
+            'fold': np.uint8(fold)
+        }
+        
+        # Use compressed format for better space savings
+        np.savez_compressed(output_file, **save_kwargs)
+        
+        # Store for plotting (limited to save memory)
+        if store_examples and len(all_volumes) < MAX_EXAMPLES:
+            # Convert to uint8 for plotting, handling different input dtypes
+            if args.use_int8:
+                plot_volume = volume.copy()  # Already uint8
+                plot_mask = mask.copy()      # Already uint8
+            else:
+                plot_volume = (volume * 255).astype(np.uint8, copy=False)
+                plot_mask = (mask * 255).astype(np.uint8, copy=False)
+            all_volumes.append(plot_volume)
+            all_masks.append(plot_mask)
+            all_series_ids.append(volume_id)
+            all_labels.append(1)
+        cube_count += 1
+        processed_positive += 1
+        # Drop references promptly
+        del volume, mask, volumes
+        if cube_count % 25 == 0:
+            gc.collect()
             
-            # Skip if file already exists
-            if output_file.exists():
-                print(f"Skipping existing positive file: {cube_id}")
-                continue
-            
-            # Save to fold directory
-            np.savez_compressed(
-                output_file, 
-                volume=(volume * 255).astype(np.uint8), 
-                mask=mask.astype(np.float16),
-                label=1,
-                fold=fold
-            )
-            
-            # Store for plotting (limited to save memory)
-            if store_examples and len(all_volumes) < MAX_EXAMPLES:
-                all_volumes.append((volume * 255).astype(np.uint8, copy=False))
-                all_masks.append((mask * 255).astype(np.uint8, copy=False))
-                all_series_ids.append(cube_id)
-                all_labels.append(1)
-            cube_count += 1
-            processed_positive += 1
-            # Drop references promptly
-            cubes[i] = None
-            del volume, mask
-            if cube_count % 25 == 0:
-                gc.collect()
-            
-        if cube_count % 50 == 0:
-            print(f"Extracted {cube_count} cubes ({processed_positive} positive)...")
+        # Progress is handled by tqdm
     
-    # Process negative samples (random patches)
+    # Process negative samples
     processed_negative = 0
-    neg_series_needed = min(len(negative_series), args.max_negative // args.neg_patches_per_series)
+    neg_series_needed = min(len(negative_series), args.max_negative)
+    negative_to_process = negative_series[:neg_series_needed]
     
-    for uid in negative_series[:neg_series_needed]:
+    print("Processing negative series...")
+    for uid in tqdm(negative_to_process, desc="Negative series"):
         if processed_negative >= args.max_negative:
             break
             
         # Determine fold first for early skip check
         fold = folds.get(uid, 0)
-        # Early skip: if all expected negative patches for this series already exist
-        expected_neg = args.neg_patches_per_series
+        # Early skip: if file for this series already exists
         fold_dir = output_dir / f"fold_{fold}"
-        existing = list(fold_dir.glob(f"neg_{uid}_*.npz"))
-        if len(existing) >= expected_neg:
+        existing_file = fold_dir / f"neg_{uid}.npz"
+        if existing_file.exists():
             continue
 
-        cubes = extract_negative_cubes(uid, root, tuple(args.cube_shape), args.neg_patches_per_series)
+        volumes = extract_negative_volumes(uid, root, tuple(args.target_shape), 
+                                          args.use_int8)
         
-        # Skip if no cubes extracted
-        if not cubes:
+        # Skip if no volumes extracted
+        if not volumes:
+            print(f"Skipping existing negative file: {volume_id}")
             continue
         
-        for i, (volume, mask) in enumerate(cubes):
-            cube_id = f"neg_{uid}_{i:02d}"
-            output_file = output_dir / f"fold_{fold}" / f"{cube_id}.npz"
+        # Each series produces one volume (no cropping, just resizing)
+        volume, mask = volumes[0]  # Only one volume per series now
+        volume_id = f"neg_{uid}"
+        output_file = output_dir / f"fold_{fold}" / f"{volume_id}.npz"
+        
+        # Skip if file already exists
+        if output_file.exists():
+            print(f"Skipping existing negative file: {volume_id}")
+            continue
+        
+        # Save to fold directory with optimized compression
+        save_kwargs = {
+            'volume': volume,  # Already in target dtype
+            'mask': mask,      # Already in target dtype
+            'label': np.uint8(0),
+            'fold': np.uint8(fold)
+        }
+        
+        # Use compressed format for better space savings
+        np.savez_compressed(output_file, **save_kwargs)
+        
+        # Store for plotting (limited to save memory)
+        if store_examples and len(all_volumes) < MAX_EXAMPLES:
+            # Convert to uint8 for plotting, handling different input dtypes
+            if args.use_int8:
+                plot_volume = volume.copy()  # Already uint8
+                plot_mask = mask.copy()      # Already uint8
+            else:
+                plot_volume = (volume * 255).astype(np.uint8, copy=False)
+                plot_mask = (mask * 255).astype(np.uint8, copy=False)
+            all_volumes.append(plot_volume)
+            all_masks.append(plot_mask)
+            all_series_ids.append(volume_id)
+            all_labels.append(0)
+        cube_count += 1
+        processed_negative += 1
+        # Drop references promptly
+        del volume, mask, volumes
+        if cube_count % 25 == 0:
+            gc.collect()
             
-            # Skip if file already exists
-            if output_file.exists():
-                print(f"Skipping existing negative file: {cube_id}")
-                continue
-            
-            # Save to fold directory
-            np.savez_compressed(
-                output_file, 
-                volume=(volume * 255).astype(np.uint8), 
-                mask=mask.astype(np.float16),
-                label=0,
-                fold=fold
-            )
-            
-            # Store for plotting (limited to save memory)
-            if store_examples and len(all_volumes) < MAX_EXAMPLES:
-                all_volumes.append((volume * 255).astype(np.uint8, copy=False))
-                all_masks.append((mask * 255).astype(np.uint8, copy=False))
-                all_series_ids.append(cube_id)
-                all_labels.append(0)
-            cube_count += 1
-            processed_negative += 1
-            # Drop references promptly
-            cubes[i] = None
-            del volume, mask
-            if cube_count % 25 == 0:
-                gc.collect()
-            
-        if cube_count % 50 == 0:
-            print(f"Extracted {cube_count} cubes ({processed_positive} positive, {processed_negative} negative)...")
+        # Progress is handled by tqdm
     
-    print(f"Total cubes extracted: {cube_count}")
+    print(f"Total volumes extracted: {cube_count}")
     print(f"Positive samples: {processed_positive}")
     print(f"Negative samples: {processed_negative}")
     

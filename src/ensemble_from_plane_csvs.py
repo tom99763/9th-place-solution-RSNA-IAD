@@ -98,10 +98,10 @@ def compute_csv_metrics(df: pd.DataFrame) -> Tuple[float, float]:
     """Return (cls_auc, loc_macro_auc). Values may be NaN if not computable."""
     # Classification AUC
     cls_auc = float('nan')
-    if 'true_label' in df.columns:
+    if 'label_aneurysm' in df.columns:
         try:
-            sub = df[['true_label', 'aneurysm_prob']].dropna()
-            y = sub['true_label'].astype(int).tolist()
+            sub = df[['label_aneurysm', 'aneurysm_prob']].dropna()
+            y = sub['label_aneurysm'].astype(int).tolist()
             s = sub['aneurysm_prob'].astype(float).tolist()
             if len(y) > 0 and len(set(y)) > 1:
                 cls_auc = float(roc_auc_score(y, s))
@@ -159,7 +159,7 @@ def ensemble_from_dfs(dfs: List[pd.DataFrame]):
         for _, row in df.iterrows():
             sid = row['SeriesInstanceUID']
             prob = float(row['aneurysm_prob'])
-            label = row.get('true_label')
+            label = row.get('label_aneurysm')
             if sid not in ensemble_probs:
                 ensemble_probs[sid] = []
                 # prefer the first seen label
@@ -199,7 +199,7 @@ def ensemble_from_dfs(dfs: List[pd.DataFrame]):
         row = {
             'SeriesInstanceUID': sid,
             'ensemble_prob': avg,
-            'true_label': true_labels.get(sid, np.nan),
+            'label_aneurysm': true_labels.get(sid, np.nan),
             'num_planes': len([p for p in probs if pd.notna(p)]),
         }
         if sid in loc_probs and len(loc_probs[sid]) > 0:

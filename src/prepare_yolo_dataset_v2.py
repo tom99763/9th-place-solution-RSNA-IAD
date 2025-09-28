@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 import pydicom
 from sklearn.model_selection import StratifiedKFold
+# Multilabel stratification for better balance across modality and classes
+from iterstrat.ml_stratifiers import MultilabelStratifiedKFold  # type: ignore
 
 # Allow importing project configs
 ROOT = Path(__file__).resolve().parent.parent
@@ -103,13 +105,13 @@ def parse_args():
     ap.add_argument(
         "--neg-per-series",
         type=int,
-        default=2,
+        default=5,
         help="Number of negative slices to sample per series without positives (fallback when pos-neg-ratio=0).",
     )
     ap.add_argument(
         "--pos-neg-ratio",
         type=float,
-        default=1,
+        default=0,
         help=(
             "Negatives per positive for positive series (sampled from the same series). "
             "E.g., 2.0 adds ~2 negative slices for each positive slice (capped by available slices)."
@@ -133,33 +135,42 @@ def parse_args():
 
 
 def load_folds(root: Path) -> Dict[str, int]:
-    """Map SeriesInstanceUID -> fold_id using stratified folds from train.csv.
+    """Map SeriesInstanceUID -> fold_id using MultilabelStratifiedKFold.
 
-    Requirements:
-      - data/train.csv must exist
-      - Columns: 'SeriesInstanceUID', 'Aneurysm Present'
-      - Will create N_FOLDS stratified splits on the series-level label
+    Uses MultilabelStratifiedKFold over [Aneurysm Present] + all location columns + Modality one-hot
+    for optimal balance across modality and classes.
     """
     df_path = root / "train.csv"
 
     df = pd.read_csv(df_path)
 
-    series_df = df[["SeriesInstanceUID", "Aneurysm Present"]].drop_duplicates().reset_index(drop=True)
+    base_cols = ["SeriesInstanceUID", "Modality", "Aneurysm Present"]
+    ignore_cols = set(["PatientAge", "PatientSex", "fold_id"]) | set(base_cols)
+    location_cols = [c for c in df.columns if c not in ignore_cols]
+    series_df = df[base_cols + location_cols].drop_duplicates(subset=["SeriesInstanceUID"]).reset_index(drop=True)
     series_df["SeriesInstanceUID"] = series_df["SeriesInstanceUID"].astype(str)
 
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
     fold_map: Dict[str, int] = {}
-    for i, (_, test_idx) in enumerate(
-        skf.split(series_df["SeriesInstanceUID"], series_df["Aneurysm Present"]) 
-    ):
+
+    modality_onehot = pd.get_dummies(series_df["Modality"], prefix="mod").astype(int)
+    y_df = pd.concat(
+        [
+            series_df[["Aneurysm Present"]].astype(int),
+            series_df[location_cols].fillna(0).astype(int) if location_cols else pd.DataFrame(index=series_df.index),
+            modality_onehot,
+        ],
+        axis=1,
+    )
+    y = y_df.values
+    mskf = MultilabelStratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
+    for i, (_, test_idx) in enumerate(mskf.split(np.zeros(len(series_df)), y)):
         for uid in series_df.loc[test_idx, "SeriesInstanceUID"].tolist():
             fold_map[uid] = i
-    
-    # Update train.csv with the new folds
+
     df["fold_id"] = df["SeriesInstanceUID"].astype(str).map(fold_map)
     df.to_csv(df_path, index=False)
     print(f"Updated {df_path} with new fold_id column based on N_FOLDS={N_FOLDS}")
-    
+
     return fold_map
 
 
@@ -574,7 +585,7 @@ if __name__ == "__main__":
     rng = random.Random(args.seed)
     if args.generate_all_folds:
         # Generate per-fold datasets and YAMLs
-        for f in range(0,1):
+        for f in range(1,N_FOLDS):
             out_base, _ = generate_for_fold(f, args)
             yaml_dir = Path(args.yaml_out_dir)
             yaml_name = args.yaml_name_template.format(fold=f)
@@ -589,11 +600,11 @@ if __name__ == "__main__":
 
 
 #Locations (multiclass, original behavior):
-#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --mip-out-name yolo_dataset --mip-img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite
+#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --mip-out-name yolo_dataset_negative_slices --mip-img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite
 #Binary (single class "aneurysm_present"):
-#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --mip-out-name yolo_dataset_bin --mip-img-size 512 --label-scheme aneurysm_present --yaml-out-dir configs --yaml-name-template yolo_bin_fold{fold}.yaml --overwrite
+#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --mip-out-name yolo_dataset_binary --mip-img-size 512 --label-scheme aneurysm_present --yaml-out-dir configs --yaml-name-template yolo_bin_fold{fold}.yaml --overwrite
 #Binary with adjacent negatives (helps distinguish aneurysms from normal vessels):
-#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --mip-out-name yolo_dataset_bin_adj --mip-img-size 512 --label-scheme aneurysm_present --use-adjacent-negatives --adjacent-offset 2 --yaml-out-dir configs --yaml-name-template yolo_bin_fold{fold}.yaml --overwrite
+#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --mip-out-name yolo_dataset_binary_adj --mip-img-size 512 --label-scheme aneurysm_present --use-adjacent-negatives --adjacent-offset 2 --yaml-out-dir configs --yaml-name-template yolo_bin_fold{fold}.yaml --overwrite
 
 #python3 -m src.prepare_yolo_dataset_v2 --val-fold 1 --mip-out-name yolo_dataset_hard_negative_fold_1 --label-scheme aneurysm_present --yaml-out-dir configs --yaml-name-template yolo_bin_fold1_hard_negatives.yaml --overwrite --neg-per-series 3 --pos-neg-ratio 3.0 --use-adjacent-negativ
 #es --adjacent-offset 2 --mip-img-size 512 --image-ext png --verbose

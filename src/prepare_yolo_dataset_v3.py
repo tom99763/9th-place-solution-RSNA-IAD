@@ -2,11 +2,13 @@
 import argparse
 import ast
 import math
-import multiprocessing as mp
 import random
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Set
+from multiprocessing import Pool, cpu_count
+from functools import partial
+from tqdm import tqdm
 
 import cv2
 import numpy as np
@@ -14,14 +16,22 @@ import pandas as pd
 import pydicom
 from scipy import ndimage
 from sklearn.model_selection import StratifiedKFold
+# Multilabel stratification for better balance across modality and classes
+from iterstrat.ml_stratifiers import MultilabelStratifiedKFold  # type: ignore
+
+# Try to import CuPy for GPU acceleration, fallback to CPU if not available
+try:
+    import cupy as cp
+    CUPY_AVAILABLE = True
+    print("CuPy available - will use for 3D resizing when z-axis changes")
+except ImportError:
+    CUPY_AVAILABLE = False
+    print("CuPy not available - using CPU/OpenCV processing")
 
 # Allow importing project configs
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from configs.data_config import data_path as _data_path, N_FOLDS, SEED, LABELS_TO_IDX  # type: ignore
-
-# Resolve data_path relative to ROOT to handle execution from different directories
-data_path = str(ROOT / _data_path) if not Path(_data_path).is_absolute() else _data_path
+from configs.data_config import data_path, N_FOLDS, SEED, LABELS_TO_IDX  # type: ignore
 
 N_FOLDS = 5
 rng = random.Random(SEED)
@@ -75,8 +85,13 @@ def min_max_normalize_volume(volume: np.ndarray) -> np.ndarray:
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
 
 
-def load_and_process_volume(paths: List[Path], target_shape: Tuple[int, int, int] = (128, 512, 512), verbose: bool = False) -> Tuple[np.ndarray, Tuple[float, float, float], Dict[Tuple[int, int], int]]:
+def load_and_process_volume(paths: List[Path], target_shape: Tuple[int | None, int, int] = (None, 512, 512), verbose: bool = False) -> Tuple[np.ndarray, Tuple[float, float, float], Dict[Tuple[int, int], int]]:
     """Load DICOM slices, sort, stack, normalize and resize to target shape.
+    
+    Args:
+        paths: List of DICOM file paths
+        target_shape: (z, y, x) target shape. If z is None, keep original z dimension
+        verbose: Whether to print debug information
     
     Returns:
         volume: Processed volume of shape target_shape as uint8
@@ -127,25 +142,64 @@ def load_and_process_volume(paths: List[Path], target_shape: Tuple[int, int, int
     
     # Calculate zoom factors for resizing
     original_shape = volume.shape
+    if target_shape[0] is None:
+        # Keep original z dimension
+        final_target_shape = (original_shape[0], target_shape[1], target_shape[2])
+    else:
+        final_target_shape = target_shape
+    
     zoom_factors = (
-        target_shape[0] / original_shape[0],  # z factor
-        target_shape[1] / original_shape[1],  # y factor  
-        target_shape[2] / original_shape[2]   # x factor
+        final_target_shape[0] / original_shape[0],  # z factor
+        final_target_shape[1] / original_shape[1],  # y factor  
+        final_target_shape[2] / original_shape[2]   # x factor
     )
     
-    # Resize volume using scipy zoom
-    resized_volume = ndimage.zoom(volume, zoom_factors, order=1)  # Linear interpolation
+    # Choose optimal resizing method based on whether z-axis needs resizing
+    z_needs_resize = abs(zoom_factors[0] - 1.0) > 1e-6
+    
+    if z_needs_resize:
+        # Always use CuPy for GPU processing to match inference - no CPU fallback
+        if not CUPY_AVAILABLE:
+            raise RuntimeError("CuPy is required for GPU processing but not available. Please install CuPy.")
+        
+        # Import CuPy's scipy-compatible ndimage module
+        from cupyx.scipy import ndimage as cp_ndimage
+        # Move volume to GPU
+        volume_gpu = cp.asarray(volume)
+        # Use CuPy's zoom function
+        resized_volume_gpu = cp_ndimage.zoom(volume_gpu, zoom_factors, order=1)
+        # Move back to CPU
+        resized_volume = cp.asnumpy(resized_volume_gpu)
+        # Clean up GPU memory immediately
+        del volume_gpu, resized_volume_gpu
+        cp.get_default_memory_pool().free_all_blocks()
+        if verbose:
+            print(f"[DEBUG] Used CuPy for 3D resize with z-factor={zoom_factors[0]:.3f}")
+    else:
+        # Use OpenCV for per-slice 2D resizing when z-axis unchanged (faster per experiments)
+        target_h, target_w = final_target_shape[1], final_target_shape[2]
+        if verbose:
+            print(f"[DEBUG] Using OpenCV for per-slice resize to {target_h}x{target_w} (z unchanged)")
+        
+        resized_slices = []
+        for slice_idx in range(volume.shape[0]):
+            slice_2d = volume[slice_idx]  # Shape: (H, W)
+            resized_slice = cv2.resize(slice_2d, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            resized_slices.append(resized_slice)
+        
+        resized_volume = np.stack(resized_slices, axis=0)
+        del resized_slices
     
     # Clear original volume to free memory
     del volume
     
     # Ensure exact target shape (zoom might have slight rounding differences)
-    if resized_volume.shape != target_shape:
+    if resized_volume.shape != final_target_shape:
         # Pad or crop to exact target shape
-        final_volume = np.zeros(target_shape, dtype=np.float32)
-        min_z = min(resized_volume.shape[0], target_shape[0])
-        min_y = min(resized_volume.shape[1], target_shape[1]) 
-        min_x = min(resized_volume.shape[2], target_shape[2])
+        final_volume = np.zeros(final_target_shape, dtype=np.float32)
+        min_z = min(resized_volume.shape[0], final_target_shape[0])
+        min_y = min(resized_volume.shape[1], final_target_shape[1]) 
+        min_x = min(resized_volume.shape[2], final_target_shape[2])
         final_volume[:min_z, :min_y, :min_x] = resized_volume[:min_z, :min_y, :min_x]
         resized_volume = final_volume
     
@@ -156,14 +210,15 @@ def load_and_process_volume(paths: List[Path], target_shape: Tuple[int, int, int
     origin_to_resized: Dict[Tuple[int, int], int] = {}
     for sorted_position, origin in enumerate(frame_origins):
         resized_position = round(sorted_position * zoom_factors[0])
-        resized_position = max(0, min(target_shape[0] - 1, resized_position))
+        resized_position = max(0, min(final_target_shape[0] - 1, resized_position))
         origin_to_resized[origin] = resized_position
     
     if verbose:
         print(f"[DEBUG] original volume shape: {original_shape}")
         print(f"[DEBUG] resized volume shape: {resized_volume.shape}")
-        print(f"[DEBUG] target shape: {target_shape}")
+        print(f"[DEBUG] target shape: {final_target_shape}")
         print(f"[DEBUG] zoom factors: {zoom_factors}")
+        print(f"[DEBUG] using CuPy: {CUPY_AVAILABLE}")
     
     return normalized_volume, zoom_factors, origin_to_resized
 
@@ -193,12 +248,13 @@ def parse_args():
     ap.add_argument("--val-fold", type=int, default=0, help="Fold id used for validation (ignored if --generate-all-folds)")
     ap.add_argument("--generate-all-folds", action="store_true", help="Generate one dataset per fold and write per-fold YAMLs")
     ap.add_argument("--box-size", type=int, default=24, help="Square box size in pixels around the point")
-    ap.add_argument("--image-ext", type=str, default="png", choices=["png", "jpg", "jpeg"], help="Output image extension")
+    ap.add_argument("--image-ext", type=str, default="jpg", choices=["png", "jpg", "jpeg"], help="Output image extension (jpg recommended for speed)")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--workers", type=int, default=mp.cpu_count(), help="Number of worker processes for parallel processing")
+    ap.add_argument("--workers", type=int, default=min(4, cpu_count()), help="Number of parallel workers for processing series")
     ap.add_argument("--mip-img-size", type=int, default=512, help="Final square image size for saved samples (0 = keep original)")
-    ap.add_argument("--fold-output-name", type=str, default="yolo_dataset", help="Base subdirectory under data/ for outputs; when --generate-all-folds, becomes {base}_fold{fold}")
+    ap.add_argument("--z-axis-size", type=int, default=32, help="Final z-axis size for 3D volumes (None = keep original)")
+    ap.add_argument("--mip-out-name", type=str, default="yolo_dataset_32", help="Base subdirectory under data/ for outputs; when --generate-all-folds, becomes {base}_fold{fold}")
     # Labeling scheme
     ap.add_argument(
         "--label-scheme",
@@ -211,17 +267,28 @@ def parse_args():
     ap.add_argument(
         "--neg-per-series",
         type=int,
-        default=10,
+        default=3,
         help="Number of negative slices to sample per series without positives (fallback when pos-neg-ratio=0).",
     )
     ap.add_argument(
         "--pos-neg-ratio",
         type=float,
-        default=5,
+        default=0,
         help=(
             "Negatives per positive for positive series (sampled from the same series). "
             "E.g., 2.0 adds ~2 negative slices for each positive slice (capped by available slices)."
         ),
+    )
+    ap.add_argument(
+        "--use-adjacent-negatives",
+        action="store_true",
+        help="Add adjacent slices (positive ±2) as negative examples to help model distinguish aneurysms from normal vessels",
+    )
+    ap.add_argument(
+        "--adjacent-offset",
+        type=int,
+        default=0,
+        help="Offset for adjacent negative slices (default: ±2 slices from positive)",
     )
     # YAML outputs
     ap.add_argument("--yaml-out-dir", type=str, default=str(ROOT / "configs"), help="Directory to write per-fold YOLO YAMLs")
@@ -230,33 +297,42 @@ def parse_args():
 
 
 def load_folds(root: Path) -> Dict[str, int]:
-    """Map SeriesInstanceUID -> fold_id using stratified folds from train.csv.
+    """Map SeriesInstanceUID -> fold_id using MultilabelStratifiedKFold.
 
-    Requirements:
-      - data/train.csv must exist
-      - Columns: 'SeriesInstanceUID', 'Aneurysm Present'
-      - Will create N_FOLDS stratified splits on the series-level label
+    Uses MultilabelStratifiedKFold over [Aneurysm Present] + all location columns + Modality one-hot
+    for optimal balance across modality and classes.
     """
     df_path = root / "train.csv"
 
     df = pd.read_csv(df_path)
 
-    series_df = df[["SeriesInstanceUID", "Aneurysm Present"]].drop_duplicates().reset_index(drop=True)
+    base_cols = ["SeriesInstanceUID", "Modality", "Aneurysm Present"]
+    ignore_cols = set(["PatientAge", "PatientSex", "fold_id"]) | set(base_cols)
+    location_cols = [c for c in df.columns if c not in ignore_cols]
+    series_df = df[base_cols + location_cols].drop_duplicates(subset=["SeriesInstanceUID"]).reset_index(drop=True)
     series_df["SeriesInstanceUID"] = series_df["SeriesInstanceUID"].astype(str)
 
-    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
     fold_map: Dict[str, int] = {}
-    for i, (_, test_idx) in enumerate(
-        skf.split(series_df["SeriesInstanceUID"], series_df["Aneurysm Present"]) 
-    ):
+
+    modality_onehot = pd.get_dummies(series_df["Modality"], prefix="mod").astype(int)
+    y_df = pd.concat(
+        [
+            series_df[["Aneurysm Present"]].astype(int),
+            series_df[location_cols].fillna(0).astype(int) if location_cols else pd.DataFrame(index=series_df.index),
+            modality_onehot,
+        ],
+        axis=1,
+    )
+    y = y_df.values
+    mskf = MultilabelStratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
+    for i, (_, test_idx) in enumerate(mskf.split(np.zeros(len(series_df)), y)):
         for uid in series_df.loc[test_idx, "SeriesInstanceUID"].tolist():
             fold_map[uid] = i
-    
-    # Update train.csv with the new folds
+
     df["fold_id"] = df["SeriesInstanceUID"].astype(str).map(fold_map)
     df.to_csv(df_path, index=False)
     print(f"Updated {df_path} with new fold_id column based on N_FOLDS={N_FOLDS}")
-    
+
     return fold_map
 
 
@@ -335,240 +411,222 @@ def load_series_slices_selected(paths: List[Path], selected_indices: List[int] |
     return slices
 
 
-def process_series_worker(args_tuple):
-    """Fixed worker function for processing a single series in parallel."""
-    (
-        uid,
-        series_dir,
-        split,
-        labels_for_series,
-        sop_to_idx,
-        out_base,
-        label_scheme,
-        box_size,
-        image_ext,
-        overwrite,
-        verbose,
-        pos_neg_ratio,
-        neg_per_series,
-        seed
-    ) = args_tuple
+def process_single_series(series_data: Tuple[str, str, Path, Dict, List, Dict, bool, object]) -> Tuple[int, int, int]:
+    """Process a single series and return (total_series, total_pos, total_neg) counts."""
+    uid, split, root, folds, labels_for_series, series_to_labels, ignore_uids, args = series_data
     
-    # Create local random generator for this worker
-    local_rng = random.Random(seed + hash(uid) % 1000000)
+    if uid in ignore_uids:
+        if args.verbose:
+            print(f"[SKIP] ignored series {uid}")
+        return 0, 0, 0
     
-    try:
-        if verbose:
-            print(f"[DEBUG] Starting processing series {uid}")
-        
-        paths, sop_to_idx_ordered = ordered_dcm_paths(series_dir)
-        if not paths:
-            if verbose:
-                print(f"[DEBUG] no paths found for series {uid}")
-            return {"uid": uid, "pos": 0, "neg": 0, "error": "No DICOM files found"}
-        
-        if verbose:
-            print(f"[DEBUG] Loading and processing volume for series {uid} with {len(paths)} files")
-        
-        # Process entire volume using fixed strategy
-        volume, zoom_factors, origin_to_resized = load_and_process_volume(
-            paths, target_shape=(128, 512, 512), verbose=verbose
-        )
-        
-        if verbose:
-            print(f"[DEBUG] Volume loaded for series {uid}, shape: {volume.shape}")
-            print(f"[DEBUG] zoom factors: {zoom_factors}")
-        
+    series_dir = root / "series" / uid
+    if not series_dir.exists():
+        if args.verbose:
+            print(f"[MISS] series {uid}")
+        return 0, 0, 0
+
+    paths, sop_to_idx = ordered_dcm_paths(series_dir)
+    n_slices = len(paths)
+    
+    # Resolve output base for this fold
+    val_fold = folds.get(uid, 0) if split == "val" else next((f for f, s in [(0, "train"), (1, "train"), (2, "train"), (3, "train"), (4, "train")] if s == split), 0)
+    out_dir_name = args.mip_out_name if not hasattr(args, 'generate_all_folds') or not args.generate_all_folds else f"{args.mip_out_name}_fold{val_fold}"
+    out_base = root / out_dir_name
+    ensure_yolo_dirs(out_base)
+
+    # Volume-based processing with consistent resizing
+    if args.verbose:
+        print(f"[DEBUG] Loading and processing volume for series {uid} with {len(paths)} files")
+    
+    # Process entire volume using configurable z-axis size
+    target_z = args.z_axis_size if args.z_axis_size is not None else None
+    volume, zoom_factors, origin_to_resized = load_and_process_volume(
+        paths, target_shape=(target_z, args.mip_img_size, args.mip_img_size), verbose=args.verbose
+    )
+    
+    if args.verbose:
+        print(f"[DEBUG] Volume loaded for series {uid}, shape: {volume.shape}")
+        print(f"[DEBUG] zoom factors: {zoom_factors}")
+    
+    total_series = 0
+    total_pos = 0
+    total_neg = 0
+    rng = random.Random(args.seed)
+    
+    if labels_for_series:
         pos_saved = 0
-        neg_saved = 0
-        
-        if labels_for_series:
-            # Process positive series with labels
-            for (sop, x, y, cls_id, f_idx) in labels_for_series:
-                # Find original slice index for this SOP
-                original_sop_idx = sop_to_idx_ordered.get(sop)
-                if original_sop_idx is None:
-                    if verbose:
-                        print(f"[DEBUG] SOP {sop} not found in ordered paths")
-                    continue
-                
-                # Map to resized volume slice index using frame index when available
-                frame_index_candidate = int(f_idx) if f_idx is not None else 0
-                origin_key = (original_sop_idx, frame_index_candidate)
-                if origin_key in origin_to_resized:
-                    resized_slice_idx = origin_to_resized[origin_key]
-                else:
-                    # Try 1-based -> 0-based fallback when frame indices are 1-based in labels
-                    if f_idx is not None and frame_index_candidate > 0:
-                        alt_key = (original_sop_idx, frame_index_candidate - 1)
-                        if alt_key in origin_to_resized:
-                            resized_slice_idx = origin_to_resized[alt_key]
-                        else:
-                            resized_slice_idx = round(original_sop_idx * zoom_factors[0])
-                            resized_slice_idx = max(0, min(127, resized_slice_idx))
-                    else:
-                        # Fallback to proportional mapping by slice index
-                        resized_slice_idx = round(original_sop_idx * zoom_factors[0])
-                        resized_slice_idx = max(0, min(127, resized_slice_idx))
-                
-                # Extract the positive slice from the processed volume
-                positive_slice = volume[resized_slice_idx]  # Shape: (512, 512)
-                
-                # Scale coordinates to the resized image space
-                # Original coordinates are in the original slice dimensions
-                # We need to scale them to 512x512
-                
-                # Get original image dimensions by reading one slice
-                try:
-                    temp_frames = read_dicom_frames_hu(paths[original_sop_idx])
-                    if temp_frames:
-                        print(f"[DEBUG] temp_frames: {temp_frames[0].shape}")
-                        original_height, original_width = temp_frames[0].shape
-                    else:
-                        print(f"[DEBUG] else no temp_frames")
-                        original_height, original_width = 512, 512
-                except:
-                    original_height, original_width = 512, 512
-                
-                # Scale coordinates from original image size to 512x512
-                scaled_x = x * (512.0 / original_width)
-                scaled_y = y * (512.0 / original_height)
-                
-                # Create naming for positive slice
-                slice_stem = f"{uid}_{sop}_slice{resized_slice_idx}"
-                img_path = out_base / "images" / split / f"{slice_stem}.{image_ext}"
-                label_path = out_base / "labels" / split / f"{slice_stem}.txt"
-                
-                if img_path.exists() and label_path.exists() and not overwrite:
-                    pos_saved += 1
-                    continue
-                    
-                # Ensure directories exist
-                img_path.parent.mkdir(parents=True, exist_ok=True)
-                label_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                # Save the positive slice as image
-                cv2.imwrite(str(img_path), positive_slice)
-                if verbose:
-                    print(f"[DEBUG] saved positive slice to {img_path}")
-                    print(f"[DEBUG] original coords: ({x}, {y}), scaled coords: ({scaled_x}, {scaled_y})")
-                
-                # Create bounding box for the scaled position
-                xc, yc, bw, bh = build_box(scaled_x, scaled_y, box_size, 512, 512)
-                
-                # Write label file
-                with open(label_path, "w") as f:
-                    f.write(f"{cls_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
-                
-                pos_saved += 1
+        # Track positive frames used per SOP to enable intra-DICOM adjacent negatives
+        sop_to_pos_frames: Dict[str, Set[int]] = {}
+        for (sop, x, y, cls_id, f_idx) in labels_for_series:
+            # Find original slice index for this SOP
+            original_sop_idx = sop_to_idx.get(sop)
+            if original_sop_idx is None:
+                if args.verbose:
+                    print(f"[DEBUG] SOP {sop} not found in ordered paths")
+                continue
             
-            # Sample additional random negatives from this positive series if requested
-            if pos_neg_ratio > 0 and pos_saved > 0:
-                # Calculate which slices are positive in the processed volume
-                pos_slice_indices = set()
-                for (sop, _x, _y, _cls_id, _f_idx) in labels_for_series:
-                    original_sop_idx = sop_to_idx_ordered.get(sop)
-                    if original_sop_idx is None:
-                        continue
-                    frame_index_candidate = int(_f_idx) if _f_idx is not None else 0
-                    origin_key = (original_sop_idx, frame_index_candidate)
-                    if origin_key in origin_to_resized:
-                        resized_slice_idx = origin_to_resized[origin_key]
+            # Map to resized volume slice index using frame index when available
+            frame_index_candidate = int(f_idx) if f_idx is not None else 0
+            origin_key = (original_sop_idx, frame_index_candidate)
+            if origin_key in origin_to_resized:
+                resized_slice_idx = origin_to_resized[origin_key]
+            else:
+                # Try 1-based -> 0-based fallback when frame indices are 1-based in labels
+                if f_idx is not None and frame_index_candidate > 0:
+                    alt_key = (original_sop_idx, frame_index_candidate - 1)
+                    if alt_key in origin_to_resized:
+                        resized_slice_idx = origin_to_resized[alt_key]
                     else:
-                        if _f_idx is not None and frame_index_candidate > 0:
-                            alt_key = (original_sop_idx, frame_index_candidate - 1)
-                            if alt_key in origin_to_resized:
-                                resized_slice_idx = origin_to_resized[alt_key]
-                            else:
-                                resized_slice_idx = round(original_sop_idx * zoom_factors[0])
-                                resized_slice_idx = max(0, min(127, resized_slice_idx))
-                        else:
-                            resized_slice_idx = round(original_sop_idx * zoom_factors[0])
-                            resized_slice_idx = max(0, min(127, resized_slice_idx))
-                    pos_slice_indices.add(resized_slice_idx)
+                        resized_slice_idx = round(original_sop_idx * zoom_factors[0])
+                        resized_slice_idx = max(0, min(volume.shape[0] - 1, resized_slice_idx))
+                else:
+                    # Fallback to proportional mapping by slice index
+                    resized_slice_idx = round(original_sop_idx * zoom_factors[0])
+                    resized_slice_idx = max(0, min(volume.shape[0] - 1, resized_slice_idx))
+            
+            # Extract the positive slice from the processed volume
+            img_resized = volume[resized_slice_idx]  # Shape: (512, 512), already uint8
+            
+            # Get original image dimensions for coordinate scaling
+            try:
+                temp_frames = read_dicom_frames_hu(paths[original_sop_idx])
+                if temp_frames:
+                    original_height, original_width = temp_frames[0].shape
+                else:
+                    original_height, original_width = args.mip_img_size, args.mip_img_size
+            except:
+                original_height, original_width = args.mip_img_size, args.mip_img_size
+            
+            # Scale coordinates from original image size to final image size
+            x_scaled = x * (args.mip_img_size / original_width)
+            y_scaled = y * (args.mip_img_size / original_height)
+            
+            # Name images to include slice index from processed volume
+            stem = f"{uid}_{sop}_slice{resized_slice_idx}"
+            img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+            label_path = out_base / "labels" / split / f"{stem}.txt"
+            
+            if img_path.exists() and label_path.exists() and not args.overwrite:
+                # Still count as existing positive example for balancing if files already present
+                pos_saved += 1
+                continue
                 
-                # Sample negative slices from processed volume
-                candidates = [i for i in range(128) if i not in pos_slice_indices]
-                if candidates:
-                    need = int(math.ceil(pos_neg_ratio * pos_saved))
-                    k = min(need, len(candidates))
-                    local_rng.shuffle(candidates)
-                    pick = candidates[:k]
-                    
-                    for slice_idx in pick:
-                        neg_slice = volume[slice_idx]
-                        slice_stem = f"{uid}_slice{slice_idx}_neg"
-                        img_path = out_base / "images" / split / f"{slice_stem}.{image_ext}"
-                        label_path = out_base / "labels" / split / f"{slice_stem}.txt"
-                        
-                        if img_path.exists() and label_path.exists() and not overwrite:
+            cv2.imwrite(str(img_path), img_resized)
+
+            # Create bounding box with scaled coordinates
+            xc, yc, bw, bh = build_box(x_scaled, y_scaled, args.box_size, args.mip_img_size, args.mip_img_size)
+            with open(label_path, "w") as f:
+                f.write(f"{cls_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
+            
+            total_pos += 1
+            total_series += 1
+            pos_saved += 1
+            
+            # Track used positive slice indices in processed volume
+            sop_to_pos_frames.setdefault(sop, set()).add(resized_slice_idx)
+
+        # Sample adjacent negatives if requested (using processed volume)
+        adjacent_neg_saved = 0
+        if args.use_adjacent_negatives and pos_saved > 0:
+            pos_slice_indices = set(sop_to_pos_frames.get(sop, set()) for sop in sop_to_pos_frames)
+            # Flatten the set of sets
+            pos_slice_indices = set().union(*pos_slice_indices) if pos_slice_indices else set()
+            
+            # For each positive slice, add adjacent slices as negatives
+            for pos_idx in pos_slice_indices:
+                for offset in [-args.adjacent_offset, args.adjacent_offset]:
+                    adj_idx = pos_idx + offset
+                    # Check bounds and ensure not a positive slice
+                    if 0 <= adj_idx < volume.shape[0] and adj_idx not in pos_slice_indices:
+                        try:
+                            img = volume[adj_idx]  # Already processed and normalized
+                            stem = f"{uid}_slice{adj_idx}_adj_neg_{offset:+d}"
+                            img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+                            label_path = out_base / "labels" / split / f"{stem}.txt"
+                            if (img_path.exists() and label_path.exists()) and not args.overwrite:
+                                continue
+                            cv2.imwrite(str(img_path), img)
+                            open(label_path, "w").close()
+                            total_neg += 1
+                            total_series += 1
+                            adjacent_neg_saved += 1
+                            if args.verbose:
+                                print(f"  Added adjacent negative: slice {adj_idx} (offset {offset:+d} from positive {pos_idx})")
+                        except Exception as e:
+                            if args.verbose:
+                                print(f"  Failed to process adjacent slice {adj_idx}: {e}")
                             continue
-                            
-                        # Ensure directories exist
-                        img_path.parent.mkdir(parents=True, exist_ok=True)
-                        label_path.parent.mkdir(parents=True, exist_ok=True)
-                            
-                        cv2.imwrite(str(img_path), neg_slice)
-                        open(label_path, "w").close()  # Empty label file
-                        neg_saved += 1
-        else:
-            # Negative series - sample random slices from processed volume
-            need = max(0, int(neg_per_series))
-            if need > 0:
-                # Sample random slice indices from processed volume
-                indices = list(range(128))  # Volume has 128 slices
-                local_rng.shuffle(indices)
-                pick = indices[:min(need, 128)]
-                
+
+        # Sample additional random negatives from this positive series if requested (using processed volume)
+        if args.pos_neg_ratio > 0 and volume.shape[0] > 0 and pos_saved > 0:
+            # Get all positive slice indices from processed volume
+            pos_slice_indices = set()
+            for sop_frames in sop_to_pos_frames.values():
+                pos_slice_indices.update(sop_frames)
+            
+            # Exclude already used adjacent negatives if applicable
+            used_adj_indices: Set[int] = set()
+            if args.use_adjacent_negatives:
+                for pos_idx in pos_slice_indices:
+                    for offset in [-args.adjacent_offset, args.adjacent_offset]:
+                        adj_idx = pos_idx + offset
+                        if 0 <= adj_idx < volume.shape[0]:
+                            used_adj_indices.add(adj_idx)
+            
+            candidates = [i for i in range(volume.shape[0]) if i not in pos_slice_indices and i not in used_adj_indices]
+            if candidates:
+                need = int(math.ceil(args.pos_neg_ratio * pos_saved))
+                # Avoid oversampling beyond available slices
+                k = min(need, len(candidates))
+                rng.shuffle(candidates)
+                pick = candidates[:k]
                 for slice_idx in pick:
-                    neg_slice = volume[slice_idx]
-                    slice_stem = f"{uid}_slice{slice_idx}_neg"
-                    img_path = out_base / "images" / split / f"{slice_stem}.{image_ext}"
-                    label_path = out_base / "labels" / split / f"{slice_stem}.txt"
-                    
-                    if img_path.exists() and label_path.exists() and not overwrite:
+                    img = volume[slice_idx]  # Already processed and normalized
+                    stem = f"{uid}_slice{slice_idx}_neg"
+                    img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+                    label_path = out_base / "labels" / split / f"{stem}.txt"
+                    if (img_path.exists() and label_path.exists()) and not args.overwrite:
                         continue
-                        
-                    # Ensure directories exist
-                    img_path.parent.mkdir(parents=True, exist_ok=True)
-                    label_path.parent.mkdir(parents=True, exist_ok=True)
-                        
-                    cv2.imwrite(str(img_path), neg_slice)
-                    open(label_path, "w").close()  # Empty label file
-                    neg_saved += 1
+                    cv2.imwrite(str(img_path), img)
+                    open(label_path, "w").close()
+                    total_neg += 1
+                    total_series += 1
         
-        return {
-            "uid": uid,
-            "pos": pos_saved,
-            "neg": neg_saved,
-            "error": None
-        }
-        
-    except Exception as e:
-        return {
-            "uid": uid,
-            "pos": 0,
-            "neg": 0,
-            "error": str(e)
-        }
+        if args.verbose and adjacent_neg_saved > 0:
+            print(f"  Series {uid}: Added {adjacent_neg_saved} adjacent negative slices")
+    else:
+        # Negative series: choose random slices from processed volume and write empty labels
+        if volume.shape[0] == 0:
+            return 0, 0, 0
+        need = max(0, int(args.neg_per_series))
+        # Sample up to 'need' unique slices from processed volume
+        indices = list(range(volume.shape[0]))
+        rng.shuffle(indices)
+        pick = indices[: min(need, volume.shape[0])]
+        for slice_idx in pick:
+            img = volume[slice_idx]  # Already processed and normalized
+            stem = f"{uid}_slice{slice_idx}_neg"
+            img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+            label_path = out_base / "labels" / split / f"{stem}.txt"
+            if not (img_path.exists() and label_path.exists()) or args.overwrite:
+                cv2.imwrite(str(img_path), img)
+                open(label_path, "w").close()
+                total_neg += 1
+                total_series += 1
+
+    return total_series, total_pos, total_neg
 
 
 def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
     """Generate per-slice dataset for a single fold and return (out_base, fold_map)."""
     global rng
     root = Path(data_path)
-    # Helpful debug to confirm resolved data root
-    if args.verbose:
-        print(f"[DEBUG] data root: {root}")
 
     # Resolve output base for this fold
-    out_dir_name = args.fold_output_name if not hasattr(args, 'generate_all_folds') or not args.generate_all_folds else f"{args.fold_output_name}_fold{val_fold}"
+    out_dir_name = args.mip_out_name if not hasattr(args, 'generate_all_folds') or not args.generate_all_folds else f"{args.mip_out_name}_fold{val_fold}"
     out_base = root / out_dir_name
     ensure_yolo_dirs(out_base)
-    if args.verbose:
-        print(f"[DEBUG] output base: {out_base}")
-        print(f"[DEBUG] images: {out_base / 'images' / 'train'} | {out_base / 'images' / 'val'}")
-        print(f"[DEBUG] labels: {out_base / 'labels' / 'train'} | {out_base / 'labels' / 'val'}")
 
     # Ignore only known problematic series
     ignore_uids: Set[str] = set(
@@ -607,10 +665,10 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
         )
 
     all_series: List[str] = []
-    train_path = root / "train.csv"
-    if train_path.exists():
+    train_df_path = root / "train.csv"
+    if train_df_path.exists():
         try:
-            train_csv = pd.read_csv(train_path)
+            train_csv = pd.read_csv(train_df_path)
             if "SeriesInstanceUID" in train_csv.columns:
                 all_series = (
                     train_csv["SeriesInstanceUID"].astype(str).unique().tolist()
@@ -620,114 +678,41 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
     if not all_series:
         all_series = sorted(series_to_labels.keys())
 
-    print(f"Processing {len(all_series)} series for per-slice YOLO dataset (val fold = {val_fold}) with {args.workers} workers...")
-
-    # Prepare work items for parallel processing
-    work_items = []
-    for uid in all_series:
-        if args.verbose:
-            print(f"[DEBUG] processing series {uid}")
-        # Ensure UID strings are clean (no stray whitespace)
-        uid = str(uid).strip()
-        if uid in ignore_uids:
-            if args.verbose:
-                print(f"[SKIP] ignored series {uid}")
-            continue
-        split = "val" if folds.get(uid, 0) == val_fold else "train"
-        series_dir = root / "series" / uid
-        if not series_dir.exists():
-            if args.verbose:
-                print(f"[MISS] series {uid} {series_dir}")
-            continue
-
-        paths, sop_to_idx = ordered_dcm_paths(series_dir)
-        if not paths:
-            if args.verbose:
-                print(f"[DEBUG] no paths found for series {uid}")
-            continue
-            
-        labels_for_series = series_to_labels.get(uid, [])
-        work_items.append((
-            uid,
-            series_dir,
-            split,
-            labels_for_series,
-            sop_to_idx,
-            out_base,
-            args.label_scheme,
-            args.box_size,
-            args.image_ext,
-            args.overwrite,
-            args.verbose,
-            args.pos_neg_ratio,
-            args.neg_per_series,
-            args.seed
-        ))
-
-    # Process series in parallel
     total_series = 0
     total_pos = 0
     total_neg = 0
+    print(f"Processing {len(all_series)} series for per-slice YOLO dataset (val fold = {val_fold}) using {args.workers} workers...")
+
+    # Prepare series data for parallel processing
+    series_tasks = []
+    for uid in all_series:
+        split = "val" if folds.get(uid, 0) == val_fold else "train"
+        labels_for_series = series_to_labels.get(uid, [])
+        series_tasks.append((uid, split, root, folds, labels_for_series, series_to_labels, ignore_uids, args))
     
-    print(f"Starting processing of {len(work_items)} series with {args.workers} workers...")
-    
-    if args.workers == 1:
-        # Single-threaded processing for debugging
-        results = []
-        for i, item in enumerate(work_items):
-            if i % 10 == 0:
-                print(f"Processing series {i+1}/{len(work_items)}")
-            result = process_series_worker(item)
-            results.append(result)
+    # Process series in parallel
+    if args.workers > 1:
+        with Pool(args.workers) as pool:
+            results = list(tqdm(
+                pool.imap(process_single_series, series_tasks),
+                total=len(series_tasks),
+                desc="Processing series"
+            ))
     else:
-        # Multi-threaded processing with timeout and progress reporting
-        try:
-            with mp.Pool(processes=args.workers) as pool:
-                # Use map_async with timeout to prevent hanging
-                async_result = pool.map_async(process_series_worker, work_items)
-                
-                # Wait with progress reporting
-                completed = False
-                while not completed:
-                    try:
-                        results = async_result.get(timeout=30)  # 30 second timeout
-                        completed = True
-                    except mp.TimeoutError:
-                        print(f"Still processing... ({len(work_items)} series total)")
-                        continue
-        except Exception as e:
-            print(f"Error in multiprocessing: {e}")
-            print("Falling back to single-threaded processing...")
-            results = []
-            for i, item in enumerate(work_items):
-                if i % 10 == 0:
-                    print(f"Processing series {i+1}/{len(work_items)}")
-                try:
-                    result = process_series_worker(item)
-                    results.append(result)
-                except Exception as worker_e:
-                    print(f"Error processing series {item[0]}: {worker_e}")
-                    results.append({"uid": item[0], "pos": 0, "neg": 0, "error": str(worker_e)})
+        # Sequential processing for debugging
+        results = [process_single_series(task) for task in tqdm(series_tasks, desc="Processing series")]
     
-    # Collect results
-    for result in results:
-        if result["error"]:
-            if args.verbose:
-                print(f"[ERROR] {result['uid']}: {result['error']}")
-        else:
-            total_pos += result["pos"]
-            total_neg += result["neg"]
-            if result["pos"] > 0 or result["neg"] > 0:
-                total_series += 1
-                if args.verbose:
-                    pos_neg_str = f"pos={result['pos']}, neg={result['neg']}"
-                    print(f"  [DONE] {result['uid']} ({pos_neg_str})")
+    # Aggregate results
+    for series_count, pos_count, neg_count in results:
+        total_series += series_count
+        total_pos += pos_count
+        total_neg += neg_count
 
     print(f"Series processed: {total_series}  (positive label files: {total_pos}, negative: {total_neg})")
     print(f"YOLO dataset root: {out_base}")
     stats = {}
     for split in ["train", "val"]:
-        n_imgs = len(list((out_base / "images" / split).glob(f"*.{args.image_ext}")))
+        n_imgs = len(list((out_base / "images" / split).glob("*")))
         n_lbls = len(list((out_base / "labels" / split).glob("*.txt")))
         print(f"{split}: images={n_imgs} labels={n_lbls}")
         stats[split] = {"images": n_imgs, "labels": n_lbls}
@@ -761,8 +746,7 @@ def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_sc
         ]
     )
     with open(yaml_dir / yaml_name, "w") as f:
-        f.write("# Auto-generated by prepare_yolo_dataset_v3.py\n")
-        f.write("# NOTE: Images are 512x512 slices extracted from volumes processed as: load->normalize->sort->stack->resize(128x512x512)\n")
+        f.write("# Auto-generated by prepare_yolo_dataset_v2.py\n")
         f.write(yaml_text)
 
 
@@ -785,8 +769,14 @@ if __name__ == "__main__":
         print("  train: images/train\n  val: images/val")
 
 
-# Volume-processed slice extraction (load->normalize->sort->stack->resize(128x512x512) then extract positive slices)
-#Locations (multiclass, original behavior):
-#Example: python3 -m src.prepare_yolo_dataset_v3 --generate-all-folds --fold-output-name yolo_resize_128_512_512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_resize_128_512_512_fold{fold}.yaml --overwrite --workers 8
-#Binary (single class "aneurysm_present"):
-#Example: python3 -m src.prepare_yolo_dataset_v3 --generate-all-folds --fold-output-name yolo_resize_128_512_512_bin --label-scheme aneurysm_present --yaml-out-dir configs --yaml-name-template yolo_resize_128_512_512_bin_fold{fold}.yaml --overwrite --workers 8
+#  python3 -m src.prepare_yolo_dataset_v3 \
+#    --generate-all-folds \
+#    --mip-img-size 512 \
+#    --z-axis-size 32 \
+#    --label-scheme aneurysm_present \
+#    --yaml-out-dir configs \
+#    --yaml-name-template yolo_fold_resized_32{fold}.yaml \
+#    --overwrite --verbose
+
+
+

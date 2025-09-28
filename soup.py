@@ -5,11 +5,9 @@ from ultralytics import YOLO
 
 # Load models
 model_paths = [
-    '/home/sersasj/RSNA-IAD-Codebase/runs/yolo_aneurysm/baseline_one_slice2/weights/best.pt',
-    '/home/sersasj/RSNA-IAD-Codebase/runs/yolo_aneurysm/baseline_one_slice/weights/best.pt',
-    #'/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold22/weights/best.pt',
-    #'/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold32/weights/best.pt',
-    #'/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_yolo_11n_mix_up_no_flip/cv_y11n_with_mix_up_mosaic_no_flip_fold42/weights/best.pt'
+    '/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11m_new_stratification_fold0/weights/best.pt',
+    '/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11m_new_stratification_fold1/weights/best.pt',
+
     ]
 
 models = [YOLO(path) for path in model_paths]
@@ -25,10 +23,10 @@ soup_model = YOLO(model_paths[0])
 soup_model.model.load_state_dict(avg_state_dict)
 soup_model.model.eval()
 
-soup_model.save('soup_yolon_mixup_mosaic_no_flip.pt')
+soup_model.save('soup_y11m_new_stratification.pt')
 
 
-test_image = '/home/sersasj/RSNA-IAD-Codebase/data/yolo_dataset/images/train/1.2.826.0.1.3680043.8.498.10005158603912009425635473100344077317_1.2.826.0.1.3680043.8.498.10775329348174902199350466348663848346_slice.png'
+test_image = '/home/sersasj/RSNA-IAD-Codebase/data/yolo_dataset_fold0/images/train/1.2.826.0.1.3680043.8.498.10129580404994628606227497184499173213_1.2.826.0.1.3680043.8.498.95193240179131360572794751476261138190_slice.png'
 conf_threshold = 0.001  
 def test_model(model, name, image_path, conf):
     print(f"\nTesting {name}...")
@@ -51,7 +49,7 @@ results1 = test_model(model1, "Model 1", test_image, conf_threshold)
 results2 = test_model(model2, "Model 2", test_image, conf_threshold)
 
 print("\nTesting soup model...")
-soup_loaded = YOLO('soup_yolon_mixup_mosaic_no_flip.pt')
+soup_loaded = YOLO('soup_y11m_new_stratification.pt')
 soup_results = test_model(soup_loaded, "Soup Model", test_image, conf_threshold)
 
 import matplotlib.pyplot as plt
