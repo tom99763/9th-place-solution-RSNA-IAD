@@ -91,8 +91,8 @@ def parse_args():
     ap.add_argument("--image-ext", type=str, default="png", choices=["png", "jpg", "jpeg"], help="Output image extension")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--mip-img-size", type=int, default=512, help="Final square image size for saved samples (0 = keep original)")
-    ap.add_argument("--mip-out-name", type=str, default="yolo_dataset", help="Base subdirectory under data/ for outputs; when --generate-all-folds, becomes {base}_fold{fold}")
+    ap.add_argument("--img-size", type=int, default=512, help="Final square image size for saved samples (0 = keep original)")
+    ap.add_argument("--out-name", type=str, default="yolo_dataset", help="Base subdirectory under data/ for outputs; when --generate-all-folds, becomes {base}_fold{fold}")
     # Labeling scheme
     ap.add_argument(
         "--label-scheme",
@@ -350,11 +350,11 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                     elif 1 <= f_idx <= len(frames):
                         frame_index = f_idx - 1
                 img = min_max_normalize(frames[frame_index])
-                if args.mip_img_size > 0 and (
-                    img.shape[0] != args.mip_img_size or img.shape[1] != args.mip_img_size
+                if args.img_size > 0 and (
+                    img.shape[0] != args.img_size or img.shape[1] != args.img_size
                 ):
-                    img_resized = cv2.resize(img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
-                    resize_w = resize_h = args.mip_img_size
+                    img_resized = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                    resize_w = resize_h = args.img_size
                 else:
                     img_resized = img
                     resize_h, resize_w = img_resized.shape
@@ -410,10 +410,10 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                                 if not frames:
                                     continue
                                 img = min_max_normalize(frames[0])
-                                if args.mip_img_size > 0 and (
-                                    img.shape[0] != args.mip_img_size or img.shape[1] != args.mip_img_size
+                                if args.img_size > 0 and (
+                                    img.shape[0] != args.img_size or img.shape[1] != args.img_size
                                 ):
-                                    img = cv2.resize(img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                                    img = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                                 stem = f"{uid}_{dcm_path.stem}_slice_adj_neg_{offset:+d}"
                                 img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
                                 label_path = out_base / "labels" / split / f"{stem}.txt"
@@ -446,10 +446,10 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                                 adj_f = pf + offset
                                 if 0 <= adj_f < len(frames) and adj_f not in pos_frames:
                                     img = min_max_normalize(frames[adj_f])
-                                    if args.mip_img_size > 0 and (
-                                        img.shape[0] != args.mip_img_size or img.shape[1] != args.mip_img_size
+                                    if args.img_size > 0 and (
+                                        img.shape[0] != args.img_size or img.shape[1] != args.img_size
                                     ):
-                                        img = cv2.resize(img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                                        img = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                                     stem = f"{uid}_{sop}_frame{adj_f}_adj_neg_{offset:+d}"
                                     img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
                                     label_path = out_base / "labels" / split / f"{stem}.txt"
@@ -494,10 +494,10 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                         if not frames:
                             continue
                         img = min_max_normalize(frames[0])
-                        if args.mip_img_size > 0 and (
-                            img.shape[0] != args.mip_img_size or img.shape[1] != args.mip_img_size
+                        if args.img_size > 0 and (
+                            img.shape[0] != args.img_size or img.shape[1] != args.img_size
                         ):
-                            img = cv2.resize(img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                            img = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                         stem = f"{uid}_{dcm_path.stem}_slice_neg"
                         img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
                         label_path = out_base / "labels" / split / f"{stem}.txt"
@@ -525,10 +525,10 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                 if not frames:
                     continue
                 img = min_max_normalize(frames[0])
-                if args.mip_img_size > 0 and (
-                    img.shape[0] != args.mip_img_size or img.shape[1] != args.mip_img_size
+                if args.img_size > 0 and (
+                    img.shape[0] != args.img_size or img.shape[1] != args.img_size
                 ):
-                    img = cv2.resize(img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                    img = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                 stem = f"{uid}_{dcm_path.stem}_slice_neg"
                 img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
                 label_path = out_base / "labels" / split / f"{stem}.txt"
@@ -600,26 +600,4 @@ if __name__ == "__main__":
 
 
 #Locations (multiclass, original behavior):
-#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --mip-out-name yolo_dataset_negative_slices --mip-img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite
-#Binary (single class "aneurysm_present"):
-#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --mip-out-name yolo_dataset_binary --mip-img-size 512 --label-scheme aneurysm_present --yaml-out-dir configs --yaml-name-template yolo_bin_fold{fold}.yaml --overwrite
-#Binary with adjacent negatives (helps distinguish aneurysms from normal vessels):
-#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --mip-out-name yolo_dataset_binary_adj --mip-img-size 512 --label-scheme aneurysm_present --use-adjacent-negatives --adjacent-offset 2 --yaml-out-dir configs --yaml-name-template yolo_bin_fold{fold}.yaml --overwrite
-
-#python3 -m src.prepare_yolo_dataset_v2 --val-fold 1 --mip-out-name yolo_dataset_hard_negative_fold_1 --label-scheme aneurysm_present --yaml-out-dir configs --yaml-name-template yolo_bin_fold1_hard_negatives.yaml --overwrite --neg-per-series 3 --pos-neg-ratio 3.0 --use-adjacent-negativ
-#es --adjacent-offset 2 --mip-img-size 512 --image-ext png --verbose
-
-
-#python3 -m src.prepare_yolo_dataset_v2 \
-#  --generate-all-folds \
-#  --mip-out-name yolo_dataset_positive_adj_neg \
-#  --mip-img-size 512 \
-#  --label-scheme aneurysm_present \
-#  --use-adjacent-negatives \
-#  --adjacent-offset 2 \
-#  --neg-per-series 0 \
-#  --pos-neg-ratio 0 \
-#  --yaml-out-dir configs \
-#  --yaml-name-template yolo_bin_fold{fold}.yaml \
-#  --overwrite \
-#  --verbose
+#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --neg-per-series 1 --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite

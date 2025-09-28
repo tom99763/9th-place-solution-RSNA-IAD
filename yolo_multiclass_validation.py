@@ -1,22 +1,4 @@
-"""Validate a 13-class YOLO aneurysm detector at series level.
 
-Preprocessing:
-    - DICOM -> HU -> per-slice min-max -> uint8 (BGR for YOLO inference)
-    - BGR mode: stacks 3 consecutive slices [i-1, i, i+1] as 3-channel images
-
-Series scores:
-    - Aneurysm Present = max detection confidence across ALL 13 classes over processed slices/MIP windows
-    - Location probs   = per-class max detection confidence over processed slices/MIP windows
-
-Outputs:
-    - Classification AUC (aneurysm present)
-    - Location macro AUC (macro over 13 classes)
-    - Optional CSV with per-series predictions
-
-Notes:
-    - Requires ultralytics (YOLOv8/11) and 13-class weights.
-    - Use --mip-window > 0 for sliding-window MIPs; 0 for per-slice; --bgr-mode for 3-slice stacking.
-"""
 import argparse
 from pathlib import Path
 import sys
@@ -48,15 +30,12 @@ def parse_args():
     ap.add_argument('--val-fold', type=int, default=1, help='Fold id to evaluate (matches  fold_id)')
     ap.add_argument('--series-limit', type=int, default=0, help='Optional limit on number of validation series (debug)')
     ap.add_argument('--max-slices', type=int, default=0, help='Optional cap on number of slices/windows per series (debug)')
-    ap.add_argument('--save-csv', type=str, default='', help='Optional path to save per-series predictions CSV (deprecated, prefer --out-dir)')
     ap.add_argument('--out-dir', type=str, default='', help='If set, writes metrics JSON/CSV into this directory')
     ap.add_argument('--batch-size', type=int, default=16, help='Batch size for inference (higher = faster, more VRAM)')
     ap.add_argument('--verbose', action='store_true')
     ap.add_argument('--slice-step', type=int, default=1, help='Process every Nth slice (default=1)')
-    # Sliding-window MIP mode
-    ap.add_argument('--mip-window', type=int, default=0, help='Half-window (in slices) for MIP; 0 = per-slice mode')
-    ap.add_argument('--mip-img-size', type=int, default=0, help='Optional resize of MIP/slice to this square size before inference (0 keeps original)')
-    ap.add_argument('--mip-no-overlap', action='store_true', help='Use non-overlapping MIP windows (stride = 2*w+1 instead of slice_step)')
+    # img size
+    ap.add_argument('--img-size', type=int, default=0, help='Optional resize of slice to this square size before inference (0 keeps original)')
     # CV
     ap.add_argument('--cv', action='store_true', help='Run validation across all folds found in train_df.csv/')
     ap.add_argument('--folds', type=str, default='', help='Comma-separated fold ids to run (overrides --val-fold when provided)')
@@ -68,8 +47,6 @@ def parse_args():
     ap.add_argument('--wandb-group', type=str, default='', help='Optional W&B group')
     ap.add_argument('--wandb-tags', type=str, default='', help='Comma-separated W&B tags')
     ap.add_argument('--wandb-mode', type=str, default='online', choices=['online', 'offline'], help='W&B mode (online/offline)')
-    ap.add_argument('--bgr-mode', action='store_true', help='Use BGR mode (3-channel images from stacked slices)')
-    ap.add_argument('--bgr-non-overlapping', action='store_true', help='Use non-overlapping 3-slice windows in BGR mode (e.g., [1,2,3],[4,5,6],[7,8,9])')
     ap.add_argument('--wandb-resume-id', type=str, default='', help='Resume W&B run id (optional)')
     ap.add_argument('--single-cls', action='store_true', help='Single class mode: only classify aneurysm present/absent (no location prediction)')
     return ap.parse_args()
@@ -125,7 +102,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
         val_series = val_series[:args.series_limit]
 
     print(f"Validation fold {fold_id}: {len(val_series)} series")
-    print(f"Processing every {args.slice_step} slice(s); MIP half-window={args.mip_window}")
+    print(f"Processing every {args.slice_step} slice(s)")
     model = YOLO(weights_path)
 
     series_probs: Dict[str, float] = {}
@@ -199,11 +176,6 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                 print(f"[EMPTY] {sid}")
             continue
 
-        # In per-slice mode, apply stepping BEFORE max_slices
-        if args.mip_window <= 0:
-            dicoms = dicoms[::args.slice_step]
-            if args.max_slices and len(dicoms) > args.max_slices:
-                dicoms = dicoms[:args.max_slices]
 
         max_conf_all = 0.0
         per_class_max = np.zeros(N_LOC, dtype=np.float32)
@@ -241,187 +213,25 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     except Exception:
                         pass
 
-        if args.mip_window > 0:
-            # Build HU slices and slide MIP
-            slices_hu: list[np.ndarray] = []
-            shapes_count: Dict[tuple[int, int], int] = {}
-            for dcm_path in dicoms:
-                try:
-                    frames = read_dicom_frames_hu(dcm_path)
-                except Exception as e:
-                    if args.verbose:
-                        print(f"[SKIP] {dcm_path.name}: {e}")
-                    continue
-                for f in frames:
-                    f = f.astype(np.float32)
-                    slices_hu.append(f)
-                    shapes_count[f.shape] = shapes_count.get(f.shape, 0) + 1
-            if not slices_hu:
-                series_probs[sid] = 0.0
-                series_pred_loc_probs.append(np.zeros(N_LOC, dtype=np.float32))
-                series_pred_counts[sid] = 0
-                continue
-            target_shape = max(shapes_count.items(), key=lambda kv: kv[1])[0]
-            th, tw = target_shape
-            n = len(slices_hu)
-            if args.mip_no_overlap:
-                w = max(0, int(args.mip_window))
-                window_size = 2 * w + 1
-                if n <= 0:
-                    centers: list[int] = []
-                elif n < window_size:
-                    centers = [n // 2]
-                else:
-                    centers = list(range(w, n, window_size))
-                    if centers and centers[-1] + w < n - 1:
-                        centers.append(min(n - 1 - w, n - 1))
-            else:
-                stride = max(1, args.slice_step)
-                centers = list(range(0, n, stride))
-            if args.max_slices and len(centers) > args.max_slices:
-                centers = centers[:args.max_slices]
 
-            resized_cache: Dict[int, np.ndarray] = {}
-            w = args.mip_window
-            for c in centers:
-                lo = max(0, c - w)
-                hi = min(n - 1, c + w)
-                mip_hu = None
-                for i in range(lo, hi + 1):
-                    arr = resized_cache.get(i)
-                    if arr is None:
-                        a = slices_hu[i]
-                        if a.shape != target_shape:
-                            a = cv2.resize(a, (tw, th), interpolation=cv2.INTER_LINEAR)
-                        resized_cache[i] = a
-                        arr = a
-                    mip_hu = arr if mip_hu is None else np.maximum(mip_hu, arr)
-                mip_u8 = min_max_normalize(mip_hu)
-                if args.mip_img_size > 0 and (mip_u8.shape[0] != args.mip_img_size or mip_u8.shape[1] != args.mip_img_size):
-                    mip_u8 = cv2.resize(mip_u8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
-                mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2BGR) if mip_u8.ndim == 2 else mip_u8
-                batch.append(mip_rgb)
+        # Per-slice inference
+        for dcm_path in dicoms:
+            try:
+                frames = read_dicom_frames_hu(dcm_path)
+            except Exception as e:
+                if args.verbose:
+                    print(f"[SKIP] {dcm_path.name}: {e}")
+                continue
+            for f in frames:
+                img_uint8 = min_max_normalize(f)
+                if args.img_size > 0 and (img_uint8.shape[0] != args.img_size or img_uint8.shape[1] != args.img_size):
+                    img_uint8 = cv2.resize(img_uint8, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                if img_uint8.ndim == 2:
+                    img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
+                batch.append(img_uint8)
                 if len(batch) >= args.batch_size:
                     flush_batch(batch)
                     batch.clear()
-            flush_batch(batch)
-        elif getattr(args, 'bgr_mode', False):
-            # BGR mode: stack 3 consecutive slices as channels
-            slices_hu: list[np.ndarray] = []
-            for dcm_path in dicoms:
-                try:
-                    frames = read_dicom_frames_hu(dcm_path)
-                except Exception as e:
-                    if args.verbose:
-                        print(f"[SKIP] {dcm_path.name}: {e}")
-                    continue
-                for f in frames:
-                    f = f.astype(np.float32)
-                    slices_hu.append(f)
-
-            if len(slices_hu) < 3:
-                # Not enough slices for BGR mode, skip this series
-                series_probs[sid] = 0.0
-                series_pred_loc_probs.append(np.zeros(N_LOC, dtype=np.float32))
-                series_pred_counts[sid] = 0
-                continue
-
-            if getattr(args, 'bgr_non_overlapping', False):
-                # Non-overlapping 3-slice windows: [0,1,2], [3,4,5], [6,7,8], etc.
-                window_starts = list(range(0, len(slices_hu) - 2, 3))  # Start every 3 slices, ensure we have at least 3 slices
-                if args.max_slices and len(window_starts) > args.max_slices:
-                    window_starts = window_starts[:args.max_slices]
-                
-                for start_idx in window_starts:
-                    # Get exactly 3 consecutive slices: [start_idx, start_idx+1, start_idx+2]
-                    slice_indices_3 = [start_idx, start_idx + 1, start_idx + 2]
-                    
-                    # Load and normalize the 3 slices
-                    processed_slices = []
-                    target_shape = slices_hu[0].shape
-                    for idx in slice_indices_3:
-                        slice_hu = slices_hu[idx]
-                        # Resize if needed to match target shape
-                        if slice_hu.shape != target_shape:
-                            slice_hu = cv2.resize(slice_hu, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
-                        slice_u8 = min_max_normalize(slice_hu)
-                        processed_slices.append(slice_u8)
-
-                    # Stack as 3-channel image
-                    bgr_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
-
-                    # Resize if needed
-                    if args.mip_img_size > 0 and (bgr_img.shape[0] != args.mip_img_size or bgr_img.shape[1] != args.mip_img_size):
-                        bgr_img = cv2.resize(bgr_img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
-
-                    batch.append(bgr_img)
-                    if len(batch) >= args.batch_size:
-                        flush_batch(batch)
-                        batch.clear()
-            else:
-                # Original overlapping BGR mode: [i-1,i,i+1] for each i
-                step = max(1, args.slice_step)
-                slice_indices = list(range(0, len(slices_hu), step))
-                if args.max_slices and len(slice_indices) > args.max_slices:
-                    slice_indices = slice_indices[:args.max_slices]
-
-                for i in slice_indices:
-                    # Get 3 consecutive slices: [i-1, i, i+1], handling boundaries
-                    slice_indices_3 = []
-                    for offset in [-1, 0, 1]:
-                        idx = i + offset
-                        if 0 <= idx < len(slices_hu):
-                            slice_indices_3.append(idx)
-                        else:
-                            # For boundary cases, duplicate the center slice
-                            slice_indices_3.append(i)
-
-                    # Ensure we have exactly 3 slices
-                    while len(slice_indices_3) < 3:
-                        slice_indices_3.append(i)
-
-                    # Load and normalize the 3 slices
-                    processed_slices = []
-                    target_shape = slices_hu[0].shape
-                    for idx in slice_indices_3[:3]:
-                        slice_hu = slices_hu[idx]
-                        # Resize if needed to match target shape
-                        if slice_hu.shape != target_shape:
-                            slice_hu = cv2.resize(slice_hu, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
-                        slice_u8 = min_max_normalize(slice_hu)
-                        processed_slices.append(slice_u8)
-
-                    # Stack as 3-channel image
-                    bgr_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
-
-                    # Resize if needed
-                    if args.mip_img_size > 0 and (bgr_img.shape[0] != args.mip_img_size or bgr_img.shape[1] != args.mip_img_size):
-                        bgr_img = cv2.resize(bgr_img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
-
-                    batch.append(bgr_img)
-                    if len(batch) >= args.batch_size:
-                        flush_batch(batch)
-                        batch.clear()
-            flush_batch(batch)
-        else:
-            # Per-slice inference
-            for dcm_path in dicoms:
-                try:
-                    frames = read_dicom_frames_hu(dcm_path)
-                except Exception as e:
-                    if args.verbose:
-                        print(f"[SKIP] {dcm_path.name}: {e}")
-                    continue
-                for f in frames:
-                    img_uint8 = min_max_normalize(f)
-                    if args.mip_img_size > 0 and (img_uint8.shape[0] != args.mip_img_size or img_uint8.shape[1] != args.mip_img_size):
-                        img_uint8 = cv2.resize(img_uint8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
-                    if img_uint8.ndim == 2:
-                        img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
-                    batch.append(img_uint8)
-                    if len(batch) >= args.batch_size:
-                        flush_batch(batch)
-                        batch.clear()
             flush_batch(batch)
 
         series_probs[sid] = max_conf_all
@@ -603,11 +413,7 @@ def _maybe_init_wandb(args: argparse.Namespace, fold_id: int, weights_path: str)
         'weights_path': weights_path,
         'val_fold': fold_id,
         'slice_step': args.slice_step,
-        'mip_window': args.mip_window,
-        'mip_img_size': args.mip_img_size,
-        'mip_no_overlap': args.mip_no_overlap,
-        'bgr_mode': args.bgr_mode,
-        'bgr_non_overlapping': args.bgr_non_overlapping,
+        'img_size': args.img_size,
         'batch_size': args.batch_size,
         'series_limit': args.series_limit,
         'max_slices': args.max_slices,
@@ -733,12 +539,7 @@ def main():
         with open(out_dir / 'cv_summary.json', 'w') as fjs:
             json.dump(summary, fjs, indent=2)
 
-    # Back-compat: --save-csv if requested and no out_dir
-    if args.save_csv and not args.out_dir and all_fold_metrics:
-        # Only for the last fold run
-        metrics, per_series_df = all_fold_metrics[-1], None
-        # We didn't retain per_series_df here; encourage using out_dir.
-        print('Tip: prefer --out-dir to save structured outputs per fold.')
+
 
 
 if __name__ == '__main__':

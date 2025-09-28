@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def parse_args():
     ap = argparse.ArgumentParser(description='Train and validate YOLO aneurysm pipeline')
     ap.add_argument('--data', type=str, default='configs/yolo_aneurysm_locations.yaml', help='Dataset YAML path')
-    ap.add_argument('--model', type=str, default='/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11_yolo_mobile_net_fold2/weights/best.pt', help='Pretrained checkpoint or model config')
+    ap.add_argument('--model', type=str, default='/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11_efficientnet_v2_b0_update_fold4/weights/best.pt', help='Pretrained checkpoint or model config')
     ap.add_argument('--epochs', type=int, default=100)
     ap.add_argument('--img', type=int, default=512)
     ap.add_argument('--batch', type=int, default=16)
@@ -178,17 +178,12 @@ def run():
             '--out-dir', str(out_dir),
             '--batch-size', str(args.val_batch),
             '--slice-step', str(args.slice_step),
-            '--mip-window', str(args.mip_window),
-            '--mip-img-size', str(args.mip_img_size),
+            '--img-size', str(args.img_size),
         ]
-        if args.mip_no_overlap:
-            cmd.append('--mip-no-overlap')
         if args.max_slices:
             cmd += ['--max-slices', str(args.max_slices)]
         if args.series_limit:
             cmd += ['--series-limit', str(args.series_limit)]
-        if args.bgr_mode:
-            cmd.append('--bgr-mode')
         if args.single_cls:
             cmd.append('--single-cls')
         # Try to attach validation logging to the same W&B run as training
