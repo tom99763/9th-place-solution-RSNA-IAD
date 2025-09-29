@@ -2,7 +2,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 from src.trainers.cnn_25D import *
 from src.rsna_datasets.cnn_seg_cls import *
-from src.models.segmentation_classification import *
+from src.nnmodels.resnet_segmentation_classification import *
 
 from lightning.pytorch.loggers import WandbLogger
 import pytorch_lightning as pl
@@ -52,7 +52,6 @@ def run_one_fold(cfg: DictConfig):
     wnb_logger.watch(model, log="all", log_freq=20)
 
     trainer.fit(pl_model, datamodule=datamodule)
-    # trainer.validate(pl_model, datamodule=datamodule, ckpt_path="./models/ch32_segcls_effb0-epoch=04-val_cls_auroc=0.7053_fold_id=0.ckpt")
 
 
 @hydra.main(config_path="./configs", config_name="config", version_base=None)

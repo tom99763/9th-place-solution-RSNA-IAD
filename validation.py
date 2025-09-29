@@ -14,7 +14,8 @@ torch.set_float32_matmul_precision('medium')
 from src.trainers.cnn_25D import *
 from src.rsna_datasets.cnn_25D import *
 
-from src.models.segmentation_classification import *
+import src.nnmodels.convnext_segmentation_classification as ConvNext
+import src.nnmodels.resnet_segmentation_classification as ResNet
 
 
 def create_mip(volume):
@@ -72,15 +73,26 @@ def validation(cfg: DictConfig) -> None:
 
     pl.seed_everything(cfg.seed)
 
-    model = SegmentationClassifier()
+    
 
     import os
 
     for model_ckpt_name in os.listdir("./models"):
-        model_ckpt_name = Path(model_ckpt_name)
-        print(model_ckpt_name.stem)
-        pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}", model=model)
-        torch.save(pl_model.model.state_dict(), f"./rsna-iad-modelzoo/{model_ckpt_name.stem}.pth")
+        if model_ckpt_name.find("convnext") != -1:
+            model = ConvNext.SegmentationClassifier()
+            model_ckpt_name = Path(model_ckpt_name)
+            print(model_ckpt_name.stem)
+            pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}", model=model)
+            torch.save(pl_model.model.state_dict(), f"./rsna-iad-modelzoo/{model_ckpt_name.stem}.pth")
+            continue
+
+        if model_ckpt_name.find("resnet") != -1:
+            model = ResNet.SegmentationClassifier()
+            model_ckpt_name = Path(model_ckpt_name)
+            print(model_ckpt_name.stem)
+            pl_model = LitTimmClassifier.load_from_checkpoint(f"./models/{model_ckpt_name}", model=model)
+            torch.save(pl_model.model.state_dict(), f"./rsna-iad-modelzoo/{model_ckpt_name.stem}.pth")
+
     return
 
    

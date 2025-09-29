@@ -1,7 +1,8 @@
-max_epochs: 10
+max_epochs: 8
 accelerator: gpu
 devices: 1
 precision: bf16-mixed
 check_val_every_n_epoch: 1
 gradient_clip_val: 1
 max_steps: 10_000
+# accumulate_grad_batches: 2

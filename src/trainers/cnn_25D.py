@@ -31,7 +31,7 @@ class DiceLoss(nn.Module):
         # The loss is 1 minus the Dice Score
         return 1 - dice_score
 
-def calculate_combined_loss(class_logits, seg_logits, class_targets, seg_targets, class_weight=0.5):
+def calculate_combined_loss(preds, target, class_weight=0.5):
     """
     Calculates the combined loss for the multi-task model.
     
@@ -47,24 +47,30 @@ def calculate_combined_loss(class_logits, seg_logits, class_targets, seg_targets
         A dictionary containing the total loss and its individual components.
     """
 
-    
-    loss_class = F.binary_cross_entropy_with_logits(class_logits.view(-1), class_targets.float().view(-1))
+    # , class_logits, seg_logits, class_targets, seg_targets, 
 
+    loss_class = F.binary_cross_entropy_with_logits(preds["classification_logits"].view(-1)
+                                                    , target["class_label"].float().view(-1))
+    loss_loc   = F.binary_cross_entropy_with_logits(  preds["location_logits"]
+                                                    , target["location_labels"])
+
+   
     # 2. Segmentation Loss (BCE + Dice)
     dice_loss_fn = DiceLoss()
-    loss_seg_bce = F.binary_cross_entropy_with_logits(seg_logits, seg_targets.unsqueeze(1))
-    loss_seg_dice = dice_loss_fn(seg_logits, seg_targets)
-    
+    loss_seg_bce = F.binary_cross_entropy_with_logits(preds["segmentation_logits"], target["mask"].unsqueeze(1))
+    loss_seg_dice = dice_loss_fn(preds["segmentation_logits"], target["mask"])
+ 
     # Combine the two segmentation losses (common practice)
     loss_seg = loss_seg_bce + loss_seg_dice
-
+    
     # 3. Total Combined Loss
-    total_loss = class_weight * loss_class + (1 - class_weight) * loss_seg
+    total_loss = class_weight * (loss_class + loss_loc) * 0.5 + (1 - class_weight) * loss_seg
     
     return {
         'total_loss': total_loss,
         'classification_loss': loss_class,
-        'segmentation_loss': loss_seg
+        'segmentation_loss': loss_seg,
+        'location_loss': loss_loc
     }
 
 class LitTimmClassifier(pl.LightningModule):
@@ -79,53 +85,65 @@ class LitTimmClassifier(pl.LightningModule):
         self.train_cls_auroc = torchmetrics.AUROC(task="binary")
         self.val_cls_auroc = torchmetrics.AUROC(task="binary")
 
+
+        self.train_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=13)
+        self.val_loc_auroc = torchmetrics.AUROC(task="multilabel", num_labels=13)
+
     def forward(self, x):
         return self.model(x)
 
-    def training_step(self, batch, _):
-        xs, masks, labels  = batch
+    def training_step(self, sample, _):
+        preds =self(sample["volume"])
 
-        cls_logits, seg_logits = self(xs)
-
-        all_losses = self.loss_fn(cls_logits, seg_logits, labels, masks)
-
+        all_losses = self.loss_fn(preds, sample)
         loss = all_losses["total_loss"]
+      
+        self.train_cls_auroc.update(preds["classification_logits"], sample["class_label"].long())
+        self.train_loc_auroc.update(preds["location_logits"], sample["location_labels"].long())
 
-        self.train_cls_auroc.update(cls_logits, labels.long())
-
-        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log('train_cls_loss', all_losses["classification_loss"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log('train_seg_loss', all_losses["segmentation_loss"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('train_loc_loss', all_losses["location_loss"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        self.log('train_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=False)
+        self.log('train_seg_loss', all_losses["segmentation_loss"], on_step=False, on_epoch=True, prog_bar=False, logger=True)
 
         return loss
 
     def validation_step(self, sample, batch_idx):
-        xs, masks, labels = sample
 
-        cls_logits, seg_logits =self(xs)
+        preds =self(sample["volume"])
 
-        all_losses = self.loss_fn(cls_logits, seg_logits, labels, masks)
+        all_losses = self.loss_fn(preds, sample)
         loss = all_losses["total_loss"]
       
-        self.val_cls_auroc.update(cls_logits, labels.long())
+        self.val_cls_auroc.update(preds["classification_logits"], sample["class_label"].long())
+        self.val_loc_auroc.update(preds["location_logits"], sample["location_labels"].long())
 
-        self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=True)
         self.log('val_cls_loss', all_losses["classification_loss"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log('val_seg_loss', all_losses["segmentation_loss"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_loc_loss', all_losses["location_loss"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        self.log('val_loss', loss, on_step=False, on_epoch=True, logger=True, prog_bar=False)
+        self.log('val_seg_loss', all_losses["segmentation_loss"], on_step=False, on_epoch=True, prog_bar=False, logger=True)
 
         return loss
 
     def on_train_epoch_end(self):
         
-        self.log('train_cls_auroc', self.train_cls_auroc.compute(), on_step=False, on_epoch=True, prog_bar=True)
+        self.log('train_cls_auroc', self.train_cls_auroc.compute(), on_step=False, on_epoch=True, prog_bar=False)
         self.train_cls_auroc.reset()
+
+        self.log('train_loc_auroc', self.train_loc_auroc.compute(), on_step=False, on_epoch=True, prog_bar=False)
+        self.train_loc_auroc.reset()
 
     def on_validation_epoch_end(self):
        
         cls_auc = self.val_cls_auroc.compute()
         self.log('val_cls_auroc', cls_auc, on_step=False, on_epoch=True, prog_bar=True)
-        
         self.val_cls_auroc.reset()
+
+        loc_auc = self.val_loc_auroc.compute()
+        self.log('val_loc_auroc', loc_auc, on_step=False, on_epoch=True, prog_bar=True)
+        self.val_loc_auroc.reset()
     
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
