@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def parse_args():
     ap = argparse.ArgumentParser(description='Train and validate YOLO aneurysm pipeline')
     ap.add_argument('--data', type=str, default='configs/yolo_aneurysm_locations.yaml', help='Dataset YAML path')
-    ap.add_argument('--model', type=str, default='/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11_efficientnet_v2_b0_update_fold4/weights/best.pt', help='Pretrained checkpoint or model config')
+    ap.add_argument('--model', type=str, default='/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11_yolo_mobile_net_fold4/weights/best.pt', help='Pretrained checkpoint or model config')
     ap.add_argument('--epochs', type=int, default=100)
     ap.add_argument('--img', type=int, default=512)
     ap.add_argument('--batch', type=int, default=16)
@@ -70,7 +70,7 @@ def parse_args():
 def run():
     print("waiting")
     import time
-    #time.sleep(60*60*4)
+    time.sleep(60*60*3)
     args = parse_args()
 
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']

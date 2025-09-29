@@ -55,7 +55,7 @@ def parse_args():
     ap.add_argument('--slice-step', type=int, default=1, help='Process every Nth slice (default=1)')
     # Sliding-window MIP mode
     ap.add_argument('--mip-window', type=int, default=0, help='Half-window (in slices) for MIP; 0 = per-slice mode')
-    ap.add_argument('--mip-img-size', type=int, default=0, help='Optional resize of MIP/slice to this square size before inference (0 keeps original)')
+    ap.add_argument('--img-size', type=int, default=0, help='Optional resize of MIP/slice to this square size before inference (0 keeps original)')
     ap.add_argument('--mip-no-overlap', action='store_true', help='Use non-overlapping MIP windows (stride = 2*w+1 instead of slice_step)')
     # CV
     ap.add_argument('--cv', action='store_true', help='Run validation across all folds found in train_df.csv/')
@@ -297,8 +297,8 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                         arr = a
                     mip_hu = arr if mip_hu is None else np.maximum(mip_hu, arr)
                 mip_u8 = min_max_normalize(mip_hu)
-                if args.mip_img_size > 0 and (mip_u8.shape[0] != args.mip_img_size or mip_u8.shape[1] != args.mip_img_size):
-                    mip_u8 = cv2.resize(mip_u8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                if args.img_size > 0 and (mip_u8.shape[0] != args.img_size or mip_u8.shape[1] != args.img_size):
+                    mip_u8 = cv2.resize(mip_u8, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                 mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2BGR) if mip_u8.ndim == 2 else mip_u8
                 batch.append(mip_rgb)
                 if len(batch) >= args.batch_size:
@@ -351,8 +351,8 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     bgr_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
 
                     # Resize if needed
-                    if args.mip_img_size > 0 and (bgr_img.shape[0] != args.mip_img_size or bgr_img.shape[1] != args.mip_img_size):
-                        bgr_img = cv2.resize(bgr_img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                    if args.img_size > 0 and (bgr_img.shape[0] != args.img_size or bgr_img.shape[1] != args.img_size):
+                        bgr_img = cv2.resize(bgr_img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
 
                     batch.append(bgr_img)
                     if len(batch) >= args.batch_size:
@@ -395,8 +395,8 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     bgr_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
 
                     # Resize if needed
-                    if args.mip_img_size > 0 and (bgr_img.shape[0] != args.mip_img_size or bgr_img.shape[1] != args.mip_img_size):
-                        bgr_img = cv2.resize(bgr_img, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                    if args.img_size > 0 and (bgr_img.shape[0] != args.img_size or bgr_img.shape[1] != args.img_size):
+                        bgr_img = cv2.resize(bgr_img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
 
                     batch.append(bgr_img)
                     if len(batch) >= args.batch_size:
@@ -414,8 +414,8 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     continue
                 for f in frames:
                     img_uint8 = min_max_normalize(f)
-                    if args.mip_img_size > 0 and (img_uint8.shape[0] != args.mip_img_size or img_uint8.shape[1] != args.mip_img_size):
-                        img_uint8 = cv2.resize(img_uint8, (args.mip_img_size, args.mip_img_size), interpolation=cv2.INTER_LINEAR)
+                    if args.img_size > 0 and (img_uint8.shape[0] != args.img_size or img_uint8.shape[1] != args.img_size):
+                        img_uint8 = cv2.resize(img_uint8, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                     if img_uint8.ndim == 2:
                         img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
                     batch.append(img_uint8)
@@ -604,7 +604,7 @@ def _maybe_init_wandb(args: argparse.Namespace, fold_id: int, weights_path: str)
         'val_fold': fold_id,
         'slice_step': args.slice_step,
         'mip_window': args.mip_window,
-        'mip_img_size': args.mip_img_size,
+        'img_size': args.img_size,
         'mip_no_overlap': args.mip_no_overlap,
         'bgr_mode': args.bgr_mode,
         'bgr_non_overlapping': args.bgr_non_overlapping,
