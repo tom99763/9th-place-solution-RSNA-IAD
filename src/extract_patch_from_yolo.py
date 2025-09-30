@@ -38,8 +38,8 @@ set_seed(42)
 # ====================================================
 # Configuration
 # ====================================================
-patch_size = 128
-patch_depth = 31
+patch_size = 64
+patch_depth = 15
 iou_thresh = 5.0
 k_candi = 2
 
