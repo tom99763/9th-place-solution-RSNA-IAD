@@ -5,6 +5,7 @@ from procs.proc_patch_exraction import *
 from ultralytics import YOLO
 import pandas as pd
 from tqdm import tqdm
+import random
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -17,6 +18,21 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
+
+def set_seed(seed: int = 42):
+    random.seed(seed)  # Python random
+    np.random.seed(seed)  # NumPy
+    torch.manual_seed(seed)  # CPU
+    torch.cuda.manual_seed(seed)  # Current GPU
+    torch.cuda.manual_seed_all(seed)  # All GPUs
+
+    # For deterministic behavior (slower, but reproducible)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+set_seed(42)
 
 
 # ====================================================
@@ -116,6 +132,7 @@ def nms_3d_points(points, iou_thresh=2.0):
 
 @torch.no_grad()
 def predict_yolo_ensemble(slices, conf_yolo, YOLO_MODELS, iou_thresh=2.0, k = 3):
+    set_seed()
     if not slices:
         return 0.1, np.ones(len(YOLO_LABELS)) * 0.1
 
