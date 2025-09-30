@@ -257,7 +257,7 @@ class MultiViewPatchModel(nn.Module):
                 in_chans=in_ch,
                 features_only=True,
                 drop_rate=drop_rate,
-                drop_path_rate=drop_path_rate,
+                #drop_path_rate=drop_path_rate,
             )
             self.backboneDict[key] = backbone
 
