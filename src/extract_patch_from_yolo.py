@@ -224,7 +224,7 @@ def main():
             else:
                 count_next += 1
                 continue
-        if count_next == 2:
+        if count_next == len(YOLO_MODELS):
             continue
         all_slices = process_dicom_for_yolo(series_path)
         if len(all_slices) == 0:
