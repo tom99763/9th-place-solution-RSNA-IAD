@@ -24,8 +24,8 @@ torch.backends.cudnn.allow_tf32 = True
 # ====================================================
 patch_size = 128
 patch_depth = 31
-iou_thresh = 20.0
-k_candi = 3
+iou_thresh = 5.0
+k_candi = 2
 
 IMG_SIZE = 512
 BATCH_SIZE = int(os.getenv("YOLO_BATCH_SIZE", "32"))
@@ -52,13 +52,19 @@ YOLO_LABELS = sorted(list(YOLO_LABELS_TO_IDX.keys()))
 
 YOLO_MODEL_CONFIGS = [
     {
-        "path": "../models/yolo/yolo11m_fold0.pt",
+        "path": "../models/yolo_more_negs/fold0.pt",
         "fold": "0",
         "weight": 1.0,
         "name": "YOLOv11n_fold0"
     },
     {
-        "path": "../models/yolo/yolo11m_fold1.pt",
+        "path": "../models/yolo_more_negs/fold3.pt",
+        "fold": "1",
+        "weight": 1.0,
+        "name": "YOLOv11n_fold1"
+    },
+    {
+        "path": "../models/yolo_more_negs/fold4.pt",
         "fold": "1",
         "weight": 1.0,
         "name": "YOLOv11n_fold1"
