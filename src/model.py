@@ -360,33 +360,238 @@ class MultiViewPatchModel(nn.Module):
         logits = [classifier(tokens_per_candidate[:, i]) for i, classifier in enumerate(self.classifiers)]
         return logits
 
+
+# --- small utilities (self-contained) ---------------------------------------
+class SinusoidalPosEmb(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, seq_len, device=None):
+        # returns (1, seq_len, dim)
+        if device is None:
+            device = torch.device("cpu")
+        half_dim = self.dim // 2
+        emb = torch.exp(torch.arange(half_dim, device=device).float() * -(torch.log(torch.tensor(10000.0)) / (half_dim - 1)))
+        pos = torch.arange(seq_len, device=device).float().unsqueeze(1) * emb.unsqueeze(0)  # (seq_len, half_dim)
+        sin = torch.sin(pos)
+        cos = torch.cos(pos)
+        pe = torch.cat([sin, cos], dim=1)
+        if self.dim % 2:  # odd dim
+            pe = F.pad(pe, (0, 1), value=0.0)
+        return pe.unsqueeze(0)  # (1, seq_len, dim)
+
+class AttentionPool(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.q = nn.Parameter(torch.randn(dim))  # learnable query
+        self.scale = dim ** -0.5
+
+    def forward(self, x):
+        # x: (B, S, D) -> returns (B, D)
+        # compute attention scores relative to learned query vector
+        q = self.q / (torch.norm(self.q) + 1e-6)  # normalize to stabilize
+        attn_logits = torch.einsum("bsd,d->bs", x, q) * self.scale  # (B, S)
+        attn = torch.softmax(attn_logits, dim=1).unsqueeze(-1)  # (B, S, 1)
+        pooled = (x * attn).sum(dim=1)  # (B, D)
+        return pooled
+
+# --- Modified model ---------------------------------------------------------
+class MultiViewWaveletModel(nn.Module):
+    def __init__(
+        self,
+        model_name: str,
+        pretrained: bool = True,
+        drop_rate: float = 0.3,
+        drop_path_rate: float = 0.2,
+        k_candi: int = 2,                 # num patches K
+        model_dim: int = 512,
+        transformer_layers: int = 2,
+        transformer_heads: int = 8,
+        classifier_hidden: int = 256,
+        dropout: float = 0.2,
+    ):
+        super().__init__()
+        self.k_candi = k_candi
+        self.model_keys = ["axial", "sagittal", "coronal"]
+
+        # NOTE: this assumes 'bands' == 8 (so after depth collapse channels==8).
+        # If your bands differ, either:
+        #  - set in_chans_list accordingly, or
+        #  - create backbones lazily in forward.
+        in_chans_list = [8] * len(self.model_keys)
+        assert len(in_chans_list) == len(self.model_keys)
+
+        # Create backbone dict (2D timm backbones)
+        self.backboneDict = nn.ModuleDict()
+        for key, in_ch in zip(self.model_keys, in_chans_list):
+            backbone = timm.create_model(
+                model_name,
+                pretrained=pretrained,
+                in_chans=in_ch,
+                features_only=True,
+                drop_rate=drop_rate,
+                drop_path_rate=drop_path_rate,
+            )
+            self.backboneDict[key] = backbone
+
+        # get backbone out channels
+        sample_backbone = next(iter(self.backboneDict.values()))
+        out_channels = sample_backbone.feature_info.channels()[-1] if hasattr(sample_backbone, "feature_info") else 512
+        self.backbone_out_dim = out_channels
+        self.model_dim = model_dim
+
+        # project 2*C -> model_dim (we keep your mean+amax fusion -> size 2*C)
+        self.project = nn.Sequential(
+            nn.Linear(self.backbone_out_dim * 2, self.model_dim),
+            nn.GELU(),
+            nn.LayerNorm(self.model_dim),
+        )
+
+        # Positional embedding
+        self.pos_emb = SinusoidalPosEmb(self.model_dim)
+
+        # Transformer encoder (batch_first=True so input is (B, S, D))
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.model_dim,
+            nhead=transformer_heads,
+            dim_feedforward=self.model_dim * 4,
+            activation=nn.GELU(),
+            batch_first=True,
+            dropout=0.0,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
+
+        # single final pooling + classifier -> single logit per example
+        self.attn_pool = AttentionPool(self.model_dim)
+        self.classifier = nn.Sequential(
+            nn.Linear(self.model_dim, classifier_hidden),
+            nn.GELU(),
+            nn.LayerNorm(classifier_hidden),
+            nn.Dropout(dropout),
+            nn.Linear(classifier_hidden, 1),
+        )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.trunc_normal_(m.weight, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def _collapse_depth_to_channels(self, x, mode="mean"):
+        """
+        x: (B, K, C, D, H, W) -> collapse depth D into channel dimension.
+        returns (B, K, C, H, W)
+        default: mean over D. Alternatives: 'max' or 'concat' (concat multiplies channels by D).
+        """
+        if mode == "mean":
+            return x.mean(dim=3)  # average over D
+        elif mode == "max":
+            return x.amax(dim=3)
+        elif mode == "concat":
+            # concat depth into channel axis -> new C = C * D
+            B, K, C, D, H, W = x.shape
+            return x.permute(0, 1, 3, 2, 4, 5).reshape(B, K, C * D, H, W)
+        else:
+            raise ValueError("Unsupported collapse mode")
+
+    def _flatten_input_for_backbone(self, x):
+        """
+        Supports:
+         - 6D: (B, K, C, D, H, W)  -> collapse depth -> (B*K, C, H, W)
+         - 5D: (B, K, C, H, W)     -> (B*K, C, H, W)
+         - 4D: (B, C, H, W)        -> (B, C, H, W) (no flatten)
+        returns (x_flat, maybe_B)
+        maybe_B is None if input was single-image 4D, otherwise returns B
+        """
+        if x.dim() == 6:
+            B, K, C, D, H, W = x.shape
+            x2d = self._collapse_depth_to_channels(x, mode="mean")  # (B, K, C, H, W)
+            return x2d.view(B * K, x2d.size(2), H, W), B
+        if x.dim() == 5:
+            B, K, C, H, W = x.shape
+            return x.view(B * K, C, H, W), B
+        if x.dim() == 4:
+            return x, None
+        raise ValueError("Unsupported input shape for backbone.")
+
+    def forward(self, patch: dict):
+        device = next(self.parameters()).device
+        feats_per_key = []
+        inferred_B = None
+
+        # 1) Run each view's backbone on flattened patches.
+        #    we'll collapse depth -> channels if needed.
+        for key in self.model_keys:
+            if key not in patch:
+                raise KeyError(f"Missing key '{key}' in patch dict.")
+            x = patch[key].to(device)  # expected (B, K, C, D, H, W) or (B, K, C, H, W)
+            x_flat, maybe_B = self._flatten_input_for_backbone(x)
+            if inferred_B is None and maybe_B is not None:
+                inferred_B = maybe_B
+
+            feat_maps = self.backboneDict[key](x_flat)  # list of features
+            feat = feat_maps[-1]  # (B*K, C_feat, Hf, Wf)
+            # fuse global features: mean + amax like your original code
+            pooled_mean = feat.mean(dim=(2, 3))
+            pooled_max = feat.amax(dim=(2, 3))
+            feat_vec = torch.cat([pooled_mean, pooled_max], dim=1)  # (B*K, 2*C_feat)
+            feats_per_key.append(feat_vec)
+
+        # 2) infer B if needed
+        if inferred_B is None:
+            N_flat = feats_per_key[0].size(0)
+            if (N_flat % self.k_candi) != 0:
+                raise ValueError("Cannot infer batch size. Check k_candi.")
+            inferred_B = N_flat // self.k_candi
+        B = inferred_B
+        K = self.k_candi
+        V = len(self.model_keys)  # number of views (3)
+
+        # 3) Stack features so that we can reshape to (B, K, V, feat_dim)
+        # feats_per_key: list length V, each (B*K, F)
+        stacked = torch.stack(feats_per_key, dim=1)  # (B*K, V, F)
+        stacked = stacked.view(B, K, V, -1)         # (B, K, V, F)
+        # Make tokens ordered per-patch as: [patch0: view0, view1, view2, patch1: view0, ...]
+        tokens = stacked.view(B, K * V, -1)         # (B, K*V, F)
+
+        # 4) project to model_dim
+        tokens = self.project(tokens)               # (B, S, model_dim)
+        seq_len = tokens.size(1)
+        pos = self.pos_emb(seq_len, device=tokens.device)  # (1, S, model_dim)
+        tokens = tokens + pos
+
+        # 5) transformer
+        tokens = self.transformer(tokens)           # (B, S, model_dim)
+
+        # 6) aggregate ALL tokens and produce single logit per example
+        pooled = self.attn_pool(tokens)             # (B, model_dim)
+        logits = self.classifier(pooled)            # (B, 1)
+        logits = logits.squeeze(-1)                 # (B,)
+
+        return logits
+
 # === Example usage ===
 if __name__ == "__main__":
+    # device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Example instantiation:
-    model = MultiViewPatchModel(
-        model_name="resnet18",
-        pretrained=True,
-        k_candi=3,
-        model_dim=256,
-        transformer_layers=2
-    ).to(device)
+    # hyperparams (your request)
+    batch_size = 2  # B
+    K = 2  # num_patches
+    bands = 2  # b (wavelet bands)
+    depth = 8  # D
+    H, W = 64, 64
 
-    # Example fake input tensors for one batch:
-    B = 2
-    K = 3
-    H, W = 128, 128
-
-    patch = {}
-    # first six keys are 1-channel 2D patches shaped (B, K, 1, H, W)
-    for key in model.model_keys[:6]:
-        patch[key] = torch.randn(B, K, 1, H, W, device=device)
-    # last three keys are volume patches with 31 channels shaped (B, K, 31, H, W)
-    for key in model.model_keys[6:]:
-        patch[key] = torch.randn(B, K, 31, H, W, device=device)
-
-    logits = model(patch)  # (B, K)
-    for logit in logits:
-        print(logit.shape)
-        print(logit)
+    # create wavelet-format dummy inputs
+    wavelet_patch = {
+        "axial": torch.randn(batch_size, K, bands, depth, H, W, device=device, dtype=torch.float32),
+        "sagittal": torch.randn(batch_size, K, bands, depth, H, W, device=device, dtype=torch.float32),
+        "coronal": torch.randn(batch_size, K, bands, depth, H, W, device=device, dtype=torch.float32),
+    }
+    model = MultiViewWaveletModel('tf_efficientnetv2_b0.in1k')
+    logits = model(wavelet_patch)
+    print(logits.shape)

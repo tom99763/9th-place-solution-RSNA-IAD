@@ -10,6 +10,7 @@ from configs.data_config import *
 from typing import Dict
 import os
 import torch.nn.functional as F
+import pywt
 
 torch.set_float32_matmul_precision('medium')
 
@@ -119,7 +120,7 @@ class NpzPatchDataModule(pl.LightningDataModule):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        img_size = 128
+        img_size = 64
         self.train_transforms = A.Compose(
             [A.Resize(img_size, img_size), ToTensorV2()],
         )
