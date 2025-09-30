@@ -74,14 +74,26 @@ YOLO_MODEL_CONFIGS = [
         "name": "YOLOv11n_fold0"
     },
     {
-        "path": "../models/yolo_more_negs/fold3.pt",
+        "path": "../models/yolo_more_negs/fold1.pt",
         "fold": "1",
         "weight": 1.0,
         "name": "YOLOv11n_fold1"
     },
     {
+        "path": "../models/yolo_more_negs/fold2.pt",
+        "fold": "2",
+        "weight": 1.0,
+        "name": "YOLOv11n_fold1"
+    },
+    {
+        "path": "../models/yolo_more_negs/fold3.pt",
+        "fold": "3",
+        "weight": 1.0,
+        "name": "YOLOv11n_fold1"
+    },
+    {
         "path": "../models/yolo_more_negs/fold4.pt",
-        "fold": "1",
+        "fold": "4",
         "weight": 1.0,
         "name": "YOLOv11n_fold1"
     }
