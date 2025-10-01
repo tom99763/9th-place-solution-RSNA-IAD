@@ -429,11 +429,10 @@ class MultiViewWaveletModel(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
 
         # Classifier head
-        self.classifiers = nn.ModuleList([nn.Sequential(
+        self.classifier = nn.Sequential(
             AttentionPool(self.model_dim),
             nn.Dropout(dropout),
-            nn.Linear(self.model_dim, 1),
-        ) for _ in range(self.k_candi)])
+            nn.Linear(self.model_dim, 1))
 
         self._init_weights()
 
@@ -505,15 +504,15 @@ if __name__ == "__main__":
     # hyperparams (your request)
     batch_size = 2  # B
     K = 2  # num_patches
-    bands = 8  # b (wavelet bands)
+    bands = 13  # b (wavelet bands)
     depth = 8  # D
     H, W = 64, 64
 
     # create wavelet-format dummy inputs
     wavelet_patch = {
-        "axial": torch.randn(batch_size, K, depth * bands, H, W, device=device, dtype=torch.float32),
-        "sagittal": torch.randn(batch_size, K, depth * bands, H, W, device=device, dtype=torch.float32),
-        "coronal": torch.randn(batch_size, K, depth * bands, H, W, device=device, dtype=torch.float32),
+        "axial_vol": torch.randn(batch_size, K, depth * bands, H, W, device=device, dtype=torch.float32),
+        "sagittal_vol": torch.randn(batch_size, K, depth * bands, H, W, device=device, dtype=torch.float32),
+        "coronal_vol": torch.randn(batch_size, K, depth * bands, H, W, device=device, dtype=torch.float32),
     }
     model = MultiViewWaveletModel('tf_efficientnetv2_b0.in1k')
     logits = model(wavelet_patch)
