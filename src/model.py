@@ -496,53 +496,6 @@ class MultiViewWaveletModel(nn.Module):
         return logits
 
 
-def forward(self, patch: dict):
-    device = next(self.parameters()).device
-    feats_per_key = []
-    inferred_B = None
-
-    for key in self.model_keys:
-        if key not in patch:
-            raise KeyError(f"Missing key '{key}' in patch dict.")
-        x = patch[key].to(device)
-        x_flat, maybe_B = self._flatten_input_for_backbone(x)
-        if inferred_B is None and maybe_B is not None:
-            inferred_B = maybe_B
-
-        feat_maps = self.backboneDict[key](x_flat)
-        feat = feat_maps[-1]  # (B*K, C, H, W)
-        feat = torch.cat(
-            [feat.mean(dim=(2, 3)), feat.amax(dim=(2, 3))],
-            dim=1
-        )  # (B*K, 2*C)
-        feats_per_key.append(feat)
-
-    if inferred_B is None:
-        N_flat = feats_per_key[0].size(0)
-        if (N_flat % self.k_candi) != 0:
-            raise ValueError("Cannot infer batch size.")
-        inferred_B = N_flat // self.k_candi
-
-    B = inferred_B
-    K = self.k_candi
-
-    stacked = torch.stack(feats_per_key, dim=1)
-    stacked = stacked.view(B, K, len(self.model_keys), 2 * self.backbone_out_dim)
-    tokens = stacked.view(B, K * len(self.model_keys), 2 * self.backbone_out_dim)
-
-    tokens = self.project(tokens)  # (B, self.num_modules*K, model_dim)
-    seq_len = tokens.size(1)
-    pos = self.pos_emb(seq_len, device=tokens.device)
-    tokens = tokens + pos
-
-    tokens = self.transformer(tokens)  # (B, self.num_modules*K, model_dim)
-
-    # Apply a single attention pooling across all tokens
-    logits = self.classifier(tokens)  # (B, 1)
-
-    return logits
-
-
 
 # === Example usage ===
 if __name__ == "__main__":
