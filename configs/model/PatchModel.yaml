@@ -1,11 +1,11 @@
 _target_: src.model.MultiViewWaveletModel
-model_name: "tf_efficientnetv2_b0.in1k" #RepVGG-B0,"ghostnetv2_100"(no drop_path_rate)
+model_name: "tf_efficientnetv2_b1.in1k"
 pretrained: True
-drop_rate: 0.3
+drop_rate: 0.5
 drop_path_rate: 0.2
 k_candi: 2
 model_dim: 512
 transformer_layers: 2
-transformer_heads: 8
+transformer_heads: 4
 classifier_hidden: 256
 dropout: 0.2

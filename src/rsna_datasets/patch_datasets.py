@@ -144,6 +144,8 @@ class NpzPatchWaveletDataset(Dataset):
         for i in range(2):
             with np.load(self.data_path / "patch_data" / f"fold{self.cfg.fold_id}" / f"{uid}" / f"patch_{i}.npz") as data:
                 patch_data.append({
+                    "mip": data["cartesian"].astype(np.float32)[:, 1],  # (3,128,128)
+                    "lp": data["logpolar"].astype(np.float32)[:, 1],
                     "axial": self.apply_3d_dwt(data["axial"].astype(np.float32)),
                     "sagittal": self.apply_3d_dwt(data["sagittal"].astype(np.float32)),
                     "coronal": self.apply_3d_dwt(data["coronal"].astype(np.float32)),
@@ -151,10 +153,26 @@ class NpzPatchWaveletDataset(Dataset):
 
         # Stack across patches
         data = {
-            "axial_vol": torch.stack([torch.from_numpy(p["axial"]) for p in patch_data], dim=0), #(2, 13 * 8, 32, 32)->(#patch, #bands, h, w)
+            "axial_mip": torch.stack([torch.from_numpy(p["mip"][0]) for p in patch_data], dim=0).unsqueeze(1),
+            "sagittal_mip": torch.stack([torch.from_numpy(p["mip"][1]) for p in patch_data], dim=0).unsqueeze(1),
+            "coronal_mip": torch.stack([torch.from_numpy(p["mip"][2]) for p in patch_data], dim=0).unsqueeze(1),
+            "axial_lp": torch.stack([torch.from_numpy(p["lp"][0]) for p in patch_data], dim=0).unsqueeze(1),
+            "sagittal_lp": torch.stack([torch.from_numpy(p["lp"][1]) for p in patch_data], dim=0).unsqueeze(1),
+            "coronal_lp": torch.stack([torch.from_numpy(p["lp"][2]) for p in patch_data], dim=0).unsqueeze(1),
+            "axial_vol": torch.stack([torch.from_numpy(p["axial"]) for p in patch_data], dim=0),
             "sagittal_vol": torch.stack([torch.from_numpy(p["sagittal"]) for p in patch_data], dim=0),
             "coronal_vol": torch.stack([torch.from_numpy(p["coronal"]) for p in patch_data], dim=0),
         }
+
+        if self.transform is not None:
+            for k in ["axial_mip", "sagittal_mip", "coronal_mip",
+                      "axial_lp", "sagittal_lp", "coronal_lp"]:
+                transformed = []
+                for img in data[k]:
+                    img_np = img.squeeze(0).numpy()
+                    t = self.transform(image=img_np)
+                    transformed.append(t["image"].unsqueeze(0))
+                data[k] = torch.cat(transformed, dim=0)
 
         # Resize volumes spatially (H,W), keeping depth as channels
         for k in ["axial_vol", "sagittal_vol", "coronal_vol"]:

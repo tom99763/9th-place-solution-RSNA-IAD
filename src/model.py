@@ -377,11 +377,17 @@ class MultiViewWaveletModel(nn.Module):
         super().__init__()
         self.k_candi = k_candi
         self.model_keys = [
+            "axial_mip",
+            "sagittal_mip",
+            "coronal_mip",
+            "axial_lp",
+            "sagittal_lp",
+            "coronal_lp",
             "axial_vol",
             "sagittal_vol",
             "coronal_vol",
         ]
-        in_chans_list = [8 * 8] * 3
+        in_chans_list = [1] * 6 + [8 * 8] * 3
         assert len(in_chans_list) == len(self.model_keys)
 
         self.num_modules = len(self.model_keys)

@@ -25,7 +25,7 @@ def train(cfg: DictConfig) -> None:
     """
     print("✨ Base configuration for this run: ✨")
     print(OmegaConf.to_yaml(cfg))
-    for wavelet in ['haar', 'sym6', 'bior3.5']:
+    for wavelet in ['haar']:
         for fold_id in range(5):
             set_seed()
             print(f"\n🚀 Starting Fold {fold_id}...\n")
