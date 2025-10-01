@@ -207,12 +207,13 @@ class NpzPatchDataModule(pl.LightningDataModule):
 
         fold_path = data_path / "patch_data" / f"fold{self.cfg.fold_id}"
         valid_uids = [d for d in os.listdir(fold_path) if (fold_path / d).is_dir()]
+        print(valid_uids[0])
 
         df = pd.read_csv(data_path / "train_df.csv")
         df = df[df.SeriesInstanceUID.isin(valid_uids)]
 
-        train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"]
-        val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"]
+        train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"].tolist()
+        val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"].tolist()
 
         print(len(train_uids))
         print(len(val_uids))
