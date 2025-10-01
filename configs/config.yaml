@@ -6,6 +6,7 @@ seed: 42
 fold_id: 0
 fold_id_yolo: 0
 offline: true
+wavelet: 'haar'
 
 
 params:

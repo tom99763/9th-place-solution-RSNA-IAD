@@ -126,7 +126,7 @@ class NpzPatchWaveletDataset(Dataset):
 
     def apply_3d_dwt(self, x):
         # (15,64,64) -> (8, 13, 32, 32) -> (64, 32, 32)
-        coeffs = pywt.dwtn(x, wavelet='coif5', axes=(0,1,2))
+        coeffs = pywt.dwtn(x, wavelet=self.cfg.wavelet, axes=(0,1,2))
         #Z-normalization
         normalized_coeffs = {}
         for band, band_data in coeffs.items():
