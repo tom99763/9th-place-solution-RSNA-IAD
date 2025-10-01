@@ -3,7 +3,7 @@ model_name: "tf_efficientnetv2_b0.in1k" #RepVGG-B0,"ghostnetv2_100"(no drop_path
 pretrained: True
 drop_rate: 0.3
 drop_path_rate: 0.2
-k_candi: 3
+k_candi: 2
 model_dim: 512
 transformer_layers: 2
 transformer_heads: 8
