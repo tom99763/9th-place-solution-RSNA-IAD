@@ -1,5 +1,5 @@
-_target_: src.model.MultiViewPatchModel
-model_name: "ghostnetv2_100" #RepVGG-B0,"ghostnetv2_100"(no drop_path_rate)
+_target_: src.model.MultiViewWaveletModel
+model_name: "tf_efficientnetv2_b0.in1k" #RepVGG-B0,"ghostnetv2_100"(no drop_path_rate)
 pretrained: True
 drop_rate: 0.3
 drop_path_rate: 0.2

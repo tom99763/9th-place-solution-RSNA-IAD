@@ -91,6 +91,72 @@ class NpzPatchDataset(Dataset):
         labels = int(rowdf["Aneurysm Present"].iloc[0])
         return data, labels
 
+
+class NpzPatchWaveletDataset(Dataset):
+    """
+    Dataset to load .npz image volumes and serve random 2D slices.
+    """
+
+    def __init__(self, uids, cfg, transform=None, mode="train", vol_size=(16, 64, 64)):
+        self.uids = uids
+        self.cfg = cfg
+        self.data_path = Path(self.cfg.params.data_dir)
+
+        self.train_df = pd.read_csv(self.data_path / "train_df.csv")
+        self.label_df = pd.read_csv(self.data_path / "label_df.csv")
+
+        self.num_classes = cfg.params.num_classes
+        self.transform = transform
+        self.mode = mode
+        self.vol_size = vol_size  # (C, H, W) target volume size
+
+    def __len__(self):
+        return len(self.uids)
+
+    def resize_vol3d(self, vol: torch.Tensor) -> torch.Tensor:
+        target_d, target_h, target_w = self.vol_size[0] * 4, self.vol_size[1], self.vol_size[2]
+        return F.interpolate(
+                vol,
+                size=(target_d, target_h, target_w),
+                mode="trilinear",
+                align_corners=False
+            )
+
+    def apply_3d_dwt(self, x):
+        # (15,64,64) -> (8, 8, 32, 32) -> (64, 32, 32)
+        coeffs = pywt.dwtn(x, wavelet='haar', axes=(0,1,2))
+        bands = np.stack([coeffs[k] for k in coeffs.keys()], axis=0)
+        bands = bands.reshape(-1, 32, 32)
+        return  bands
+
+    def __getitem__(self, idx):
+        uid = self.uids[idx]
+        rowdf = self.train_df[self.train_df["SeriesInstanceUID"] == uid]
+
+        # Load 3 patches
+        patch_data = []
+        for i in range(2):
+            with np.load(self.data_path / "patch_data" / f"fold{self.cfg.fold_id_yolo}" / f"{uid}" / f"patch_{i}.npz") as data:
+                patch_data.append({
+                    "axial": self.apply_3d_dwt(data["axial"].astype(np.float32)),
+                    "sagittal": self.apply_3d_dwt(data["sagittal"].astype(np.float32)),
+                    "coronal": self.apply_3d_dwt(data["coronal"].astype(np.float32)),
+                })
+
+        # Stack across patches
+        data = {
+            "axial_vol": torch.stack([torch.from_numpy(p["axial"]) for p in patch_data], dim=0), #(2, 64, 32, 32)->(#patch, #bands, h, w)
+            "sagittal_vol": torch.stack([torch.from_numpy(p["sagittal"]) for p in patch_data], dim=0),
+            "coronal_vol": torch.stack([torch.from_numpy(p["coronal"]) for p in patch_data], dim=0),
+        }
+
+        # Resize volumes spatially (H,W), keeping depth as channels
+        for k in ["axial_vol", "sagittal_vol", "coronal_vol"]:
+            data[k] = self.resize_vol3d(data[k])  #(2, 64, 64, 64)->(#patch, #bands, h, w)
+
+        labels = int(rowdf["Aneurysm Present"].iloc[0])
+        return data, labels
+
 def patch_collate_fn(batch):
     """
     Collate function for NpzPatchDataset.
@@ -110,7 +176,7 @@ def patch_collate_fn(batch):
 
     # stack tensors
     for k in batch_dict:
-        batch_dict[k] = torch.stack(batch_dict[k], dim=0)  # (B, 3, 1 & 31, 128, 128)
+        batch_dict[k] = torch.stack(batch_dict[k], dim=0)  # (B, 2, 64, 64, 64)
 
     labels = torch.tensor(labels, dtype=torch.float32)
     return batch_dict, labels
@@ -144,8 +210,8 @@ class NpzPatchDataModule(pl.LightningDataModule):
         print(len(train_uids))
         print(len(val_uids))
 
-        self.train_dataset = NpzPatchDataset(uids=train_uids, cfg=self.cfg, transform=self.train_transforms)
-        self.val_dataset = NpzPatchDataset(uids=val_uids, cfg=self.cfg, transform=self.val_transforms, mode="val")
+        self.train_dataset = NpzPatchWaveletDataset(uids=train_uids, cfg=self.cfg, transform=self.train_transforms)
+        self.val_dataset = NpzPatchWaveletDataset(uids=val_uids, cfg=self.cfg, transform=self.val_transforms, mode="val")
 
     def train_dataloader(self):
         return DataLoader(
