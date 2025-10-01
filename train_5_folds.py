@@ -44,18 +44,16 @@ def train(cfg: DictConfig) -> None:
             save_top_k=1,
         )
 
-        auroc_callbacks = []
-        for cls_id in range(4):  # 0,1,2,3
-            auroc_callbacks.append(
-                pl.callbacks.ModelCheckpoint(
-                    monitor=f"val_cls_auroc_{cls_id}",
-                    mode="max",
-                    dirpath="./models",
-                    filename=f'{cfg_fold.experiment}--{cfg_fold.model.model_name}'
-                             f'-{{epoch:02d}}-{{val_cls_auroc_{cls_id}:.4f}}_fold_id={fold_id}',
-                    save_top_k=1,
-                )
+        auroc_callbacks = [
+            pl.callbacks.ModelCheckpoint(
+                monitor="val_cls_auroc",  # only one AUROC now
+                mode="max",
+                dirpath="./models",
+                filename=f'{cfg_fold.experiment}--{cfg_fold.model.model_name}'
+                         f'-{{epoch:02d}}-{{val_cls_auroc:.4f}}_fold_id={fold_id}',
+                save_top_k=1,
             )
+        ]
 
         lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
 

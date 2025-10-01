@@ -16,69 +16,48 @@ class LitTimmClassifier(pl.LightningModule):
 
         self.model = model
         self.cfg = cfg
-        self.loc_loss_fn = torch.nn.BCEWithLogitsLoss()
-        self.cls_loss_fn = torch.nn.BCEWithLogitsLoss()
+        self.loss_fn = nn.BCEWithLogitsLoss()
 
         self.num_classes = self.cfg.params.num_classes
 
-        # Metrics for patches (3) + merged (1) = 4 AUROCs
-        self.train_cls_aurocs = nn.ModuleList([
-            torchmetrics.AUROC(task="binary") for _ in range(4)
-        ])
-        self.val_cls_aurocs = nn.ModuleList([
-            torchmetrics.AUROC(task="binary") for _ in range(4)
-        ])
+        # Single AUROC (since we now only have one final logit)
+        self.train_cls_auroc = torchmetrics.AUROC(task="binary")
+        self.val_cls_auroc = torchmetrics.AUROC(task="binary")
 
     def forward(self, x):
-        return self.model(x)  # returns list of [logit0, logit1, logit2]
+        return self.model(x)  # returns (B, 1)
 
-    def compute_losses_and_metrics(self, logits_list, labels, stage="train"):
-        # Merge logits: sum of 3 patches
-        merged_logits = sum(logits_list)
+    def compute_loss_and_metrics(self, logits, labels, stage="train"):
+        loss = self.loss_fn(logits.squeeze(-1), labels)
 
-        # Compute per-patch + merged losses
-        cls_losses = [self.cls_loss_fn(logit.squeeze(-1), labels) for logit in logits_list]
-        cls_losses.append(self.cls_loss_fn(merged_logits.squeeze(-1), labels))  # merged
-
-        total_loss = sum(cls_losses) / len(cls_losses)
-
-        # Update metrics
         if stage == "train":
-            for i, logit in enumerate(logits_list + [merged_logits]):
-                self.train_cls_aurocs[i].update(logit.squeeze(-1), labels.long())
+            self.train_cls_auroc.update(logits.squeeze(-1), labels.long())
         else:
-            for i, logit in enumerate(logits_list + [merged_logits]):
-                self.val_cls_aurocs[i].update(logit.squeeze(-1), labels.long())
+            self.val_cls_auroc.update(logits.squeeze(-1), labels.long())
 
-        return total_loss
+        return loss
 
     def training_step(self, batch, _):
         x, labels = batch
-        logits_list = self(x)
-        loss = self.compute_losses_and_metrics(logits_list, labels, stage="train")
+        logits = self(x)
+        loss = self.compute_loss_and_metrics(logits, labels, stage="train")
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, labels = batch
-        logits_list = self(x)
-        loss = self.compute_losses_and_metrics(logits_list, labels, stage="val")
+        logits = self(x)
+        loss = self.compute_loss_and_metrics(logits, labels, stage="val")
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     def on_train_epoch_end(self):
-        for i, metric in enumerate(self.train_cls_aurocs):
-            self.log(f"train_cls_auroc_{i}", metric.compute(), on_epoch=True, prog_bar=True)
-            metric.reset()
+        self.log("train_cls_auroc", self.train_cls_auroc.compute(), on_epoch=True, prog_bar=True)
+        self.train_cls_auroc.reset()
 
     def on_validation_epoch_end(self):
-        cls_aucs = [metric.compute() for metric in self.val_cls_aurocs]
-
-        for i, auc in enumerate(cls_aucs):
-            self.log(f"val_cls_auroc_{i}", auc, on_epoch=True, prog_bar=True)
-
-        for metric in self.val_cls_aurocs:
-            metric.reset()
+        self.log("val_cls_auroc", self.val_cls_auroc.compute(), on_epoch=True, prog_bar=True)
+        self.val_cls_auroc.reset()
 
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())
