@@ -115,16 +115,19 @@ class NpzPatchWaveletDataset(Dataset):
 
     def resize_vol3d(self, vol: torch.Tensor) -> torch.Tensor:
         target_d, target_h, target_w = self.vol_size[0] * 8, self.vol_size[1], self.vol_size[2]
+        if vol.ndim == 4:
+            vol = vol.unsqueeze(1)
         return F.interpolate(
                 vol,
                 size=(target_d, target_h, target_w),
                 mode="trilinear",
                 align_corners=False
-            )
+            ).squeeze(1)
 
     def apply_3d_dwt(self, x):
         # (15,64,64) -> (8, 13, 32, 32) -> (64, 32, 32)
         coeffs = pywt.dwtn(x, wavelet='bior3.5', axes=(0,1,2))
+        #Z-normalization
         normalized_coeffs = {}
         for band, band_data in coeffs.items():
             normalized_coeffs[band] = (band_data - np.mean(band_data)) / (np.std(band_data) + 1e-10)
