@@ -5,6 +5,18 @@ from pytorch_lightning.loggers import WandbLogger
 from hydra.utils import instantiate
 from src.trainers.multi_view import *
 from src.rsna_datasets.patch_datasets import *
+import random
+
+def set_seed(seed: int = 42):
+    random.seed(seed)  # Python random
+    np.random.seed(seed)  # NumPy
+    torch.manual_seed(seed)  # CPU
+    torch.cuda.manual_seed(seed)  # Current GPU
+    torch.cuda.manual_seed_all(seed)  # All GPUs
+
+    # For deterministic behavior (slower, but reproducible)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 @hydra.main(config_path="./configs", config_name="config", version_base=None)
 def train(cfg: DictConfig) -> None:
@@ -13,8 +25,9 @@ def train(cfg: DictConfig) -> None:
     """
     print("✨ Base configuration for this run: ✨")
     print(OmegaConf.to_yaml(cfg))
-    for wavelet in ['bior3.5', 'sym6', 'haar']:
+    for wavelet in ['haar', 'sym6', 'bior3.5']:
         for fold_id in range(5):
+            set_seed()
             print(f"\n🚀 Starting Fold {fold_id}...\n")
 
             # Update fold_id in cfg (deepcopy to avoid mutation issues)

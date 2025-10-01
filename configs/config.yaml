@@ -14,7 +14,7 @@ params:
   num_classes: 14
   img_height: 512
   img_width: 512
-  batch_size: 16
+  batch_size: 8
   num_workers: 4
   use_mip: False
 

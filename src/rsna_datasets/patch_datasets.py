@@ -97,7 +97,7 @@ class NpzPatchWaveletDataset(Dataset):
     Dataset to load .npz image volumes and serve random 2D slices.
     """
 
-    def __init__(self, uids, cfg, transform=None, mode="train", vol_size=(8, 64, 64)):
+    def __init__(self, uids, cfg, transform=None, mode="train", vol_size=(8, 128, 128)):
         self.uids = uids
         self.cfg = cfg
         self.data_path = Path(self.cfg.params.data_dir)
@@ -192,7 +192,7 @@ class NpzPatchDataModule(pl.LightningDataModule):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        img_size = 64
+        img_size = 128
         self.train_transforms = A.Compose(
             [A.Resize(img_size, img_size), ToTensorV2()],
         )
