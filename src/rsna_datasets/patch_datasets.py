@@ -125,7 +125,10 @@ class NpzPatchWaveletDataset(Dataset):
     def apply_3d_dwt(self, x):
         # (15,64,64) -> (8, 13, 32, 32) -> (64, 32, 32)
         coeffs = pywt.dwtn(x, wavelet='bior3.5', axes=(0,1,2))
-        bands = np.stack([coeffs[k] for k in coeffs.keys()], axis=0)
+        normalized_coeffs = {}
+        for band, band_data in coeffs.items():
+            normalized_coeffs[band] = (band_data - np.mean(band_data)) / (np.std(band_data) + 1e-10)
+        bands = np.stack([normalized_coeffs[k] for k in normalized_coeffs.keys()], axis=0)
         bands = bands.reshape(-1, 37, 37) #(13 * 8, 37, 37)
         return  bands
 
