@@ -97,7 +97,7 @@ class NpzPatchWaveletDataset(Dataset):
     Dataset to load .npz image volumes and serve random 2D slices.
     """
 
-    def __init__(self, uids, cfg, transform=None, mode="train", vol_size=(16, 64, 64)):
+    def __init__(self, uids, cfg, transform=None, mode="train", vol_size=(13, 64, 64)):
         self.uids = uids
         self.cfg = cfg
         self.data_path = Path(self.cfg.params.data_dir)
@@ -114,7 +114,7 @@ class NpzPatchWaveletDataset(Dataset):
         return len(self.uids)
 
     def resize_vol3d(self, vol: torch.Tensor) -> torch.Tensor:
-        target_d, target_h, target_w = self.vol_size[0] * 4, self.vol_size[1], self.vol_size[2]
+        target_d, target_h, target_w = self.vol_size[0] * 8, self.vol_size[1], self.vol_size[2]
         return F.interpolate(
                 vol,
                 size=(target_d, target_h, target_w),
@@ -123,10 +123,10 @@ class NpzPatchWaveletDataset(Dataset):
             )
 
     def apply_3d_dwt(self, x):
-        # (15,64,64) -> (8, 8, 32, 32) -> (64, 32, 32)
-        coeffs = pywt.dwtn(x, wavelet='haar', axes=(0,1,2))
+        # (15,64,64) -> (8, 13, 32, 32) -> (64, 32, 32)
+        coeffs = pywt.dwtn(x, wavelet='bior3.5', axes=(0,1,2))
         bands = np.stack([coeffs[k] for k in coeffs.keys()], axis=0)
-        bands = bands.reshape(-1, 32, 32)
+        bands = bands.reshape(-1, 37, 37) #(13 * 8, 37, 37)
         return  bands
 
     def __getitem__(self, idx):
@@ -145,14 +145,14 @@ class NpzPatchWaveletDataset(Dataset):
 
         # Stack across patches
         data = {
-            "axial_vol": torch.stack([torch.from_numpy(p["axial"]) for p in patch_data], dim=0), #(2, 64, 32, 32)->(#patch, #bands, h, w)
+            "axial_vol": torch.stack([torch.from_numpy(p["axial"]) for p in patch_data], dim=0), #(2, 13 * 8, 32, 32)->(#patch, #bands, h, w)
             "sagittal_vol": torch.stack([torch.from_numpy(p["sagittal"]) for p in patch_data], dim=0),
             "coronal_vol": torch.stack([torch.from_numpy(p["coronal"]) for p in patch_data], dim=0),
         }
 
         # Resize volumes spatially (H,W), keeping depth as channels
         for k in ["axial_vol", "sagittal_vol", "coronal_vol"]:
-            data[k] = self.resize_vol3d(data[k])  #(2, 64, 64, 64)->(#patch, #bands, h, w)
+            data[k] = self.resize_vol3d(data[k])  #(2, 13 * 8, 64, 64)->(#patch, #bands, h, w)
 
         labels = int(rowdf["Aneurysm Present"].iloc[0])
         return data, labels
