@@ -381,7 +381,7 @@ class MultiViewWaveletModel(nn.Module):
             "sagittal_vol",
             "coronal_vol",
         ]
-        in_chans_list = [13 * 8] * 3
+        in_chans_list = [8 * 8] * 3
         assert len(in_chans_list) == len(self.model_keys)
 
         self.num_modules = len(self.model_keys)
