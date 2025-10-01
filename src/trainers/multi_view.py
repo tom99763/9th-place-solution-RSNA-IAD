@@ -8,42 +8,35 @@ import numpy as np
 
 torch.set_float32_matmul_precision('medium')
 
-
-import torch
-import torch.nn as nn
-
-class AUCMAXLoss(nn.Module):
+class PairwiseRankingLoss(nn.Module):
     """
-    AUC-MAX surrogate loss (Yuan et al., NeurIPS 2021).
-    Optimizes AUROC directly using a min-max formulation.
+    Pairwise logistic ranking loss (surrogate for AUROC).
+    Encourages positive samples to score higher than negative samples.
     """
-    def __init__(self, margin=1.0):
+    def __init__(self):
         super().__init__()
-        self.margin = margin
-        # alpha (threshold) is trainable as suggested in paper
-        self.alpha = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, y_pred, y_true):
         """
         Args:
-            y_pred: (N,) raw model outputs (logits)
+            y_pred: (N,) raw model scores (logits)
             y_true: (N,) binary labels {0,1}
         """
-        pos_mask = (y_true == 1).float()
-        neg_mask = (y_true == 0).float()
+        pos_mask = (y_true == 1)
+        neg_mask = (y_true == 0)
 
-        n_pos = pos_mask.sum()
-        n_neg = neg_mask.sum()
+        pos_scores = y_pred[pos_mask]
+        neg_scores = y_pred[neg_mask]
 
-        # If no positives or no negatives, return 0 loss
-        if n_pos.item() == 0 or n_neg.item() == 0:
+        if len(pos_scores) == 0 or len(neg_scores) == 0:
             return torch.tensor(0.0, device=y_pred.device, requires_grad=True)
 
-        pos_loss = ((y_pred - self.alpha - self.margin) ** 2 * pos_mask).sum() / n_pos
-        neg_loss = ((y_pred - self.alpha + self.margin) ** 2 * neg_mask).sum() / n_neg
+        # Compute all pairwise differences: s_pos - s_neg
+        diff = pos_scores[:, None] - neg_scores[None, :]  # shape (n_pos, n_neg)
 
-        return pos_loss + neg_loss
-
+        # Pairwise logistic loss
+        loss = torch.log1p(torch.exp(-diff)).mean()
+        return loss
 
 class LitTimmClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
@@ -53,7 +46,7 @@ class LitTimmClassifier(pl.LightningModule):
         self.model = model
         self.cfg = cfg
         #self.loss_fn = nn.BCEWithLogitsLoss()
-        self.loss_fn = AUCMAXLoss()
+        self.loss_fn = PairwiseRankingLoss()
 
         self.num_classes = self.cfg.params.num_classes
 
