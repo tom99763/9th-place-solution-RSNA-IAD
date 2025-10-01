@@ -360,44 +360,7 @@ class MultiViewPatchModel(nn.Module):
         logits = [classifier(tokens_per_candidate[:, i]) for i, classifier in enumerate(self.classifiers)]
         return logits
 
-
-# --- small utilities (self-contained) ---------------------------------------
-class SinusoidalPosEmb(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, seq_len, device=None):
-        # returns (1, seq_len, dim)
-        if device is None:
-            device = torch.device("cpu")
-        half_dim = self.dim // 2
-        emb = torch.exp(torch.arange(half_dim, device=device).float() * -(torch.log(torch.tensor(10000.0)) / (half_dim - 1)))
-        pos = torch.arange(seq_len, device=device).float().unsqueeze(1) * emb.unsqueeze(0)  # (seq_len, half_dim)
-        sin = torch.sin(pos)
-        cos = torch.cos(pos)
-        pe = torch.cat([sin, cos], dim=1)
-        if self.dim % 2:  # odd dim
-            pe = F.pad(pe, (0, 1), value=0.0)
-        return pe.unsqueeze(0)  # (1, seq_len, dim)
-
-class AttentionPool(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.q = nn.Parameter(torch.randn(dim))  # learnable query
-        self.scale = dim ** -0.5
-
-    def forward(self, x):
-        # x: (B, S, D) -> returns (B, D)
-        # compute attention scores relative to learned query vector
-        q = self.q / (torch.norm(self.q) + 1e-6)  # normalize to stabilize
-        attn_logits = torch.einsum("bsd,d->bs", x, q) * self.scale  # (B, S)
-        attn = torch.softmax(attn_logits, dim=1).unsqueeze(-1)  # (B, S, 1)
-        pooled = (x * attn).sum(dim=1)  # (B, D)
-        return pooled
-
-
-class MultiViewPatchModel(nn.Module):
+class MultiViewWaveletModel(nn.Module):
     def __init__(
         self,
         model_name: str,
@@ -420,6 +383,8 @@ class MultiViewPatchModel(nn.Module):
         ]
         in_chans_list = [64] * 3
         assert len(in_chans_list) == len(self.model_keys)
+
+        self.num_modules = len(self.model_keys)
 
         # Create backbone dict
         self.backboneDict = nn.ModuleDict()
@@ -449,7 +414,7 @@ class MultiViewPatchModel(nn.Module):
         )
 
         # Positional embedding
-        self.seq_len = 9 * self.k_candi
+        self.seq_len = self.num_modules * self.k_candi
         self.pos_emb = SinusoidalPosEmb(self.model_dim)
 
         # Transformer encoder
@@ -565,12 +530,12 @@ def forward(self, patch: dict):
     stacked = stacked.view(B, K, len(self.model_keys), 2 * self.backbone_out_dim)
     tokens = stacked.view(B, K * len(self.model_keys), 2 * self.backbone_out_dim)
 
-    tokens = self.project(tokens)  # (B, 9*K, model_dim)
+    tokens = self.project(tokens)  # (B, self.num_modules*K, model_dim)
     seq_len = tokens.size(1)
     pos = self.pos_emb(seq_len, device=tokens.device)
     tokens = tokens + pos
 
-    tokens = self.transformer(tokens)  # (B, 9*K, model_dim)
+    tokens = self.transformer(tokens)  # (B, self.num_modules*K, model_dim)
 
     # Apply a single attention pooling across all tokens
     logits = self.classifier(tokens)  # (B, 1)

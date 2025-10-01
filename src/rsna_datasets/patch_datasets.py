@@ -198,7 +198,7 @@ class NpzPatchDataModule(pl.LightningDataModule):
         data_path = Path(self.cfg.params.data_dir)
 
         # List all available uids (directories inside fold dir)
-        fold_path = data_path / "patch_data" / f"fold{self.cfg.fold_id_yolo}"
+        fold_path = data_path / "patch_data" / f"fold{self.cfg.fold_id}"
         valid_uids = [d for d in os.listdir(fold_path) if (fold_path / d).is_dir()]
 
         df = pd.read_csv(data_path / "train_df.csv")
