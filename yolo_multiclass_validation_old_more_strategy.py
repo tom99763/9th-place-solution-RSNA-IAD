@@ -62,7 +62,7 @@ def parse_args():
     ap.add_argument('--folds', type=str, default='', help='Comma-separated fold ids to run (overrides --val-fold when provided)')
     # Weights & Biases
     ap.add_argument('--wandb', default=True, action='store_true', help='Log metrics and outputs to Weights & Biases')
-    ap.add_argument('--wandb-project', type=str, default='yolo_aneurysm_location_all_negatives', help='W&B project name (no slashes)')
+    ap.add_argument('--wandb-project', type=str, default='yolo_aneurysm_locations', help='W&B project name (no slashes)')
     ap.add_argument('--wandb-entity', type=str, default='', help='W&B entity (team/user)')
     ap.add_argument('--wandb-run-name', type=str, default='', help='W&B run name (defaults to val_fold{fold})')
     ap.add_argument('--wandb-group', type=str, default='', help='Optional W&B group')
@@ -72,6 +72,7 @@ def parse_args():
     ap.add_argument('--bgr-non-overlapping', action='store_true', help='Use non-overlapping 3-slice windows in BGR mode (e.g., [1,2,3],[4,5,6],[7,8,9])')
     ap.add_argument('--wandb-resume-id', type=str, default='', help='Resume W&B run id (optional)')
     ap.add_argument('--single-cls', action='store_true', help='Single class mode: only classify aneurysm present/absent (no location prediction)')
+    ap.add_argument('--agg-strategies', type=str, default='max', help='Comma-separated list of aggregation strategies: max,mean,top3,top5,p95,p90,median,max_mean (default: max)')
     return ap.parse_args()
 
 
@@ -111,7 +112,48 @@ def collect_series_slices(series_dir: Path) -> List[Path]:
     return sorted(series_dir.glob('*.dcm'))
 
 
-def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_id: int) -> Tuple[Dict[str, float], pd.DataFrame]:
+def aggregate_confidences(all_confs: List[float], strategy: str) -> float:
+    """Aggregate list of confidences using specified strategy.
+    
+    Strategies:
+    - max: Maximum confidence
+    - mean: Mean of all confidences
+    - top3: Mean of top 3 confidences
+    - top5: Mean of top 5 confidences
+    - top10: Mean of top 10 confidences
+    - p95: 95th percentile
+    - p90: 90th percentile
+    - p75: 75th percentile
+    - median: Median confidence
+    - max_mean: Weighted combination of max and mean (0.7*max + 0.3*mean)
+    """
+    if not all_confs:
+        return 0.0
+    
+    arr = np.array(all_confs)
+    
+    if strategy == 'max':
+        return float(np.max(arr))
+    elif strategy == 'mean':
+        return float(np.mean(arr))
+    elif strategy.startswith('top'):
+        k = int(strategy[3:])  # e.g., 'top3' -> 3
+        if len(arr) < k:
+            return float(np.mean(arr))
+        top_k = np.partition(arr, -k)[-k:]
+        return float(np.mean(top_k))
+    elif strategy.startswith('p'):
+        percentile = int(strategy[1:])  # e.g., 'p95' -> 95
+        return float(np.percentile(arr, percentile))
+    elif strategy == 'median':
+        return float(np.median(arr))
+    elif strategy == 'max_mean':
+        return float(0.7 * np.max(arr) + 0.3 * np.mean(arr))
+    else:
+        raise ValueError(f"Unknown aggregation strategy: {strategy}")
+
+
+def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_id: int, strategies: List[str]) -> Tuple[Dict[str, float], pd.DataFrame]:
     """Runs validation for a single fold and returns (metrics_dict, per_series_df)."""
     # Load split
     data_root = Path(data_path)
@@ -126,66 +168,19 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
 
     print(f"Validation fold {fold_id}: {len(val_series)} series")
     print(f"Processing every {args.slice_step} slice(s); MIP half-window={args.mip_window}")
+    print(f"Testing aggregation strategies: {', '.join(strategies)}")
     model = YOLO(weights_path)
 
-    series_probs: Dict[str, float] = {}
+    # Store raw detection data per series for each strategy
+    series_all_confs: Dict[str, List[float]] = {}  # All detection confidences per series
+    series_all_class_confs: Dict[str, List[List[float]]] = {}  # Per-class confidences [series][class_idx] = [confs]
     cls_labels: List[int] = []
     loc_labels: List[np.ndarray] = []
-    series_pred_loc_probs: List[np.ndarray] = []
     series_pred_counts: Dict[str, int] = {}
     
     # For partial AUC tracking
     processed_count = 0
     partial_auc_interval = 10
-
-    def compute_partial_metrics(series_ids, probs_dict, cls_labels_list, loc_labels_list, loc_probs_list):
-        """Compute partial AUC metrics with current data"""
-        if len(cls_labels_list) < 2:
-            return float('nan'), float('nan'), float('nan')
-        
-        # Classification AUC
-        try:
-            y_true = np.array(cls_labels_list)
-            y_scores = np.array([probs_dict[sid] for sid in series_ids])
-            if len(np.unique(y_true)) < 2:  # Need both classes
-                cls_auc = float('nan')
-            else:
-                cls_auc = roc_auc_score(y_true, y_scores)
-        except Exception:
-            cls_auc = float('nan')
-        
-        # Location macro AUC (skip in single-cls mode)
-        if args.single_cls or len(loc_labels_list) == 0:
-            loc_macro_auc = float('nan')
-            competition_score = cls_auc
-        else:
-            try:
-                loc_labels_arr = np.stack(loc_labels_list)
-                loc_pred_arr = np.stack(loc_probs_list)
-                per_loc_aucs = []
-                for i in range(N_LOC):
-                    try:
-                        auc_i = roc_auc_score(loc_labels_arr[:, i], loc_pred_arr[:, i])
-                    except ValueError:
-                        auc_i = float('nan')
-                    per_loc_aucs.append(auc_i)
-                loc_macro_auc = np.nanmean(per_loc_aucs)
-                
-                # Compute competition score
-                valid_loc_aucs = [auc for auc in per_loc_aucs if not math.isnan(auc)]
-                if valid_loc_aucs:
-                    aneurysm_weight = 13
-                    location_weight = 1
-                    total_weights = aneurysm_weight + location_weight * N_LOC
-                    weighted_sum = aneurysm_weight * cls_auc + location_weight * sum(valid_loc_aucs)
-                    competition_score = weighted_sum / total_weights
-                else:
-                    competition_score = cls_auc
-            except Exception:
-                loc_macro_auc = float('nan')
-                competition_score = cls_auc
-                
-        return cls_auc, loc_macro_auc, competition_score
 
     for sid in tqdm(val_series, desc="Validating series", unit="series"):
         series_dir = series_root / sid
@@ -205,13 +200,14 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
             if args.max_slices and len(dicoms) > args.max_slices:
                 dicoms = dicoms[:args.max_slices]
 
-        max_conf_all = 0.0
-        per_class_max = np.zeros(N_LOC, dtype=np.float32)
+        # Collect all confidences for aggregation strategies
+        all_confs: List[float] = []  # All detection confidences across slices
+        per_class_confs: List[List[float]] = [[] for _ in range(N_LOC)]  # Per-class confidences
         total_dets = 0
         batch: list[np.ndarray] = []
 
         def flush_batch(batch_imgs: list[np.ndarray]):
-            nonlocal max_conf_all, total_dets, per_class_max
+            nonlocal total_dets, all_confs, per_class_confs
             if not batch_imgs:
                 return
             results = model.predict(batch_imgs, verbose=False, conf=0.01)
@@ -226,17 +222,15 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     for i in range(n):
                         c = float(confs[i].item())
                         k = int(clses[i].item())
-                        if c > max_conf_all:
-                            max_conf_all = c
+                        all_confs.append(c)
                         # In single-cls mode, all detections are treated as aneurysm class
-                        if not args.single_cls and 0 <= k < N_LOC and c > per_class_max[k]:
-                            per_class_max[k] = c
+                        if not args.single_cls and 0 <= k < N_LOC:
+                            per_class_confs[k].append(c)
                 except Exception:
-                    # Fallback: just use max conf
+                    # Fallback: just collect confidences
                     try:
-                        batch_max = float(r.boxes.conf.max().item())
-                        if batch_max > max_conf_all:
-                            max_conf_all = batch_max
+                        for c in r.boxes.conf:
+                            all_confs.append(float(c.item()))
                         total_dets += int(len(r.boxes))
                     except Exception:
                         pass
@@ -424,11 +418,13 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                         batch.clear()
             flush_batch(batch)
 
-        series_probs[sid] = max_conf_all
-        series_pred_loc_probs.append(per_class_max.copy())
+        # Store raw data for later aggregation
+        series_all_confs[sid] = all_confs
+        series_all_class_confs[sid] = per_class_confs
         series_pred_counts[sid] = total_dets
         if args.verbose:
-            print(f"Series {sid} max_conf_any={max_conf_all:.4f} dets={total_dets} (processed {len(dicoms)} slices)")
+            max_conf = max(all_confs) if all_confs else 0.0
+            print(f"Series {sid} max_conf={max_conf:.4f} dets={total_dets} total_confs={len(all_confs)} (processed {len(dicoms)} slices)")
 
         # Labels and metadata for this series
         row = train_df[train_df['SeriesInstanceUID'] == sid].iloc[0]
@@ -443,147 +439,163 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                 except Exception:
                     loc_vec[idx] = 0.0
         loc_labels.append(loc_vec)
-        
-        # Track partial AUC every 10 series
-        processed_count += 1
-        if processed_count % partial_auc_interval == 0:
-            current_series = list(series_probs.keys())
-            partial_cls_auc, partial_loc_auc, partial_comp_score = compute_partial_metrics(
-                current_series, series_probs, cls_labels, loc_labels, series_pred_loc_probs
-            )
-            
-            if not math.isnan(partial_cls_auc):
-                if args.single_cls:
-                    print(f"[Partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}")
-                else:
-                    if not math.isnan(partial_loc_auc):
-                        print(f"[Partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}, Loc AUC: {partial_loc_auc:.4f}, Comp Score: {partial_comp_score:.4f}")
-                    else:
-                        print(f"[Partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}, Loc AUC: insufficient data")
-            else:
-                print(f"[Partial after {processed_count} series]: insufficient data")
 
-    if not series_probs:
+    if not series_all_confs:
         print("No series processed.")
-        # Return empty metrics and df
-        return {
-            'cls_auc': float('nan'),
-            'cls_ap': float('nan'),
-            'loc_macro_auc': float('nan'),
-            'combined_mean': float('nan'),
-            'mean_num_detections': 0.0,
-            'per_loc_aucs': {name: float('nan') for name in LOCATION_LABELS},
-            'fold_id': fold_id,
-        }, pd.DataFrame()
+        # Return empty metrics and df for each strategy
+        empty_metrics = {}
+        for strat in strategies:
+            empty_metrics[strat] = {
+                'cls_auc': float('nan'),
+                'cls_ap': float('nan'),
+                'loc_macro_auc': float('nan'),
+                'combined_mean': float('nan'),
+                'competition_score': float('nan'),
+                'mean_num_detections': 0.0,
+                'per_loc_aucs': {name: float('nan') for name in LOCATION_LABELS},
+                'fold_id': fold_id,
+                'strategy': strat,
+            }
+        return empty_metrics, pd.DataFrame()
 
-    # Metrics
+    # Get series keys in consistent order
+    series_keys = list(series_all_confs.keys())
     y_true = np.array(cls_labels)
-    y_scores = np.array([series_probs[sid] for sid in series_probs.keys()])
-    cls_auc = roc_auc_score(y_true, y_scores)
-    try:
-        cls_ap = average_precision_score(y_true, y_scores)
-    except Exception:
-        cls_ap = float('nan')
+    loc_labels_arr = np.stack(loc_labels) if loc_labels else None
 
-    # In single-cls mode, skip location metrics
-    if args.single_cls:
-        per_loc_aucs = []
-        loc_macro_auc = float('nan')
-        competition_score = cls_auc  # Only aneurysm classification matters
-        combined_mean = cls_auc
-    else:
-        loc_labels_arr = np.stack(loc_labels)
-        loc_pred_arr = np.stack(series_pred_loc_probs)
-        per_loc_aucs = []
-        for i in range(N_LOC):
-            try:
-                auc_i = roc_auc_score(loc_labels_arr[:, i], loc_pred_arr[:, i])
-            except ValueError:
-                auc_i = float('nan')
-            per_loc_aucs.append(auc_i)
-        loc_macro_auc = np.nanmean(per_loc_aucs)
-
-        # Compute competition-style weighted metric
-        # Competition weights: 13 for aneurysm present, 1 for each location
-        aneurysm_weight = 13
-        location_weight = 1
-        total_weights = aneurysm_weight + location_weight * N_LOC  # 13 + 13 = 26
-
-        valid_loc_aucs = [auc for auc in per_loc_aucs if not math.isnan(auc)]
-        if valid_loc_aucs:
-            weighted_sum = aneurysm_weight * cls_auc + location_weight * sum(valid_loc_aucs)
-            competition_score = weighted_sum / total_weights
-        else:
-            competition_score = cls_auc  # fallback if no location AUCs
-
-        # For backward compatibility, also compute the simple average
-        combined_mean = (cls_auc + (loc_macro_auc if not math.isnan(loc_macro_auc) else 0)) / 2
-
-    # Final partial AUC report if not already printed at this exact count
-    if processed_count % partial_auc_interval != 0:
-        current_series = list(series_probs.keys())
-        partial_cls_auc, partial_loc_auc, partial_comp_score = compute_partial_metrics(
-            current_series, series_probs, cls_labels, loc_labels, series_pred_loc_probs
-        )
+    # Compute metrics for EACH aggregation strategy
+    print(f"\n{'='*80}")
+    print(f"COMPARING AGGREGATION STRATEGIES")
+    print(f"{'='*80}\n")
+    
+    all_strategy_metrics = {}
+    all_strategy_dfs = {}
+    
+    for strategy in strategies:
+        print(f"\n--- Strategy: {strategy.upper()} ---")
         
-        if not math.isnan(partial_cls_auc):
-            if args.single_cls:
-                print(f"[Final partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}")
+        # Aggregate confidences using this strategy
+        series_probs = {}
+        series_pred_loc_probs = []
+        
+        for sid in series_keys:
+            # Aggregate overall confidence
+            series_probs[sid] = aggregate_confidences(series_all_confs[sid], strategy)
+            
+            # Aggregate per-class confidences
+            if not args.single_cls:
+                per_class_agg = np.zeros(N_LOC, dtype=np.float32)
+                for class_idx in range(N_LOC):
+                    class_confs = series_all_class_confs[sid][class_idx]
+                    per_class_agg[class_idx] = aggregate_confidences(class_confs, strategy)
+                series_pred_loc_probs.append(per_class_agg)
+        
+        # Compute metrics for this strategy
+        y_scores = np.array([series_probs[sid] for sid in series_keys])
+        cls_auc = roc_auc_score(y_true, y_scores)
+        try:
+            cls_ap = average_precision_score(y_true, y_scores)
+        except Exception:
+            cls_ap = float('nan')
+
+        # In single-cls mode, skip location metrics
+        if args.single_cls:
+            per_loc_aucs = []
+            loc_macro_auc = float('nan')
+            competition_score = cls_auc
+            combined_mean = cls_auc
+        else:
+            loc_pred_arr = np.stack(series_pred_loc_probs)
+            per_loc_aucs = []
+            for i in range(N_LOC):
+                try:
+                    auc_i = roc_auc_score(loc_labels_arr[:, i], loc_pred_arr[:, i])
+                except ValueError:
+                    auc_i = float('nan')
+                per_loc_aucs.append(auc_i)
+            loc_macro_auc = np.nanmean(per_loc_aucs)
+
+            # Competition-style weighted metric
+            aneurysm_weight = 13
+            location_weight = 1
+            total_weights = aneurysm_weight + location_weight * N_LOC
+
+            valid_loc_aucs = [auc for auc in per_loc_aucs if not math.isnan(auc)]
+            if valid_loc_aucs:
+                weighted_sum = aneurysm_weight * cls_auc + location_weight * sum(valid_loc_aucs)
+                competition_score = weighted_sum / total_weights
             else:
-                if not math.isnan(partial_loc_auc):
-                    print(f"[Final partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}, Loc AUC: {partial_loc_auc:.4f}, Comp Score: {partial_comp_score:.4f}")
-                else:
-                    print(f"[Final partial after {processed_count} series] Cls AUC: {partial_cls_auc:.4f}, Loc AUC: insufficient data")
+                competition_score = cls_auc
 
-    print(f"Classification AUC (aneurysm present): {cls_auc:.4f}")
-    print(f"Classification AP (PR AUC): {cls_ap:.4f}")
-    if args.single_cls:
-        print("Single-cls mode: Location metrics skipped")
-        print(f"Final score (classification only): {cls_auc:.4f}")
-    else:
-        print(f"Location macro AUC: {loc_macro_auc:.4f}")
-        print(f"Competition score (weighted): {competition_score:.4f}")
-        print(f"Combined (mean) metric: {combined_mean:.4f}")  # Should be same as competition_score
+            combined_mean = (cls_auc + (loc_macro_auc if not math.isnan(loc_macro_auc) else 0)) / 2
 
-    # Build per-series dataframe
-    out_rows = []
-    keys = list(series_probs.keys())
-    for idx, sid in enumerate(keys):
-        row_df = train_df[train_df['SeriesInstanceUID'] == sid]
-        label = int(row_df['Aneurysm Present'].iloc[0]) if not row_df.empty else 0
-        row = {
-            'SeriesInstanceUID': sid,
-            'aneurysm_prob': float(series_probs[sid]),
-            'label_aneurysm': label,
-            'num_detections': int(series_pred_counts.get(sid, 0)),
-        }
-        # Only add location data if not in single-cls mode
+        # Print metrics for this strategy
+        print(f"  Classification AUC: {cls_auc:.4f}")
+        print(f"  Classification AP:  {cls_ap:.4f}")
         if not args.single_cls:
-            probs = series_pred_loc_probs[idx]
-            for i, name in enumerate(LOCATION_LABELS):
-                row[f'loc_prob_{i}'] = float(probs[i])
-                # add label if present
-                if name in row_df.columns:
-                    try:
-                        row[f'loc_label_{i}'] = float(row_df[name].iloc[0])
-                    except Exception:
-                        row[f'loc_label_{i}'] = 0.0
-        out_rows.append(row)
-    per_series_df = pd.DataFrame(out_rows)
+            print(f"  Location macro AUC: {loc_macro_auc:.4f}")
+            print(f"  Competition score:  {competition_score:.4f}")
 
-    metrics = {
-        'fold_id': fold_id,
-        'cls_auc': float(cls_auc),
-        'cls_ap': float(cls_ap) if not (isinstance(cls_ap, float) and math.isnan(cls_ap)) else float('nan'),
-        'loc_macro_auc': float(loc_macro_auc) if not math.isnan(loc_macro_auc) else float('nan'),
-        'competition_score': float(competition_score) if not math.isnan(competition_score) else float('nan'),
-        'combined_mean': float(combined_mean) if not math.isnan(combined_mean) else float('nan'),
-        'mean_num_detections': float(np.mean(list(series_pred_counts.values())) if series_pred_counts else 0.0),
-        'per_loc_aucs': {} if args.single_cls else {LOCATION_LABELS[i]: (float(per_loc_aucs[i]) if not math.isnan(per_loc_aucs[i]) else float('nan')) for i in range(N_LOC)},
-        'single_cls_mode': bool(args.single_cls),
-        'num_series': int(len(keys)),
-    }
-    return metrics, per_series_df
+        # Store metrics
+        metrics = {
+            'fold_id': fold_id,
+            'strategy': strategy,
+            'cls_auc': float(cls_auc),
+            'cls_ap': float(cls_ap) if not (isinstance(cls_ap, float) and math.isnan(cls_ap)) else float('nan'),
+            'loc_macro_auc': float(loc_macro_auc) if not math.isnan(loc_macro_auc) else float('nan'),
+            'competition_score': float(competition_score) if not math.isnan(competition_score) else float('nan'),
+            'combined_mean': float(combined_mean) if not math.isnan(combined_mean) else float('nan'),
+            'mean_num_detections': float(np.mean(list(series_pred_counts.values())) if series_pred_counts else 0.0),
+            'per_loc_aucs': {} if args.single_cls else {LOCATION_LABELS[i]: (float(per_loc_aucs[i]) if not math.isnan(per_loc_aucs[i]) else float('nan')) for i in range(N_LOC)},
+            'single_cls_mode': bool(args.single_cls),
+            'num_series': int(len(series_keys)),
+        }
+        all_strategy_metrics[strategy] = metrics
+        
+        # Build per-series dataframe for this strategy
+        out_rows = []
+        for idx, sid in enumerate(series_keys):
+            row_df = train_df[train_df['SeriesInstanceUID'] == sid]
+            label = int(row_df['Aneurysm Present'].iloc[0]) if not row_df.empty else 0
+            row = {
+                'SeriesInstanceUID': sid,
+                'aneurysm_prob': float(series_probs[sid]),
+                'label_aneurysm': label,
+                'num_detections': int(series_pred_counts.get(sid, 0)),
+                'num_confidences': len(series_all_confs[sid]),
+            }
+            if not args.single_cls:
+                probs = series_pred_loc_probs[idx]
+                for i, name in enumerate(LOCATION_LABELS):
+                    row[f'loc_prob_{i}'] = float(probs[i])
+                    if name in row_df.columns:
+                        try:
+                            row[f'loc_label_{i}'] = float(row_df[name].iloc[0])
+                        except Exception:
+                            row[f'loc_label_{i}'] = 0.0
+            out_rows.append(row)
+        all_strategy_dfs[strategy] = pd.DataFrame(out_rows)
+
+    # Print summary comparison
+    print(f"\n{'='*80}")
+    print(f"STRATEGY COMPARISON SUMMARY")
+    print(f"{'='*80}")
+    print(f"{'Strategy':<15} {'Cls AUC':>10} {'Cls AP':>10} {'Loc AUC':>10} {'Comp Score':>12}")
+    print(f"{'-'*80}")
+    for strategy in strategies:
+        m = all_strategy_metrics[strategy]
+        cls_auc_str = f"{m['cls_auc']:.4f}" if not math.isnan(m['cls_auc']) else "N/A"
+        cls_ap_str = f"{m['cls_ap']:.4f}" if not math.isnan(m['cls_ap']) else "N/A"
+        loc_auc_str = f"{m['loc_macro_auc']:.4f}" if not math.isnan(m['loc_macro_auc']) else "N/A"
+        comp_str = f"{m['competition_score']:.4f}" if not math.isnan(m['competition_score']) else "N/A"
+        print(f"{strategy:<15} {cls_auc_str:>10} {cls_ap_str:>10} {loc_auc_str:>10} {comp_str:>12}")
+    print(f"{'='*80}\n")
+
+    # Find best strategy by competition score
+    best_strategy = max(strategies, key=lambda s: all_strategy_metrics[s].get('competition_score', float('-inf')))
+    print(f"🏆 Best strategy: {best_strategy.upper()} (Competition Score: {all_strategy_metrics[best_strategy]['competition_score']:.4f})")
+
+    return all_strategy_metrics, all_strategy_dfs
 
 
 def _maybe_init_wandb(args: argparse.Namespace, fold_id: int, weights_path: str):
@@ -637,6 +649,12 @@ def main():
         default = ROOT / 'runs'
         raise SystemExit('Please provide --weights path to YOLO .pt file')
 
+    # Parse aggregation strategies
+    strategies = [s.strip() for s in args.agg_strategies.split(',') if s.strip()]
+    if not strategies:
+        strategies = ['max']
+    print(f"Will test {len(strategies)} aggregation strategy(ies): {', '.join(strategies)}")
+
     # Prepare out dir
     out_dir: Optional[Path] = None
     if args.out_dir:
@@ -655,50 +673,95 @@ def main():
     else:
         folds = [int(args.val_fold)]
 
-    all_fold_metrics: List[Dict[str, float]] = []
+    all_fold_metrics: List[Dict[str, Dict[str, float]]] = []  # List of {strategy: metrics} dicts
     for f in folds:
         fold_out_dir = out_dir / f'fold_{f}' if out_dir else None
         if fold_out_dir:
             fold_out_dir.mkdir(parents=True, exist_ok=True)
         # Init W&B per-fold (separate runs per fold to mirror training)
         wandb = _maybe_init_wandb(args, f, weights)
-        metrics, per_series_df = _run_validation_for_fold(args, weights, f)
-        all_fold_metrics.append(metrics)
-        # Save fold artifacts
+        strategy_metrics, strategy_dfs = _run_validation_for_fold(args, weights, f, strategies)
+        all_fold_metrics.append(strategy_metrics)
+        # Save fold artifacts for EACH strategy
         if fold_out_dir:
-            # Per-series CSV
-            per_series_csv = fold_out_dir / 'per_series_predictions.csv'
-            per_series_df.to_csv(per_series_csv, index=False)
-            # Metrics JSON and per-class CSV
             import json
-            with open(fold_out_dir / 'metrics.json', 'w') as fjs:
-                json.dump(metrics, fjs, indent=2)
-            per_loc_items = list(metrics['per_loc_aucs'].items()) if isinstance(metrics.get('per_loc_aucs'), dict) else []
-            if per_loc_items:
-                pd.DataFrame(per_loc_items, columns=['location', 'auc']).to_csv(fold_out_dir / 'per_location_auc.csv', index=False)
+            
+            # Save comparison summary
+            comparison_rows = []
+            for strategy in strategies:
+                m = strategy_metrics[strategy]
+                comparison_rows.append({
+                    'strategy': strategy,
+                    'cls_auc': m.get('cls_auc', float('nan')),
+                    'cls_ap': m.get('cls_ap', float('nan')),
+                    'loc_macro_auc': m.get('loc_macro_auc', float('nan')),
+                    'competition_score': m.get('competition_score', float('nan')),
+                    'combined_mean': m.get('combined_mean', float('nan')),
+                })
+            comparison_df = pd.DataFrame(comparison_rows)
+            comparison_df.to_csv(fold_out_dir / 'strategy_comparison.csv', index=False)
+            
+            # Save detailed results for each strategy
+            for strategy in strategies:
+                metrics = strategy_metrics[strategy]
+                per_series_df = strategy_dfs[strategy]
+                
+                # Create strategy subdirectory
+                strat_dir = fold_out_dir / strategy
+                strat_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Per-series CSV
+                per_series_csv = strat_dir / 'per_series_predictions.csv'
+                per_series_df.to_csv(per_series_csv, index=False)
+                
+                # Metrics JSON
+                with open(strat_dir / 'metrics.json', 'w') as fjs:
+                    json.dump(metrics, fjs, indent=2)
+                
+                # Per-location AUC CSV
+                per_loc_items = list(metrics['per_loc_aucs'].items()) if isinstance(metrics.get('per_loc_aucs'), dict) else []
+                if per_loc_items:
+                    pd.DataFrame(per_loc_items, columns=['location', 'auc']).to_csv(strat_dir / 'per_location_auc.csv', index=False)
 
         # W&B logging of metrics and tables
         if wandb is not None:
             try:
-                # Scalars
-                scalars = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
-                wandb.log(scalars)
-                # Per-location AUCs as a table
-                if isinstance(metrics.get('per_loc_aucs'), dict) and metrics['per_loc_aucs']:
-                    loc_df = pd.DataFrame(list(metrics['per_loc_aucs'].items()), columns=['location', 'auc'])
-                    wandb.log({'per_location_auc_table': wandb.Table(dataframe=loc_df)})
-                # Upload per-series predictions as a table and as artifact
-                if not per_series_df.empty:
-                    wandb.log({'per_series_predictions': wandb.Table(dataframe=per_series_df)})
-                # Also store as artifact files if available
+                # Log comparison table
+                comparison_rows = []
+                for strategy in strategies:
+                    m = strategy_metrics[strategy]
+                    comparison_rows.append({
+                        'strategy': strategy,
+                        'cls_auc': m.get('cls_auc', float('nan')),
+                        'cls_ap': m.get('cls_ap', float('nan')),
+                        'loc_macro_auc': m.get('loc_macro_auc', float('nan')),
+                        'competition_score': m.get('competition_score', float('nan')),
+                    })
+                wandb.log({'strategy_comparison': wandb.Table(dataframe=pd.DataFrame(comparison_rows))})
+                
+                # Log metrics for each strategy with prefix
+                for strategy in strategies:
+                    metrics = strategy_metrics[strategy]
+                    scalars = {f"{strategy}/{k}": v for k, v in metrics.items() if isinstance(v, (int, float))}
+                    wandb.log(scalars)
+                    
+                    # Per-series predictions table
+                    per_series_df = strategy_dfs[strategy]
+                    if not per_series_df.empty:
+                        wandb.log({f'{strategy}/per_series_predictions': wandb.Table(dataframe=per_series_df)})
+                
+                # Upload artifacts if available
                 if fold_out_dir:
                     art = wandb.Artifact(name=f"val_fold{f}_artifacts", type='validation')
-                    if (fold_out_dir / 'metrics.json').exists():
-                        art.add_file(str(fold_out_dir / 'metrics.json'))
-                    if (fold_out_dir / 'per_series_predictions.csv').exists():
-                        art.add_file(str(fold_out_dir / 'per_series_predictions.csv'))
-                    if (fold_out_dir / 'per_location_auc.csv').exists():
-                        art.add_file(str(fold_out_dir / 'per_location_auc.csv'))
+                    if (fold_out_dir / 'strategy_comparison.csv').exists():
+                        art.add_file(str(fold_out_dir / 'strategy_comparison.csv'))
+                    for strategy in strategies:
+                        strat_dir = fold_out_dir / strategy
+                        if strat_dir.exists():
+                            for fname in ['metrics.json', 'per_series_predictions.csv', 'per_location_auc.csv']:
+                                fpath = strat_dir / fname
+                                if fpath.exists():
+                                    art.add_file(str(fpath), name=f'{strategy}/{fname}')
                     wandb.log_artifact(art)
             finally:
                 # End run after each fold
@@ -709,36 +772,61 @@ def main():
                 except Exception:
                     pass
 
-    # CV summary
+    # CV summary - aggregate across folds AND strategies
     if out_dir and len(all_fold_metrics) > 1:
-        # Aggregate simple means across folds for scalar metrics
-        agg_keys = ['cls_auc', 'cls_ap', 'loc_macro_auc', 'competition_score', 'combined_mean', 'mean_num_detections']
-        summary = {'num_folds': len(all_fold_metrics)}
-        for k in agg_keys:
-            vals = [m[k] for m in all_fold_metrics if isinstance(m.get(k), (int, float)) and not math.isnan(m.get(k))]
-            summary[f'mean_{k}'] = float(np.mean(vals)) if vals else float('nan')
-        # Per-location AUCS mean
-        loc_aucs_df_rows = []
-        for m in all_fold_metrics:
-            if isinstance(m.get('per_loc_aucs'), dict):
-                loc_aucs_df_rows.append(pd.Series(m['per_loc_aucs']))
-        if loc_aucs_df_rows:
-            loc_aucs_df = pd.DataFrame(loc_aucs_df_rows)
-            summary_per_loc = loc_aucs_df.mean(skipna=True).to_dict()
-            # Save per-location mean CSV
-            pd.DataFrame(list(summary_per_loc.items()), columns=['location', 'mean_auc']).to_csv(out_dir / 'cv_per_location_mean_auc.csv', index=False)
-            summary['per_loc_mean_auc'] = {k: (float(v) if not pd.isna(v) else float('nan')) for k, v in summary_per_loc.items()}
-    # Save summary JSON
         import json
+        
+        # For each strategy, aggregate across folds
+        cv_summary = {'num_folds': len(all_fold_metrics), 'strategies': {}}
+        
+        for strategy in strategies:
+            agg_keys = ['cls_auc', 'cls_ap', 'loc_macro_auc', 'competition_score', 'combined_mean', 'mean_num_detections']
+            strat_summary = {}
+            
+            for k in agg_keys:
+                vals = [fold_metrics[strategy][k] for fold_metrics in all_fold_metrics 
+                        if strategy in fold_metrics and isinstance(fold_metrics[strategy].get(k), (int, float)) 
+                        and not math.isnan(fold_metrics[strategy].get(k))]
+                strat_summary[f'mean_{k}'] = float(np.mean(vals)) if vals else float('nan')
+                strat_summary[f'std_{k}'] = float(np.std(vals)) if vals else float('nan')
+            
+            # Per-location AUCs mean
+            loc_aucs_df_rows = []
+            for fold_metrics in all_fold_metrics:
+                if strategy in fold_metrics and isinstance(fold_metrics[strategy].get('per_loc_aucs'), dict):
+                    loc_aucs_df_rows.append(pd.Series(fold_metrics[strategy]['per_loc_aucs']))
+            if loc_aucs_df_rows:
+                loc_aucs_df = pd.DataFrame(loc_aucs_df_rows)
+                summary_per_loc = loc_aucs_df.mean(skipna=True).to_dict()
+                strat_summary['per_loc_mean_auc'] = {k: (float(v) if not pd.isna(v) else float('nan')) 
+                                                     for k, v in summary_per_loc.items()}
+            
+            cv_summary['strategies'][strategy] = strat_summary
+        
+        # Save CV summary JSON
         with open(out_dir / 'cv_summary.json', 'w') as fjs:
-            json.dump(summary, fjs, indent=2)
-
-    # Back-compat: --save-csv if requested and no out_dir
-    if args.save_csv and not args.out_dir and all_fold_metrics:
-        # Only for the last fold run
-        metrics, per_series_df = all_fold_metrics[-1], None
-        # We didn't retain per_series_df here; encourage using out_dir.
-        print('Tip: prefer --out-dir to save structured outputs per fold.')
+            json.dump(cv_summary, fjs, indent=2)
+        
+        # Save strategy comparison across folds
+        comparison_rows = []
+        for strategy in strategies:
+            row = {'strategy': strategy}
+            row.update(cv_summary['strategies'][strategy])
+            comparison_rows.append(row)
+        pd.DataFrame(comparison_rows).to_csv(out_dir / 'cv_strategy_comparison.csv', index=False)
+        
+        print(f"\n{'='*80}")
+        print(f"CROSS-VALIDATION SUMMARY (n={len(all_fold_metrics)} folds)")
+        print(f"{'='*80}")
+        print(f"{'Strategy':<15} {'Mean Cls AUC':>15} {'Mean Comp Score':>18}")
+        print(f"{'-'*80}")
+        for strategy in strategies:
+            mean_cls = cv_summary['strategies'][strategy].get('mean_cls_auc', float('nan'))
+            mean_comp = cv_summary['strategies'][strategy].get('mean_competition_score', float('nan'))
+            cls_str = f"{mean_cls:.4f}" if not math.isnan(mean_cls) else "N/A"
+            comp_str = f"{mean_comp:.4f}" if not math.isnan(mean_comp) else "N/A"
+            print(f"{strategy:<15} {cls_str:>15} {comp_str:>18}")
+        print(f"{'='*80}\n")
 
 
 if __name__ == '__main__':

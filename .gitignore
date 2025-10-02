@@ -39,3 +39,7 @@ yolo_planes/*
 aneurysm_cubes_v2/
 aneurysm_cubes/
 rsna-iad-binary/
+
+yolo_aneurysm_locations_sampler/
+yolo_aneurysm_lotcatio
+yolo_aneurysm_location_all_negatives/

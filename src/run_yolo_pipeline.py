@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def parse_args():
     ap = argparse.ArgumentParser(description='Train and validate YOLO aneurysm pipeline')
     ap.add_argument('--data', type=str, default='configs/yolo_aneurysm_locations.yaml', help='Dataset YAML path')
-    ap.add_argument('--model', type=str, default='/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_locations/cv_y11_yolo_mobile_net_fold4/weights/best.pt', help='Pretrained checkpoint or model config')
+    ap.add_argument('--model', type=str, default='yolo11m.pt', help='Pretrained checkpoint or model config')
     ap.add_argument('--epochs', type=int, default=100)
     ap.add_argument('--img', type=int, default=512)
     ap.add_argument('--batch', type=int, default=16)
@@ -50,7 +50,10 @@ def parse_args():
     ap.add_argument('--close-mosaic', type=int, default=0, help='Close mosaic boxes (0=disabled, 10=remove_last_10_epochs)')
     ap.add_argument('--single-cls', action='store_true', help='Use single class mode (only one class)')
     ap.add_argument('--optimizer', type=str, default='auto', help='Optimizer (adam, adamw, sgd, rmsprop, adagrad, adadelta)')
-
+    #box	float	7.5
+    ap.add_argument('--dfl', type=float, default=1.5, help='Number of boxes')
+    ap.add_argument('--cls', type=float, default=0.5, help='HSV hue shift')
+    ap.add_argument('--box', type=float, default=7.5, help='Box loss coefficient')
     # Validation settings
     ap.add_argument('--folds', type=str, default='0', help='Comma-separated fold IDs to validate (e.g., 0 or 0,1,2,3,4)')
     ap.add_argument('--slice-step', type=int, default=1, help='Process every Nth slice (for per-slice and BGR modes)')
@@ -70,7 +73,6 @@ def parse_args():
 def run():
     print("waiting")
     import time
-    time.sleep(60*60*3)
     args = parse_args()
 
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']
@@ -157,6 +159,9 @@ def run():
             close_mosaic=args.close_mosaic,
             single_cls=args.single_cls,
             optimizer=args.optimizer,
+            box=args.box,
+            cls=args.cls,
+            dfl=args.dfl,
         )
         save_dir = Path(results.save_dir)
         weights_path = save_dir / 'weights' / 'best.pt'
@@ -204,6 +209,8 @@ def run():
 if __name__ == '__main__':
     run()
 
+
+# python3 -m src.run_yolo_pipeline  --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_location_all_negatives   --name yolo_11_m_one_loss --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --box 1.0 --cls 1.0 --dfl 1.0
 #  python3 -m src.run_yolo_pipeline    --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_locations   --name cv_efficientnet_v2_b0-config2 --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0
 
 #  python3 -m src.run_yolo_pipeline     --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_locations   --name cv_y11_efficientnet_v2_s --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0

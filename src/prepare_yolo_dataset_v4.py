@@ -105,7 +105,7 @@ def parse_args():
     ap.add_argument(
         "--neg-per-series",
         type=int,
-        default=5,
+        default=10,
         help="Number of negative slices to sample per series without positives.",
     )
     # YAML outputs
@@ -370,14 +370,16 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                     sop_to_pos_frames.setdefault(sop, set()).add(frame_index)
 
         else:
-            # Negative series: choose one random slice and write empty label
+            # Negative series: choose evenly sampled slices and write empty labels
             if n_slices == 0:
                 continue
             need = max(0, int(args.neg_per_series))
-            # Sample up to 'need' unique slices
-            indices = list(range(n_slices))
-            rng.shuffle(indices)
-            pick = indices[: min(need, n_slices)]
+            # Sample up to 'need' evenly spaced slices
+            if need >= n_slices:
+                # If we need more slices than available, take all
+                pick = list(range(n_slices))
+            else:
+                pick = np.linspace(0, n_slices - 1, need, dtype=int).tolist()     
             for idx in pick:
                 dcm_path = paths[idx]
                 frames = read_dicom_frames_hu(dcm_path)
@@ -444,7 +446,7 @@ if __name__ == "__main__":
     rng = random.Random(args.seed)
     if args.generate_all_folds:
         # Generate per-fold datasets and YAMLs
-        for f in range(1,N_FOLDS):
+        for f in range(N_FOLDS):
             out_base, _ = generate_for_fold(f, args)
             yaml_dir = Path(args.yaml_out_dir)
             yaml_name = args.yaml_name_template.format(fold=f)
