@@ -6,120 +6,139 @@ from hydra.utils import instantiate
 
 torch.set_float32_matmul_precision('medium')
 
+'''
+*** problem setup (bag-level supervision + weak/noisy instance-level labels) ***
+* multiple instances learning: predict node-level also do graph-level
+* label noise problem: node radius does not cover the annotation => no node is labeled as positive (node label is noisy),
+  => but this graph is actually positive  (graph label is trusted)
+* possible criterion for loss function: consistency(node label, graph label)
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=1.0, gamma=2.0, reduction="mean"):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
+*** strategy ***
+* MIL pooling for graph supervision
+* Confidence-weighted node supervision
+* Pseudo-label EM
+* Ranking at graph level
+'''
 
-    def forward(self, logits, targets):
-        bce_loss = nn.functional.binary_cross_entropy_with_logits(
-            logits, targets.float(), reduction="none"
-        )
-        probas = torch.sigmoid(logits)
-        pt = torch.where(targets == 1, probas, 1 - probas)
-        focal_weight = self.alpha * (1 - pt) ** self.gamma
-        loss = focal_weight * bce_loss
+def graph_pairwise_ranking_loss(graph_logits, graph_labels, margin=1.0):
+    """
+    Pairwise ranking loss for graphs in a batch.
+    Encourages positive graphs to have higher scores than negative graphs.
 
-        if self.reduction == "mean":
-            return loss.mean()
-        elif self.reduction == "sum":
-            return loss.sum()
-        return loss
+    Args:
+        graph_logits (Tensor): Shape [batch_size, 1], raw graph scores.
+        graph_labels (Tensor): Shape [batch_size, 1], binary labels {0, 1}.
+        margin (float): Margin for ranking loss.
 
-class BCEFocalLoss(nn.Module):
-    def __init__(self, pos_weight=None, alpha=1.0, gamma=2.0, bce_weight=0.5, focal_weight=0.5):
-        super().__init__()
-        self.bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="mean")
-        self.focal = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
-        self.bce_weight = bce_weight
-        self.focal_weight = focal_weight
+    Returns:
+        Tensor: Scalar ranking loss.
+    """
+    pos_scores = graph_logits[graph_labels.squeeze() == 1]
+    neg_scores = graph_logits[graph_labels.squeeze() == 0]
 
-    def forward(self, logits, targets):
-        loss_bce = self.bce(logits, targets.float())
-        loss_focal = self.focal(logits, targets)
-        return self.bce_weight * loss_bce + self.focal_weight * loss_focal
+    if pos_scores.numel() == 0 or neg_scores.numel() == 0:
+        return torch.tensor(0.0, device=graph_logits.device)
+
+    diff = neg_scores.view(-1, 1) - pos_scores.view(1, -1) + margin
+    return torch.clamp(diff, min=0).mean()
+
 
 class GNNClassifier(pl.LightningModule):
     def __init__(self, model, cfg):
-        super().__init__()
-        self.save_hyperparameters(ignore=['model'])  # Saves args to checkpoint
+        """
+        Lightning module for node-level and graph-level classification
+        with weak/noisy labels and consistency regularization.
 
+        Args:
+            model (nn.Module): Graph neural network model.
+            cfg (OmegaConf): Configuration with training parameters.
+        """
+        super().__init__()
+        self.save_hyperparameters(ignore=['model'])
         self.model = model
         self.cfg = cfg
 
-        # Node classification loss
+        # Node-level classification loss with pos_weight
         pos_weight = torch.ones([1]) * cfg.pos_weight
-        self.node_loss_fn = BCEFocalLoss(
-            pos_weight=pos_weight,
-            alpha=cfg.focal_alpha,
-            gamma=cfg.focal_gamma,
-            bce_weight=cfg.bce_weight,
-            focal_weight=cfg.focal_weight,
-        )
+        self.node_loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-        # Graph-level metrics
+        # Graph-level classification loss
+        self.graph_loss_fn = nn.BCEWithLogitsLoss()
+
+        # Metrics
         self.val_cls_auroc = torchmetrics.AUROC(task="binary")
-
-        # Node-level metrics
         self.val_node_auroc = torchmetrics.AUROC(task="binary")
-        self.val_node_acc = torchmetrics.Accuracy(task="binary")
-        self.val_node_f1 = torchmetrics.F1Score(task="binary")
 
         self.automatic_optimization = False
 
     def training_step(self, data, _):
-        node_labels = data.y
-        node_logits, pred_cls = self.model(data)
+        node_labels = data.y.float()
+        graph_labels = data.cls_labels.view(-1, 1).float()
 
-        # Loss
-        loss = self.node_loss_fn(node_logits[:, 0], node_labels)
+        node_logits, graph_logits = self.model(data)
 
-        # Manual optimization
-        opt = self.optimizers()
-        opt.zero_grad()
+        # Node-level loss (handles noisy labels)
+        node_loss_raw = self.node_loss_fn(node_logits[:, 0], node_labels)
+        node_loss = node_loss_raw.mean()
+
+        # Graph-level MIL loss
+        graph_loss = self.graph_loss_fn(graph_logits, graph_labels)
+
+        # Graph-level ranking loss
+        ranking_loss = graph_pairwise_ranking_loss(graph_logits, graph_labels, margin=self.cfg.margin)
+
+        # Consistency regularization: node probabilities should align with graph labels
+        batch = data.batch
+        node_probs = torch.sigmoid(node_logits[:, 0])
+        graph_labels_expanded = graph_labels[batch]
+        consistency_loss = nn.BCELoss()(node_probs, graph_labels_expanded.squeeze())
+
+        # Total loss with weighted components
+        loss = (
+            node_loss
+            + self.cfg.lambda_graph * graph_loss
+            + self.cfg.lambda_ranking * ranking_loss
+            + self.cfg.lambda_consistency * consistency_loss
+        )
+
+        # Manual optimization step
+        optimizer = self.optimizers()
+        optimizer.zero_grad()
         self.manual_backward(loss)
-        opt.step()
+        optimizer.step()
 
+        # Logging
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        del node_logits, pred_cls
-        torch.cuda.empty_cache()
+        self.log("train_node_loss", node_loss, on_step=False, on_epoch=True)
+        self.log("train_graph_loss", graph_loss, on_step=False, on_epoch=True)
+        self.log("train_ranking_loss", ranking_loss, on_step=False, on_epoch=True)
+        self.log("train_consistency_loss", consistency_loss, on_step=False, on_epoch=True)
+
         return loss
 
     def validation_step(self, data, _):
-        node_labels = data.y
-        cls_labels = data.cls_labels.view(-1, 1)
+        node_labels = data.y.float()
+        cls_labels = data.cls_labels.view(-1, 1).float()
 
-        # Forward pass
-        node_logits, pred_cls = self.model(data)
+        node_logits, graph_logits = self.model(data)
 
-        # Loss
-        loss = self.node_loss_fn(node_logits[:, 0], node_labels)
+        node_loss = self.node_loss_fn(node_logits[:, 0], node_labels)
+        graph_loss = self.graph_loss_fn(graph_logits, cls_labels)
 
-        self.val_cls_auroc.update(pred_cls.detach(), cls_labels.long())
+        # Metrics
+        self.val_cls_auroc.update(graph_logits.detach(), cls_labels.long())
         self.val_node_auroc.update(node_logits.detach(), node_labels.long())
-        self.val_node_acc.update(torch.sigmoid(node_logits[:, 0].detach()), node_labels.int())
-        self.val_node_f1.update(torch.sigmoid(node_logits[:, 0].detach()), node_labels.int())
 
-        # log loss per-batch
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        return loss
+        self.log("val_loss", node_loss + graph_loss, on_step=False, on_epoch=True, prog_bar=True)
+        return node_loss + graph_loss
 
     def on_validation_epoch_start(self):
-        # reset all metrics at start of val epoch
         self.val_cls_auroc.reset()
         self.val_node_auroc.reset()
-        self.val_node_acc.reset()
-        self.val_node_f1.reset()
 
     def on_validation_epoch_end(self):
-        # compute metrics over the whole val set
         self.log("val_cls_auroc", self.val_cls_auroc.compute(), prog_bar=True)
         self.log("val_node_auroc", self.val_node_auroc.compute(), prog_bar=True)
-        self.log("val_node_acc", self.val_node_acc.compute(), prog_bar=True)
-        self.log("val_node_f1", self.val_node_f1.compute(), prog_bar=True)
 
     def configure_optimizers(self):
         optimizer = instantiate(self.cfg.optimizer, params=self.parameters())

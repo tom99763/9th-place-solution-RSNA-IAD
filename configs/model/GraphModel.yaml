@@ -1,7 +1,9 @@
 _target_: src.model.GraphModel
-use_pe: false
-walk_length: 6
-num_layers: 4
-hidden_channels: 128
-dropout: 0.2
-jk: 'lstm'
+hidden_channels: 256
+num_layers: 8
+jk: "lstm"
+walk_length: 8
+use_pe: true
+dropout: 0.3
+pooling: "noisy_or"
+tau: 0.1

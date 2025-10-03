@@ -17,11 +17,10 @@ graph_type: delaunay_graph
 use_pe: false
 
 # loss settings
-pos_weight: 8          # depends on imbalance ratio
-focal_alpha: 0.25       # weight positives more
-focal_gamma: 2.0        # focus on hard examples
-bce_weight: 0.8         # smaller BCE contribution
-focal_weight: 0.2       # stronger focal contribution
+pos_weight: 1          # depends on imbalance ratio
+lambda_graph: 1.0
+lambda_consistency: 0.5
+lambda_ranking: 0.5
 
 # Balanced sampling configuration
 use_balanced_sampling: true  # Set to true to enable balanced pos/neg sampling

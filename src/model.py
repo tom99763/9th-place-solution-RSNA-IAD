@@ -4,33 +4,72 @@ from torch_geometric.nn.models import GraphSAGE
 import torch
 from torch_geometric.nn import LayerNorm, global_max_pool
 import torch.nn.functional as F
+from torch_geometric.nn import GraphSAGE, global_max_pool, global_mean_pool
+from torch_geometric.nn.norm import LayerNorm
 
 class GraphModel(nn.Module):
     def __init__(self, hidden_channels=256, num_layers=8, jk='lstm',
-                 walk_length=8, use_pe=True, dropout=0.3):
+                 walk_length=8, use_pe=True, dropout=0.3, pooling="noisy_or", tau=0.1):
         super().__init__()
-        self.gnn = GraphSAGE(256 + walk_length if use_pe else 256,
-                             num_layers= num_layers,
-                             hidden_channels=hidden_channels,
-                             out_channels=1,
-                             jk=jk,
-                             dropout=dropout,
-                             norm=LayerNorm(in_channels=hidden_channels)
-                             )
+        in_dim = 256 + walk_length if use_pe else 256
+        self.gnn = GraphSAGE(
+            in_channels=in_dim,
+            hidden_channels=hidden_channels,
+            num_layers=num_layers,
+            out_channels=1,
+            jk=jk,
+            dropout=dropout,
+            norm=LayerNorm(in_channels=hidden_channels)
+        )
+
+        self.pooling = pooling
+        self.tau = tau  # temperature for logsumexp pooling
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
 
         edge_index = edge_index.cuda()
         batch = batch.cuda()
+        x = x.cuda()
 
         if edge_index.shape[0] == 0:
             edge_index = torch.tensor([[0, 0]]).T.cuda()
 
-        x = x.cuda()
-        logits = self.gnn(x, edge_index, batch=batch)
-        cls_logits = global_max_pool(logits, batch)
-        return logits, cls_logits
+        # Node logits
+        node_logits = self.gnn(x, edge_index, batch=batch)  # (N, 1)
+
+        # Graph-level pooling
+        if self.pooling == "max":
+            graph_logits = global_max_pool(node_logits, batch)
+
+        elif self.pooling == "mean":
+            graph_logits = global_mean_pool(node_logits, batch)
+
+        elif self.pooling == "noisy_or":
+            node_probs = torch.sigmoid(node_logits)
+            # Graph prob = 1 - product(1 - p_i)
+            graph_probs = 1 - global_mean_pool(1 - node_probs, batch)
+            graph_logits = torch.logit(torch.clamp(graph_probs, 1e-6, 1 - 1e-6))
+
+        elif self.pooling == "logsumexp":
+            # smooth max pooling
+            # group nodes by graph
+            num_graphs = batch.max().item() + 1
+            graph_logits = []
+            for g in range(num_graphs):
+                mask = batch == g
+                if mask.any():
+                    scores = node_logits[mask] / self.tau
+                    pooled = self.tau * torch.logsumexp(scores, dim=0)
+                    graph_logits.append(pooled)
+                else:
+                    graph_logits.append(torch.tensor([0.0], device=node_logits.device))
+            graph_logits = torch.stack(graph_logits, dim=0)
+
+        else:
+            raise ValueError(f"Unknown pooling method: {self.pooling}")
+
+        return node_logits, graph_logits
 
 
 
