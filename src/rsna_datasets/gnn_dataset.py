@@ -12,8 +12,9 @@ torch.set_float32_matmul_precision('medium')
 
 
 class GraphDataset(Dataset):
-    def __init__(self, uids, cfg, fold_index, transform=None):
+    def __init__(self, df, uids, cfg, fold_index, transform=None):
         super().__init__()
+        self.df =df
         self.fold_index = fold_index
         self.uids = uids
         self.cfg = cfg
@@ -26,6 +27,7 @@ class GraphDataset(Dataset):
 
     def get(self, idx):
         uid = self.uids[idx]
+        df = self.df[self.df.SeriesInstanceUID == uid]
         fold_index = self.fold_index[idx]
         data_path = self.data_path/f'extract_data/fold{fold_index}/{uid}'
         point_path = os.path.join(data_path, f'{uid}_points_fold.npy')
@@ -42,7 +44,7 @@ class GraphDataset(Dataset):
         feat = torch.from_numpy(np.load(feat_path, mmap_mode="r").astype('float32'))
         edge_index = torch.from_numpy(np.load(edge_path, mmap_mode="r"))
         labels = torch.from_numpy(np.load(label_path, mmap_mode="r"))
-        cls_labels = labels.max()
+        cls_labels= int(df["Aneurysm Present"].iloc[0])
 
         # build data
         data = Data(x=feat, edge_index=edge_index, y=labels,
@@ -68,8 +70,8 @@ class GraphDataModule(pl.LightningDataModule):
         val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"]
         fold_index_train = df[df["fold_id"] != self.cfg.fold_id].fold_id.tolist()
         fold_index_val = df[df["fold_id"] == self.cfg.fold_id].fold_id.tolist()
-        self.train_dataset = GraphDataset(uids=list(train_uids), cfg=self.cfg, fold_index = fold_index_train)
-        self.val_dataset = GraphDataset(uids=list(val_uids), cfg=self.cfg, fold_index = fold_index_val)
+        self.train_dataset = GraphDataset(df = df, uids=list(train_uids), cfg=self.cfg, fold_index = fold_index_train)
+        self.val_dataset = GraphDataset(df = df, uids=list(val_uids), cfg=self.cfg, fold_index = fold_index_val)
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.cfg.batch_size, shuffle=True,
