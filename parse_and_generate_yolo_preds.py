@@ -217,7 +217,9 @@ def main():
     if not os.path.exists(root/'extract_data'):
         os.makedirs(root/'extract_data')
 
-    for i in range(3):
+    train_df = pd.read_csv(root/'train_df.csv')
+
+    for i in range(len(MODEL_CONFIGS)):
         if not os.path.exists(root / f'extract_data/fold{i}'):
             os.makedirs(root / f'extract_data/fold{i}')
 

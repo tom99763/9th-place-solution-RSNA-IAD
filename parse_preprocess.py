@@ -26,8 +26,8 @@ conf_yolo = 0.01
 
 class DATA_CONFIG:
     radius = 30
-    num_samples = 20
-    thr = 20
+    num_samples = 10
+    thr = 10
     thr_sim = 0.25
     order = 1
     alpha = 5
@@ -35,34 +35,34 @@ class DATA_CONFIG:
 # Model configurations - Add your models here
 MODEL_CONFIGS = [
     {
-        "path": "./models/yolo_more_negs/yolo11m_fold0.pt",
+        "path": "./models/yolo_more_negs/fold0.pt",
         "fold": "0",
         "weight": 1.0,
         "name": "YOLOv11n_fold0"
     },
     {
-        "path": "./models/yolo_more_negs/yolo11m_fold1.pt",
+        "path": "./models/yolo_more_negs/fold1.pt",
         "fold": "1",
         "weight": 1.0,
         "name": "YOLOv11n_fold1"
     },
     {
-        "path": "./models/yolo_more_negs/yolo11m_fold3.pt",
+        "path": "./models/yolo_more_negs/fold2.pt",
         "fold": "2",
         "weight": 1.0,
         "name": "YOLOv11n_fold2"
     },
     {
-        "path": "./models/yolo_more_negs/yolo11m_fold4.pt",
+        "path": "./models/yolo_more_negs/fold3.pt",
         "fold": "3",
         "weight": 1.0,
-        "name": "YOLOv11n_fold2"
+        "name": "YOLOv11n_fold3"
     },
     {
-        "path": "./models/yolo_more_negs/yolo11m_fold5.pt",
+        "path": "./models/yolo_more_negs/fold4.pt",
         "fold": "4",
         "weight": 1.0,
-        "name": "YOLOv11n_fold2"
+        "name": "YOLOv11n_fold4"
     },
 ]
 
