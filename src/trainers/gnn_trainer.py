@@ -18,6 +18,7 @@ torch.set_float32_matmul_precision('medium')
 * Confidence-weighted node supervision
 * Pseudo-label EM
 * Ranking at graph level
+* graph = bag of instances
 '''
 
 def graph_pairwise_ranking_loss(graph_logits, graph_labels, margin=1.0):

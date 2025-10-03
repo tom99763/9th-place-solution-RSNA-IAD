@@ -231,7 +231,7 @@ def main():
                 os.makedirs(root / f'extract_data/fold{i}/{uid}')
             else:
                 check_exist+=1
-        if check_exist == 3:
+        if check_exist == len(MODEL_CONFIGS):
             continue
         all_slices, dcm_list = load_slices(root / f'series/{uid}')
         loc = label_df[label_df.SeriesInstanceUID == uid][['y', 'x']].values
