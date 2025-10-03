@@ -12,8 +12,9 @@ torch.set_float32_matmul_precision('medium')
 
 
 class GraphDataset(Dataset):
-    def __init__(self, uids, cfg, transform=None):
+    def __init__(self, uids, cfg, fold_index, transform=None):
         super().__init__()
+        self.fold_index = fold_index
         self.uids = uids
         self.cfg = cfg
         self.data_path = Path(self.cfg.data_dir)
@@ -25,7 +26,8 @@ class GraphDataset(Dataset):
 
     def get(self, idx):
         uid = self.uids[idx]
-        data_path = self.data_path/f'extract_data/fold{self.cfg.fold_id}/{uid}'
+        fold_index = self.fold_index[idx]
+        data_path = self.data_path/f'extract_data/fold{fold_index}/{uid}'
         point_path = os.path.join(data_path, f'{uid}_points_fold.npy')
         feat_path = os.path.join(data_path, f'{uid}_extract_feat_fold.npy')
         label_path = os.path.join(data_path, f'{uid}_label_fold.npy')
@@ -57,15 +59,17 @@ class GraphDataModule(pl.LightningDataModule):
         self.cfg = cfg
 
     def setup(self, stage: str = None):
+        #select oof features and points
         data_path = Path(self.cfg.data_dir)
-        print(data_path)
         uids = os.listdir(data_path / f'extract_data/fold{self.cfg.fold_id}')
         df = pd.read_csv(data_path / "train_df.csv")
         df = df[df["SeriesInstanceUID"].isin(uids)].copy()
         train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"]
         val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"]
-        self.train_dataset = GraphDataset(uids=list(train_uids), cfg=self.cfg)
-        self.val_dataset = GraphDataset(uids=list(val_uids), cfg=self.cfg)
+        fold_index_train = df[df["fold_id"] != self.cfg.fold_id].fold_id.tolist()
+        fold_index_val = df[df["fold_id"] == self.cfg.fold_id].fold_id.tolist()
+        self.train_dataset = GraphDataset(uids=list(train_uids), cfg=self.cfg, fold_index = fold_index_train)
+        self.val_dataset = GraphDataset(uids=list(val_uids), cfg=self.cfg, fold_index = fold_index_val)
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.cfg.batch_size, shuffle=True,
