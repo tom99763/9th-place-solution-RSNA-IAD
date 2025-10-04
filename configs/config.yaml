@@ -11,7 +11,7 @@ num_workers: 4
 experiment: ${graph_type}_${model.num_layers}l_${model.hidden_channels}_${model.jk}_${model.pooling}_fold${fold_id}
 
 #model config
-walk_length: 4
+walk_length: 8
 k_neibs: 15
 graph_type: knn_graph
 use_pe: false
@@ -19,8 +19,8 @@ use_pe: false
 # loss settings
 pos_weight: 8          # depends on imbalance ratio
 lambda_graph: 1.0
-lambda_consistency: 0.5
-lambda_ranking: 0.5
+lambda_consistency: 1.0
+lambda_ranking: 1.0
 margin: 1.0
 
 # Balanced sampling configuration

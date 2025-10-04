@@ -2,8 +2,8 @@ _target_: src.model.GraphModel
 hidden_channels: 128
 num_layers: 4
 jk: "lstm"
-walk_length: 4
+walk_length: 8
 use_pe: false
 dropout: 0.3
-pooling: "noisy_or"
+pooling: "logsumexp"
 tau: 0.1
