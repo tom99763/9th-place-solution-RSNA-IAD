@@ -1,4 +1,4 @@
-max_epochs: 1
+max_epochs: 15
 accelerator: gpu
 devices: 1
 precision: 32
