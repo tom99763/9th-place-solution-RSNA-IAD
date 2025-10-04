@@ -29,7 +29,7 @@ class GraphDataset(Dataset):
         uid = self.uids[idx]
         df = self.df[self.df.SeriesInstanceUID == uid]
         fold_index = self.fold_index[idx]
-        data_path = self.data_path/f'extract_data/fold{fold_index}/{uid}'
+        data_path = self.data_path/f'extract_data/fold{self.cfg.fold_id}/{uid}'
         point_path = os.path.join(data_path, f'{uid}_points_fold.npy')
         feat_path = os.path.join(data_path, f'{uid}_extract_feat_fold.npy')
         label_path = os.path.join(data_path, f'{uid}_label_fold.npy')
@@ -63,14 +63,10 @@ class GraphDataModule(pl.LightningDataModule):
     def setup(self, stage: str = None):
         #select oof features and points
         data_path = Path(self.cfg.data_dir)
-        uid_sets = []
-        for fold_id in range(5):
-            fold_dir = data_path / f"extract_data/fold{fold_id}"
-            uids = set(os.listdir(fold_dir))
-            uid_sets.append(uids)
-        common_uids = set.intersection(*uid_sets)
+        fold_dir = data_path / f"extract_data/fold{self.cfg.fold_id}"
+        uids = set(os.listdir(fold_dir))
         df = pd.read_csv(data_path / "train_df.csv")
-        df = df[df["SeriesInstanceUID"].isin(common_uids)].copy()
+        df = df[df["SeriesInstanceUID"].isin(uids)].copy()
         train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"]
         val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"]
         fold_index_train = df[df["fold_id"] != self.cfg.fold_id].fold_id.tolist()
