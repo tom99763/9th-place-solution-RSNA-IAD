@@ -23,8 +23,7 @@ src/__pycache__/
 pycache/
 *.pyc
 *.pyo
-CLAUDE.md
-ultralytics-timm/
+#ultralytics-timm/
 yolo_aneurysm_locations/
 yolo_aneurysm_binary/
 *.pt
