@@ -63,9 +63,14 @@ class GraphDataModule(pl.LightningDataModule):
     def setup(self, stage: str = None):
         #select oof features and points
         data_path = Path(self.cfg.data_dir)
-        uids = os.listdir(data_path / f'extract_data/fold{self.cfg.fold_id}')
+        uid_sets = []
+        for fold_id in range(5):
+            fold_dir = data_path / f"extract_data/fold{fold_id}"
+            uids = set(os.listdir(fold_dir))
+            uid_sets.append(uids)
+        common_uids = set.intersection(*uid_sets)
         df = pd.read_csv(data_path / "train_df.csv")
-        df = df[df["SeriesInstanceUID"].isin(uids)].copy()
+        df = df[df["SeriesInstanceUID"].isin(common_uids)].copy()
         train_uids = df[df["fold_id"] != self.cfg.fold_id]["SeriesInstanceUID"]
         val_uids = df[df["fold_id"] == self.cfg.fold_id]["SeriesInstanceUID"]
         fold_index_train = df[df["fold_id"] != self.cfg.fold_id].fold_id.tolist()

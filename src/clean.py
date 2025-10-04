@@ -2,7 +2,7 @@ import os
 
 data_path = './data/extract_data'
 
-for i in range(3):
+for i in range(5):
     total = 0
     file_list = os.listdir(f'{data_path}/fold{i}')
     for file in file_list:

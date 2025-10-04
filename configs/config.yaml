@@ -8,12 +8,12 @@ fold_id: 1
 
 batch_size: 4
 num_workers: 4
-experiment: delaunay_graph_4l_ln_128_focal_fold${fold_id}
+experiment: knn_graph_4l_128_fold${fold_id}
 
 #model config
-walk_length: 6
-k_neibs: 10
-graph_type: delaunay_graph
+walk_length: 4
+k_neibs: 15
+graph_type: knn_graph
 use_pe: false
 
 # loss settings
@@ -21,6 +21,7 @@ pos_weight: 1          # depends on imbalance ratio
 lambda_graph: 1.0
 lambda_consistency: 0.5
 lambda_ranking: 0.5
+margin: 1.0
 
 # Balanced sampling configuration
 use_balanced_sampling: true  # Set to true to enable balanced pos/neg sampling
