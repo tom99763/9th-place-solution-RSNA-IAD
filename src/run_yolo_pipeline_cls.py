@@ -182,6 +182,7 @@ def run():
             hsv_v=args.hsv_v,
             close_mosaic=args.close_mosaic,
             auto_augment=None if args.auto_augment == 'None' else args.auto_augment,
+            save_period=5
         )
         save_dir = Path(results.save_dir)
         weights_path = save_dir / 'weights' / 'best.pt'

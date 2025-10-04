@@ -2,9 +2,9 @@ import pandas as pd
 
 
 # Load the three metric datasets
-map_50 = pd.read_csv('wandb_export_2025-09-29T14_34_27.543-03_00.csv')
-map_50_95 = pd.read_csv('wandb_export_2025-09-29T14_34_22.839-03_00.csv')
-mauc = pd.read_csv('wandb_export_2025-09-29T14_32_59.240-03_00.csv')
+map_50 = pd.read_csv('/home/sersasj/RSNA-IAD-Codebase/wandb_map_50.csv')
+map_50_95 = pd.read_csv('/home/sersasj/RSNA-IAD-Codebase/wandb_map_50_95.csv')
+mauc = pd.read_csv('/home/sersasj/RSNA-IAD-Codebase/wand_auc.csv')
 #mauc = pd.read_csv('/home/sersasj/RSNA-IAD-Codebase/wandb_export_2025-09-29T14_43_48.536-03_00.csv')
 # Display structure of each dataset
 print("MAP50 Dataset:")
@@ -20,9 +20,9 @@ print("MAP50-95 columns:", map_50_95.columns.tolist())
 print("MAUC columns:", mauc.columns.tolist())
 
 # Extract the metric values (using MAX values for fitness calculation)
-map50_values = map_50['cv_test_fold0 - metrics/mAP50(B)__MAX']
-map50_95_values = map_50_95['cv_test_fold0 - metrics/mAP50-95(B)__MAX']
-mauc_values = mauc['cv_test_fold0 - metrics/mauc(B)__MAX']
+map50_values = map_50['yolo_11_m_one_loss_fold0 - metrics/mAP50(B)__MAX']
+map50_95_values = map_50_95['yolo_11_m_one_loss_fold0 - metrics/mAP50-95(B)__MAX']
+mauc_values = mauc['yolo_11_m_one_loss_fold0 - metrics/mauc(B)__MAX']
 #mauc_values = mauc['cv_y11_yolo11m_new_fit_fold02 - metrics/mauc(B)__MAX']
 
 # Calculate fitness: 0.1 * map50 + 0.8 * map_50_95 + 0.1 * mauc

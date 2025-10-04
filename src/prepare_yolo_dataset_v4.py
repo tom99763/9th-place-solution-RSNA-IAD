@@ -461,4 +461,4 @@ if __name__ == "__main__":
 
 
 #Locations (multiclass, original behavior):
-#Example: python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --neg-per-series 1 --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite
+#Example: python3 -m src.prepare_yolo_dataset_v4 --generate-all-folds --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite

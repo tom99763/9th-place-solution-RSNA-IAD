@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def parse_args():
     ap = argparse.ArgumentParser(description='Train and validate YOLO aneurysm pipeline')
     ap.add_argument('--data', type=str, default='configs/yolo_aneurysm_locations.yaml', help='Dataset YAML path')
-    ap.add_argument('--model', type=str, default='yolo11m.pt', help='Pretrained checkpoint or model config')
+    ap.add_argument('--model', type=str, default='/home/sersasj/RSNA-IAD-Codebase/ultralytics-timm/ultralytics/cfg/models/11/yolo11-timm/yolo-11-mobilenet.yaml', help='Pretrained checkpoint or model config')
     ap.add_argument('--epochs', type=int, default=100)
     ap.add_argument('--img', type=int, default=512)
     ap.add_argument('--batch', type=int, default=16)
@@ -74,7 +74,7 @@ def run():
     print("waiting")
     import time
     args = parse_args()
-
+    #time.sleep(60*60*3) # 2 hours
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']
 
     # Call the validation script programmatically
@@ -187,6 +187,7 @@ def run():
             cmd += ['--series-limit', str(args.series_limit)]
         if args.single_cls:
             cmd.append('--single-cls')
+
         # Try to attach validation logging to the same W&B run as training
         wandb_info = _get_wandb_resume_info(save_dir)
         if wandb_info or args.val_wandb or args.wandb_project:
@@ -211,7 +212,7 @@ if __name__ == '__main__':
 
 
 # python3 -m src.run_yolo_pipeline  --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_location_all_negatives   --name yolo_11_m_one_loss --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --box 1.0 --cls 1.0 --dfl 1.0
-#  python3 -m src.run_yolo_pipeline    --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_locations   --name cv_efficientnet_v2_b0-config2 --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0
+#  python3 -m src.run_yolo_pipeline    --epochs 100 --img 512 --batch 16   --model yolo8m.pt --project yolo_aneurysm_locations   --name yolo_8_m_one_loss --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 
 
 #  python3 -m src.run_yolo_pipeline     --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_locations   --name cv_y11_efficientnet_v2_s --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0
 #  python3 -m src.run_yolo_pipeline --single-cls --model yolo11n.pt --project yolo_aneurysm_binary_v0 --name cv_y11n_single_cls --epochs 5 --data-fold-template configs/yolo_fold{fold}.yaml --folds 0,1,2

@@ -1,4 +1,4 @@
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:42.558611Z","iopub.execute_input":"2025-10-01T13:08:42.559399Z","iopub.status.idle":"2025-10-01T13:08:42.565790Z","shell.execute_reply.started":"2025-10-01T13:08:42.559346Z","shell.execute_reply":"2025-10-01T13:08:42.564987Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.031376Z","iopub.execute_input":"2025-10-01T21:21:49.031922Z","iopub.status.idle":"2025-10-01T21:21:49.038786Z","shell.execute_reply.started":"2025-10-01T21:21:49.031884Z","shell.execute_reply":"2025-10-01T21:21:49.038120Z"},"jupyter":{"outputs_hidden":false}}
 import os
 import numpy as np
 import pydicom
@@ -48,7 +48,7 @@ from cupyx.scipy.ndimage import zoom
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:42.566831Z","iopub.execute_input":"2025-10-01T13:08:42.567029Z","iopub.status.idle":"2025-10-01T13:08:42.587044Z","shell.execute_reply.started":"2025-10-01T13:08:42.567012Z","shell.execute_reply":"2025-10-01T13:08:42.586421Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.039968Z","iopub.execute_input":"2025-10-01T21:21:49.040291Z","iopub.status.idle":"2025-10-01T21:21:49.057025Z","shell.execute_reply.started":"2025-10-01T21:21:49.040267Z","shell.execute_reply":"2025-10-01T21:21:49.056377Z"},"jupyter":{"outputs_hidden":false}}
 
 # Optimization settings
 torch.set_float32_matmul_precision('medium')
@@ -97,11 +97,7 @@ YOLO_LABELS_TO_IDX = {
 
 YOLO_LABELS = sorted(list(YOLO_LABELS_TO_IDX.keys()))
 
-
-
-
-
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:42.650614Z","iopub.execute_input":"2025-10-01T13:08:42.650858Z","iopub.status.idle":"2025-10-01T13:08:42.667872Z","shell.execute_reply.started":"2025-10-01T13:08:42.650830Z","shell.execute_reply":"2025-10-01T13:08:42.667183Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.057630Z","iopub.execute_input":"2025-10-01T21:21:49.057837Z","iopub.status.idle":"2025-10-01T21:21:49.075419Z","shell.execute_reply.started":"2025-10-01T21:21:49.057817Z","shell.execute_reply":"2025-10-01T21:21:49.074940Z"},"jupyter":{"outputs_hidden":false}}
 
 
 # ====================================================
@@ -166,7 +162,7 @@ def collect_series_slices(series_dir: Path) -> List[Path]:
     dcm_paths.sort()
     return dcm_paths
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:42.668759Z","iopub.execute_input":"2025-10-01T13:08:42.669009Z","iopub.status.idle":"2025-10-01T13:08:42.693096Z","shell.execute_reply.started":"2025-10-01T13:08:42.668986Z","shell.execute_reply":"2025-10-01T13:08:42.692346Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.076473Z","iopub.execute_input":"2025-10-01T21:21:49.076673Z","iopub.status.idle":"2025-10-01T21:21:49.127371Z","shell.execute_reply.started":"2025-10-01T21:21:49.076658Z","shell.execute_reply":"2025-10-01T21:21:49.126820Z"},"jupyter":{"outputs_hidden":false}}
 # %load ../src/models/segmentation_classification.py
 
 
@@ -179,29 +175,29 @@ MAX_WORKERS = 4
 
 YOLO_MODEL_CONFIGS = [
     {
-        "path": "/kaggle/input/rsna-yolo-models/cv_y11m_more_negatives_fold02/weights/best.pt",
+        "path": "/kaggle/input/rsna-yolo-models/yolo_11_m_fold03/weights/best.engine",
         "fold": "0",
         "weight": 1.0,
         "name": "YOLOv11m_fold0"
     },
     {
-        "path": "/kaggle/input/rsna-yolo-models/cv_y11m_more_negatives_fold4/weights/best.pt",
-        "fold": "4",
+        "path": "/kaggle/input/rsna-yolo-models/yolo_11_m_fold12/weights/best.engine",
+        "fold": "1",
         "weight": 1.0,
         "name": "YOLOv11m_fold1"
     },
     {
-        "path": "/kaggle/input/rsna-yolo-models/cv_y11m_more_negatives_fold3/weights/best.pt",
+        "path": "/kaggle/input/rsna-yolo-models/yolo_11_m_fold2/weights/best.engine",
         "fold": "3",
         "weight": 1.0,
         "name": "YOLOv11m_fold1"
     }, 
     {
-        "path": "/kaggle/input/rsna-yolo-models/cv_mobilenet_more_negatives_fold1/weights/best.pt",
-        "fold": "1",
+        "path": "/kaggle/input/rsna-yolo-models/yolo_11_m_fold3/weights/best.engine",
+        "fold": "4",
         "weight": 1.0,
         "name": "mobile_net_more_negatives"
-    },
+    },   
     #{
     #    "path": "/kaggle/input/rsna-sergio-models/cv_y11m_with_mix_up_mosaic_fold2/weights/best.pt",
     #    "fold": "2",
@@ -223,17 +219,17 @@ CONVNEXT_AUX_LOSS_CKPTS = [
     
 ]
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:43.562257Z","iopub.execute_input":"2025-10-01T13:08:43.562488Z","iopub.status.idle":"2025-10-01T13:08:43.565935Z","shell.execute_reply.started":"2025-10-01T13:08:43.562470Z","shell.execute_reply":"2025-10-01T13:08:43.565252Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.127992Z","iopub.execute_input":"2025-10-01T21:21:49.128204Z","iopub.status.idle":"2025-10-01T21:21:49.131358Z","shell.execute_reply.started":"2025-10-01T21:21:49.128183Z","shell.execute_reply":"2025-10-01T21:21:49.130657Z"},"jupyter":{"outputs_hidden":false}}
 # !ls /kaggle/input/rsna-iad-modelzoo
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:43.566559Z","iopub.execute_input":"2025-10-01T13:08:43.566720Z","iopub.status.idle":"2025-10-01T13:08:43.577199Z","shell.execute_reply.started":"2025-10-01T13:08:43.566707Z","shell.execute_reply":"2025-10-01T13:08:43.576527Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.217034Z","iopub.execute_input":"2025-10-01T21:21:49.217308Z","iopub.status.idle":"2025-10-01T21:21:49.223573Z","shell.execute_reply.started":"2025-10-01T21:21:49.217282Z","shell.execute_reply":"2025-10-01T21:21:49.222814Z"},"jupyter":{"outputs_hidden":false}}
 
 def load_yolo_models():
     """Load all YOLO models"""
     models = []
     for config in YOLO_MODEL_CONFIGS:
-        model = YOLO(config["path"])
-        model.to(device)
+        # YOLO automatically handles both .pt and .engine files
+        model = YOLO(config["path"], task='detect')
         
         model_dict = {
             "model": model,
@@ -258,7 +254,6 @@ def load_all_models():
     
     # Warm up models
     dummy_yolo_image = np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8)
-    dummy_effnet_aux_image = torch.randn(1, EFFNET_AUX_LOSS_CFG.in_chans, EFFNET_AUX_LOSS_CFG.size, EFFNET_AUX_LOSS_CFG.size).to(device)
 
     
     with torch.no_grad():
@@ -267,7 +262,7 @@ def load_all_models():
             model = model_dict["model"]
             _ = model.predict([dummy_yolo_image], verbose=False, device=device)
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:43.577991Z","iopub.execute_input":"2025-10-01T13:08:43.578151Z","iopub.status.idle":"2025-10-01T13:08:43.597670Z","shell.execute_reply.started":"2025-10-01T13:08:43.578137Z","shell.execute_reply":"2025-10-01T13:08:43.596959Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.224967Z","iopub.execute_input":"2025-10-01T21:21:49.225169Z","iopub.status.idle":"2025-10-01T21:21:49.243813Z","shell.execute_reply.started":"2025-10-01T21:21:49.225155Z","shell.execute_reply":"2025-10-01T21:21:49.243007Z"},"jupyter":{"outputs_hidden":false}}
 
 
 ###
@@ -304,15 +299,15 @@ def predict_yolo_ensemble(slices: List[np.ndarray]):
             # Process in batches
             for i in range(0, len(slices), BATCH_SIZE):
                 batch_slices = slices[i:i+BATCH_SIZE]
-                
-                results = model.predict(
-                    batch_slices, 
-                    verbose=False, 
-                    batch=len(batch_slices), 
-                    device=device, 
-                    conf=0.01
-                )
-                
+                with torch.no_grad():
+                    results = model.predict(
+                        batch_slices, 
+                        verbose=False, 
+                        batch=len(batch_slices), 
+                        device=device, 
+                        conf=0.01
+                    )
+                    
                 for r in results:
                     if r is None or r.boxes is None or r.boxes.conf is None or len(r.boxes) == 0:
                         continue
@@ -355,17 +350,9 @@ def predict_yolo_ensemble(slices: List[np.ndarray]):
     
     return final_cls_pred, final_loc_preds
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:43.598287Z","iopub.execute_input":"2025-10-01T13:08:43.598525Z","iopub.status.idle":"2025-10-01T13:08:43.618071Z","shell.execute_reply.started":"2025-10-01T13:08:43.598508Z","shell.execute_reply":"2025-10-01T13:08:43.617191Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.244621Z","iopub.execute_input":"2025-10-01T21:21:49.244865Z","iopub.status.idle":"2025-10-01T21:21:49.261256Z","shell.execute_reply.started":"2025-10-01T21:21:49.244844Z","shell.execute_reply":"2025-10-01T21:21:49.260611Z"},"jupyter":{"outputs_hidden":false}}
 
 
-def process_dicom_for_effnet(series_path: str) -> np.ndarray:
-    """Process DICOM for EfficientNet with memory cleanup"""
-    try:
-        preprocessor = DICOMPreprocessorKaggle(target_shape=EFFNET_AUX_LOSS_CFG.target_shape)
-        volume = preprocessor.process_series(series_path)
-        return volume
-    finally:
-        gc.collect()
 
 def process_dicom_for_yolo(series_path: str) -> List[np.ndarray]:
     """Process DICOM for YOLO with parallel processing"""
@@ -386,7 +373,7 @@ def process_dicom_for_yolo(series_path: str) -> List[np.ndarray]:
     
     return all_slices
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-01T13:08:43.619000Z","iopub.execute_input":"2025-10-01T13:08:43.619355Z","iopub.status.idle":"2025-10-01T13:08:43.635344Z","shell.execute_reply.started":"2025-10-01T13:08:43.619331Z","shell.execute_reply":"2025-10-01T13:08:43.634229Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-01T21:21:49.261975Z","iopub.execute_input":"2025-10-01T21:21:49.262172Z","iopub.status.idle":"2025-10-01T21:21:49.282583Z","shell.execute_reply.started":"2025-10-01T21:21:49.262157Z","shell.execute_reply":"2025-10-01T21:21:49.281966Z"}}
 
 def _predict_inner(series_path: str) -> pl.DataFrame:
     """Main ensemble prediction logic"""
@@ -471,10 +458,10 @@ def predict(series_path: str) -> pl.DataFrame:
             torch.cuda.empty_cache()
         gc.collect()
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:43.636676Z","iopub.execute_input":"2025-10-01T13:08:43.637108Z","iopub.status.idle":"2025-10-01T13:08:43.653874Z","shell.execute_reply.started":"2025-10-01T13:08:43.637074Z","shell.execute_reply":"2025-10-01T13:08:43.652995Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.284054Z","iopub.execute_input":"2025-10-01T21:21:49.284247Z","iopub.status.idle":"2025-10-01T21:21:49.299796Z","shell.execute_reply.started":"2025-10-01T21:21:49.284232Z","shell.execute_reply":"2025-10-01T21:21:49.299244Z"},"jupyter":{"outputs_hidden":false}}
 # _predict_inner("/kaggle/input/rsna-intracranial-aneurysm-detection/series/1.2.826.0.1.3680043.8.498.10023411164590664678534044036963716636")
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:08:43.654801Z","iopub.execute_input":"2025-10-01T13:08:43.655538Z","iopub.status.idle":"2025-10-01T13:10:01.205052Z","shell.execute_reply.started":"2025-10-01T13:08:43.655511Z","shell.execute_reply":"2025-10-01T13:10:01.204445Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.300377Z","iopub.execute_input":"2025-10-01T21:21:49.300544Z","iopub.status.idle":"2025-10-01T21:23:06.410319Z","shell.execute_reply.started":"2025-10-01T21:21:49.300529Z","shell.execute_reply":"2025-10-01T21:23:06.409690Z"},"jupyter":{"outputs_hidden":false}}
 if __name__ == "__main__":
     start_time = time.time()
     
@@ -494,11 +481,5 @@ if __name__ == "__main__":
     
     print(f"Total execution time: {time.time() - start_time:.2f} seconds")
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:10:01.205989Z","iopub.execute_input":"2025-10-01T13:10:01.206296Z","iopub.status.idle":"2025-10-01T13:10:01.209940Z","shell.execute_reply.started":"2025-10-01T13:10:01.206267Z","shell.execute_reply":"2025-10-01T13:10:01.209196Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:23:06.410989Z","iopub.execute_input":"2025-10-01T21:23:06.411231Z","iopub.status.idle":"2025-10-01T21:23:06.414542Z","shell.execute_reply.started":"2025-10-01T21:23:06.411214Z","shell.execute_reply":"2025-10-01T21:23:06.413848Z"},"jupyter":{"outputs_hidden":false}}
 # !ls /kaggle/input/rsna-iad-modelzoo
-
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:10:01.210805Z","iopub.execute_input":"2025-10-01T13:10:01.211530Z","iopub.status.idle":"2025-10-01T13:10:01.227740Z","shell.execute_reply.started":"2025-10-01T13:10:01.211502Z","shell.execute_reply":"2025-10-01T13:10:01.227101Z"},"jupyter":{"outputs_hidden":false}}
-# !rm -r /kaggle/shared
-
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T13:10:01.229789Z","iopub.execute_input":"2025-10-01T13:10:01.230117Z","iopub.status.idle":"2025-10-01T13:10:01.241815Z","shell.execute_reply.started":"2025-10-01T13:10:01.230101Z","shell.execute_reply":"2025-10-01T13:10:01.241090Z"},"jupyter":{"outputs_hidden":false}}
-#
