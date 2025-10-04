@@ -6,7 +6,7 @@ data_dir: ./src/data
 seed: 42
 fold_id: 1
 
-batch_size: 4
+batch_size: 8
 num_workers: 4
 experiment: ${graph_type}_${model.num_layers}l_${model.hidden_channels}_${model.jk}_${model.pooling}_fold${fold_id}
 
@@ -19,9 +19,9 @@ use_pe: false
 # loss settings
 pos_weight: 8          # depends on imbalance ratio
 lambda_graph: 1.0
-lambda_consistency: 0.0
+lambda_consistency: 1.0
 lambda_ranking: 1.5
-margin: 0.5
+margin: 1.0
 
 # Balanced sampling configuration
 use_balanced_sampling: true  # Set to true to enable balanced pos/neg sampling

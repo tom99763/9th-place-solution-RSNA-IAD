@@ -64,7 +64,8 @@ class GNNClassifier(pl.LightningModule):
         self.node_loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
         # Graph-level classification loss
-        self.graph_loss_fn = nn.BCEWithLogitsLoss()
+        pos_weight_graph = torch.ones([1]) * 2
+        self.graph_loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight_graph)
 
         # Metrics
         self.val_cls_auroc = torchmetrics.AUROC(task="binary")

@@ -5,5 +5,5 @@ jk: "lstm"
 walk_length: 4
 use_pe: false
 dropout: 0.2
-pooling: "max"
+pooling: "mean"
 tau: 0.1
