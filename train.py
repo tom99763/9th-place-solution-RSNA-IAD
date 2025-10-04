@@ -36,7 +36,7 @@ def run(cfg: DictConfig) -> None:
         # logger
         wnb_logger = WandbLogger(
             project=cfg.project_name,
-            name=f"{cfg.experiment}_fold{fold_id}",
+            name=f"{cfg.experiment}",
             config=OmegaConf.to_container(cfg),
             offline=True,
         )
@@ -46,7 +46,7 @@ def run(cfg: DictConfig) -> None:
             monitor="val_cls_auroc",
             mode="max",
             dirpath="./models",
-            filename=f"{cfg.experiment}-fold{fold_id}"
+            filename=f"{cfg.experiment}"
                      + "-{epoch:02d}-{val_loss:.4f}-{val_cls_auroc:.4f}",
             save_top_k=2,
             save_last=True,
