@@ -19,8 +19,8 @@ use_pe: false
 # loss settings
 pos_weight: 8          # depends on imbalance ratio
 lambda_graph: 1.0
-lambda_consistency: 1.0
-lambda_ranking: 2.0
+lambda_consistency: 0.0
+lambda_ranking: 1.5
 margin: 0.5
 
 # Balanced sampling configuration

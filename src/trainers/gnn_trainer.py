@@ -82,27 +82,25 @@ class GNNClassifier(pl.LightningModule):
         node_loss_raw = self.node_loss_fn(node_logits[:, 0], node_labels)
         node_loss = node_loss_raw.mean()
 
-        # # Graph-level MIL loss
-        # graph_loss = self.graph_loss_fn(graph_logits, graph_labels)
-        #
-        # # Graph-level ranking loss
-        # ranking_loss = graph_pairwise_ranking_loss(graph_logits, graph_labels, margin=self.cfg.margin)
-        #
-        # # Consistency regularization: node probabilities should align with graph labels
-        # batch = data.batch
-        # node_probs = torch.sigmoid(node_logits[:, 0])
-        # graph_labels_expanded = graph_labels[batch]
-        # consistency_loss = nn.BCELoss()(node_probs, graph_labels_expanded.squeeze())
-        #
-        # # Total loss with weighted components
-        # loss = (
-        #     node_loss
-        #     + self.cfg.lambda_graph * graph_loss
-        #     + self.cfg.lambda_ranking * ranking_loss
-        #     + self.cfg.lambda_consistency * consistency_loss
-        # )
-        loss = node_loss
+        # Graph-level MIL loss
+        graph_loss = self.graph_loss_fn(graph_logits, graph_labels)
 
+        # Graph-level ranking loss
+        ranking_loss = graph_pairwise_ranking_loss(graph_logits, graph_labels, margin=self.cfg.margin)
+
+        # Consistency regularization: node probabilities should align with graph labels
+        batch = data.batch
+        node_probs = torch.sigmoid(node_logits[:, 0])
+        graph_labels_expanded = graph_labels[batch]
+        consistency_loss = nn.BCELoss()(node_probs, graph_labels_expanded.squeeze())
+
+        # Total loss with weighted components
+        loss = (
+            node_loss
+            + self.cfg.lambda_graph * graph_loss
+            + self.cfg.lambda_ranking * ranking_loss
+            + self.cfg.lambda_consistency * consistency_loss
+        )
         # Manual optimization step
         optimizer = self.optimizers()
         optimizer.zero_grad()
@@ -111,10 +109,10 @@ class GNNClassifier(pl.LightningModule):
 
         # Logging
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        # self.log("train_node_loss", node_loss, on_step=False, on_epoch=True)
-        # self.log("train_graph_loss", graph_loss, on_step=False, on_epoch=True)
-        # self.log("train_ranking_loss", ranking_loss, on_step=False, on_epoch=True)
-        # self.log("train_consistency_loss", consistency_loss, on_step=False, on_epoch=True)
+        self.log("train_node_loss", node_loss, on_step=False, on_epoch=True)
+        self.log("train_graph_loss", graph_loss, on_step=False, on_epoch=True)
+        self.log("train_ranking_loss", ranking_loss, on_step=False, on_epoch=True)
+        self.log("train_consistency_loss", consistency_loss, on_step=False, on_epoch=True)
 
         return loss
 
@@ -125,14 +123,14 @@ class GNNClassifier(pl.LightningModule):
         node_logits, graph_logits = self.model(data)
 
         node_loss = self.node_loss_fn(node_logits[:, 0], node_labels)
-        # graph_loss = self.graph_loss_fn(graph_logits, cls_labels)
+        graph_loss = self.graph_loss_fn(graph_logits, cls_labels)
 
         # Metrics
         self.val_cls_auroc.update(graph_logits.detach(), cls_labels.long())
         self.val_node_auroc.update(node_logits.detach(), node_labels.long())
 
-        self.log("val_loss", node_loss, on_step=False, on_epoch=True, prog_bar=True)
-        return node_loss
+        self.log("val_loss", node_loss + graph_loss, on_step=False, on_epoch=True, prog_bar=True)
+        return node_loss + graph_loss
 
     def on_validation_epoch_start(self):
         self.val_cls_auroc.reset()
