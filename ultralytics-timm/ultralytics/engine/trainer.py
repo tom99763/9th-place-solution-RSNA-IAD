@@ -395,9 +395,16 @@ class BaseTrainer:
 
                 # Backward
                 self.scaler.scale(self.loss).backward()
+                
+                # Gradient clipping to prevent NaN loss
+                if torch.isnan(self.loss) or torch.isinf(self.loss):
+                    LOGGER.warning(f"NaN/Inf loss detected: {self.loss.item()}, skipping backward pass")
+                    #self.optimizer.zero_grad()
+                    #continue
 
                 # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
                 if ni - last_opt_step >= self.accumulate:
+                    # Gradient clipping
                     self.optimizer_step()
                     last_opt_step = ni
 

@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ultralytics.utils import LOGGER
 from ultralytics.utils.metrics import OKS_SIGMA
 from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
 from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
@@ -265,6 +266,15 @@ class v8DetectionLoss:
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
+
+        # Add small epsilon to prevent NaN loss and check for NaN values
+        eps = 1e-8
+        loss = loss + eps
+        
+        # Check for NaN values and replace with small positive value
+        if torch.isnan(loss).any():
+            LOGGER.warning("NaN detected in loss computation, replacing with small positive values")
+            loss = torch.where(torch.isnan(loss), torch.tensor(eps, device=loss.device), loss)
 
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
 

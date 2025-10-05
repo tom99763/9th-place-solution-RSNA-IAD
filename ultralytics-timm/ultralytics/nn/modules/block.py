@@ -2066,8 +2066,8 @@ class Timm(nn.Module):
         super().__init__()
         
         # ImageNet normalization for timm models (RGB order)
-        #self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
-        #self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+        self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
         
         if unwrap:
             self.m = timm.create_model(model, features_only=True, pretrained=pretrained, drop_path_rate=drop_path_rate)
@@ -2090,7 +2090,7 @@ class Timm(nn.Module):
 
     def forward(self, x):
         """Forward pass through the model with ImageNet normalization."""
-        #x = (x - self.mean) / self.std
+        x = (x - self.mean) / self.std
         y = self.m(x)
         if not self.unwrap:
             return y 
