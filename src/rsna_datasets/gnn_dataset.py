@@ -19,6 +19,8 @@ class GraphDataset(Dataset):
         self.uids = uids
         self.cfg = cfg
         self.data_path = Path(self.cfg.data_dir)
+        self.yolo_meta = pd.read_csv(self.data_path/'all_oof_preds_yolo.csv')
+        self.yolo_cols = [f'loc_prob_{i}' for i in range(13)]
         self.transform = transform
         self.peTransform = AddRandomWalkPE(walk_length=cfg.walk_length, attr_name=None)
 
@@ -39,7 +41,8 @@ class GraphDataset(Dataset):
             edge_path = os.path.join(data_path, f'{uid}_edge_index_delaunay_fold.npy')
         else:
             raise Exception('invalid graph type')
-
+        yolo_preds = self.yolo_meta[self.yolo_meta.SeriesInstanceUID == uid]
+        yolo_preds = torch.from_numpy(yolo_preds[self.yolo_cols].values.astype('float32'))
         points = torch.from_numpy(np.load(point_path, mmap_mode="r", allow_pickle=True).astype('float32'))
         feat = torch.from_numpy(np.load(feat_path, mmap_mode="r", allow_pickle=True).astype('float32'))
         edge_index = torch.from_numpy(np.load(edge_path, mmap_mode="r", allow_pickle=True))
@@ -47,7 +50,7 @@ class GraphDataset(Dataset):
         cls_labels= int(df["Aneurysm Present"].iloc[0])
 
         # build data
-        data = Data(x=feat, edge_index=edge_index, y=labels,
+        data = Data(x=feat, xx = yolo_preds, edge_index=edge_index, y=labels,
                     cls_labels = cls_labels, points = points)
         if self.cfg.use_pe:
             data = self.peTransform(data)
