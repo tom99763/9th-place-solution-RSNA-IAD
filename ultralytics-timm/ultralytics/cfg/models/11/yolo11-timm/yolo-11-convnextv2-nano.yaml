@@ -1,0 +1,38 @@
+nc: 80
+scales:
+  n: [1.00, 1.00, 512]
+
+backbone:
+  # 0: full convnextv2_nano outputs
+  - [-1, 1, Timm, [640, 'convnextv2_nano.fcmae_ft_in22k_in1k_384', True, True, 0, True]]
+  # use layers 1, 2, 3 from the backbone:
+  - [0, 1, Index, [160, 1]]   # P3 → 160 ch @ 48×48
+  - [0, 1, Index, [320, 2]]   # P4 → 320 ch @ 24×24
+  - [0, 1, Index, [640, 3]]   # P5 → 640 ch @ 12×12
+  # SPPF & PSA on P5
+  - [-1, 1, SPPF, [640, 5]]
+  - [-1, 2, C2PSA, [640]]
+
+head:
+  # P5 → upsample → concat with P4 → C3k2
+  - [5,    1, nn.Upsample, [None, 2, "nearest"]]   # 6: 640×24×24
+  - [[6, 2], 1, Concat,        [1]]                 # 7: 640+320=960 ch
+  - [7,    2, C3k2,            [320, False]]        # 8
+
+  # P4 → upsample → concat with P3 → C3k2
+  - [8,    1, nn.Upsample, [None, 2, "nearest"]]   # 9: 640×48×48
+  - [[9, 1], 1, Concat,       [1]]                  # 10: 640+160=800 ch
+  - [10,   2, C3k2,            [160, False]]        # 11
+
+  # top-down → bottom-up
+  - [11,   1, Conv,            [160, 3, 2]]         # 12: 320×24×24
+  - [[12, 8], 1, Concat,       [1]]                 # 13: 320+640=960 ch
+  - [13,   2, C3k2,            [320, False]]        # 14
+
+  # bottom-up → P5
+  - [14,   1, Conv,            [320, 3, 2]]         # 15: 640×12×12
+  - [[15, 5], 1, Concat,       [1]]                 # 16: 640+640=1280 ch
+  - [16,   2, C3k2,            [640, True]]         # 17
+
+  # Final Detect on (P3=11, P4=14, P5=17)
+  - [[11, 14, 17], 1, Detect,   [nc]]

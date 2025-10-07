@@ -6,7 +6,7 @@ processed_data/
 series/
 kaggle_evaluation/
 logs/
-models/
+#models/
 config/__pycache__/
 __pycache__/
 src/__pycache__/

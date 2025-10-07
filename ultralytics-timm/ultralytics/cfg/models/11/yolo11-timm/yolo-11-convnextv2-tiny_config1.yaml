@@ -1,0 +1,21 @@
+nc: 80
+scales:
+  n: [0.5, 1.0, 768]
+
+backbone:
+  # 0: full convnextv2_nano outputs
+  - [-1, 1, Timm, [768, 'convnextv2_tiny.fcmae_ft_in22k_in1k', True, True, 0, True, 0.2]]
+  # use layers 1, 2, 3 from the backbone:
+  - [0, 1, Index, [192, 1]]   # P3 → 160 ch @ 48×48
+  - [0, 1, Index, [384, 2]]   # P4 → 320 ch @ 24×24
+  # SPPF & PSA on P5
+  - [-1, 1, SPPF, [384, 5]]
+  - [-1, 2, C2PSA, [384]]
+
+
+head:
+  - [4, 1, nn.Upsample, [None, 2, "nearest"]]  
+  - [[5, 1], 1, Concat, [1]]                   
+  - [6, 2, C3k2, [384, False]]                 
+
+  - [[7], 1, Detect, [nc]]                    
