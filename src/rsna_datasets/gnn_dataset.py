@@ -10,6 +10,21 @@ import os
 
 torch.set_float32_matmul_precision('medium')
 
+LABEL_COLS = [
+    'Left Infraclinoid Internal Carotid Artery',
+    'Right Infraclinoid Internal Carotid Artery',
+    'Left Supraclinoid Internal Carotid Artery',
+    'Right Supraclinoid Internal Carotid Artery',
+    'Left Middle Cerebral Artery',
+    'Right Middle Cerebral Artery',
+    'Anterior Communicating Artery',
+    'Left Anterior Cerebral Artery',
+    'Right Anterior Cerebral Artery',
+    'Left Posterior Communicating Artery',
+    'Right Posterior Communicating Artery',
+    'Basilar Tip',
+    'Other Posterior Circulation'
+]
 
 class GraphDataset(Dataset):
     def __init__(self, df, uids, cfg, fold_index, transform=None):
@@ -20,6 +35,7 @@ class GraphDataset(Dataset):
         self.cfg = cfg
         self.data_path = Path(self.cfg.data_dir)
         self.yolo_meta = pd.read_csv(self.data_path/'all_oof_preds_yolo.csv')
+        self.flayer_meta = pd.read_csv(self.data_path/'oof_df_cv7664.csv')
         self.yolo_cols = [f'loc_prob_{i}' for i in range(13)]
         self.transform = transform
         self.peTransform = AddRandomWalkPE(walk_length=cfg.walk_length, attr_name=None)
@@ -43,6 +59,9 @@ class GraphDataset(Dataset):
             raise Exception('invalid graph type')
         yolo_preds = self.yolo_meta[self.yolo_meta.SeriesInstanceUID == uid]
         yolo_preds = torch.from_numpy(yolo_preds[self.yolo_cols].values.astype('float32'))
+        flayer_preds = self.flayer_meta[self.flayer_meta.SeriesInstanceUID == uid]
+        flayer_preds = torch.from_numpy(flayer_preds[LABEL_COLS].values.astype('float32'))
+
         points = torch.from_numpy(np.load(point_path, mmap_mode="r", allow_pickle=True).astype('float32'))
         feat = torch.from_numpy(np.load(feat_path, mmap_mode="r", allow_pickle=True).astype('float32'))
         edge_index = torch.from_numpy(np.load(edge_path, mmap_mode="r", allow_pickle=True))
@@ -50,7 +69,7 @@ class GraphDataset(Dataset):
         cls_labels= int(df["Aneurysm Present"].iloc[0])
 
         # build data
-        data = Data(x=feat, xx = yolo_preds, edge_index=edge_index, y=labels,
+        data = Data(x=feat, yolo = yolo_preds, flayer = flayer_preds,  edge_index=edge_index, y=labels,
                     cls_labels = cls_labels, points = points)
         if self.cfg.use_pe:
             data = self.peTransform(data)

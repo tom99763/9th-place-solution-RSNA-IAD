@@ -7,3 +7,5 @@ use_pe: false
 dropout: 0.2
 pooling: "mean"
 tau: 0.1
+aux_loss: true
+meta_dropout: 0.3

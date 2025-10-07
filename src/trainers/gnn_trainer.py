@@ -76,14 +76,15 @@ class GNNClassifier(pl.LightningModule):
         node_labels = data.y.float()
         graph_labels = data.cls_labels.view(-1, 1).float()
 
-        graph_logits = self.model(data)
+        out = self.model(data)
+        graph_logits, aux_logits = out['fused'], out['gnn_only']
 
         # # Node-level loss (handles noisy labels)
         # node_loss_raw = self.node_loss_fn(node_logits[:, 0], node_labels)
         # node_loss = node_loss_raw.mean()
 
         # Graph-level MIL loss
-        graph_loss = self.graph_loss_fn(graph_logits, graph_labels)
+        graph_loss = self.graph_loss_fn(graph_logits, graph_labels) + 0.3 * self.graph_loss_fn(aux_logits, graph_labels)
 
         # Graph-level ranking loss
         ranking_loss = graph_pairwise_ranking_loss(graph_logits, graph_labels, margin=self.cfg.margin)
@@ -120,7 +121,8 @@ class GNNClassifier(pl.LightningModule):
         node_labels = data.y.float()
         cls_labels = data.cls_labels.view(-1, 1).float()
 
-        graph_logits = self.model(data)
+        out = self.model(data)
+        graph_logits, aux_logits = out['fused'], out['gnn_only']
 
         #node_loss = self.node_loss_fn(node_logits[:, 0], node_labels)
         graph_loss = self.graph_loss_fn(graph_logits, cls_labels)

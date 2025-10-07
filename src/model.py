@@ -8,58 +8,104 @@ from torch_geometric.nn import GraphSAGE, global_max_pool, global_mean_pool
 from torch_geometric.nn.norm import LayerNorm
 
 class GraphModel(nn.Module):
-    def __init__(self, hidden_channels=256, num_layers=8, jk='lstm',
-                 walk_length=8, use_pe=True, dropout=0.3, pooling="noisy_or", tau=0.1):
+    def __init__(
+        self,
+        hidden_channels=256,
+        num_layers=8,
+        jk='lstm',
+        walk_length=8,
+        use_pe=True,
+        dropout=0.3,
+        pooling="mean",
+        tau=0.1,
+        aux_loss=True,
+        meta_dropout=0.3,
+    ):
         super().__init__()
         in_dim = 256 + walk_length if use_pe else 256
+
+        # ---- Graph Feature Extractor ----
         self.gnn = GraphSAGE(
             in_channels=in_dim,
             hidden_channels=hidden_channels,
             num_layers=num_layers,
-            out_channels=hidden_channels,
+            out_channels=64,
             jk=jk,
             dropout=dropout,
             norm=LayerNorm(in_channels=hidden_channels)
         )
 
-        self.meta_map = nn.Sequential(
+        # ---- Metadata Encoders (YOLO + Flayer) ----
+        self.yolo_meta_map = nn.Sequential(
+            nn.Linear(13, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64)
+        )
+        self.flayer_meta_map = nn.Sequential(
             nn.Linear(13, 64),
             nn.ReLU(),
             nn.Linear(64, 64)
         )
 
-        self.to_logits = nn.Linear(hidden_channels + 64, 1)
+        # ---- Vector Gate (outputs same dim as hidden_channels) ----
+        self.gate = nn.Sequential(
+            nn.Linear(64 + 128, hidden_channels),
+            nn.ReLU(),
+            nn.Linear(hidden_channels, 64),
+            nn.Sigmoid()
+        )
 
+        # ---- Prediction Heads ----
+        self.to_logits = nn.Linear(64, 1)
+        self.aux_head = nn.Linear(64, 1) if aux_loss else None
+
+        # ---- Other Settings ----
         self.pooling = pooling
-        self.tau = tau  # temperature for logsumexp pooling
+        self.tau = tau
+        self.aux_loss = aux_loss
+        self.meta_dropout = meta_dropout
+        self.meta_proj = nn.Linear(128, 64)
 
     def forward(self, data):
-        x, edge_index, batch = data.x, data.edge_index, data.batch
-        xx = data.xx
+        x, edge_index, batch = data.x.cuda(), data.edge_index.cuda(), data.batch.cuda()
+        yolo_meta, flayer_meta = data.yolo.cuda(), data.flayer.cuda()
 
-        edge_index = edge_index.cuda()
-        batch = batch.cuda()
-        x = x.cuda()
-        xx = xx.cuda()
-
+        # Handle edge cases
         if edge_index.shape[0] == 0:
             edge_index = torch.tensor([[0, 0]]).T.cuda()
 
-        # Node logits
-        node_embs = self.gnn(x, edge_index, batch=batch)  # (N, 1)
-        meta_embs = self.meta_map(xx)
-
-        # Graph-level pooling
+        # ---- GNN Node and Graph Embeddings ----
+        node_embs = self.gnn(x, edge_index, batch=batch)
         if self.pooling == "max":
             graph_embs = global_max_pool(node_embs, batch)
-            graph_embs = torch.cat([graph_embs, meta_embs], dim=-1)
-
-        elif self.pooling == "mean":
+        else:
             graph_embs = global_mean_pool(node_embs, batch)
-            #print(graph_embs.shape)
-            graph_embs = torch.cat([graph_embs, meta_embs], dim=-1)
-        graph_logits = self.to_logits(graph_embs)
-        return graph_logits
+
+        # ---- Metadata Embeddings ----
+        yolo_emb = self.yolo_meta_map(yolo_meta)
+        flayer_emb = self.flayer_meta_map(flayer_meta)
+        meta_cat = torch.cat([yolo_emb, flayer_emb], dim=-1)  # (B, 128)
+
+        # ---- Metadata Dropout ----
+        if self.training and self.meta_dropout > 0:
+            mask = torch.rand(meta_cat.size(0), 1, device=meta_cat.device) > self.meta_dropout
+            meta_cat = meta_cat * mask
+
+        # ---- Vector Gated Fusion ----
+        gate_vec = self.gate(torch.cat([graph_embs, meta_cat], dim=-1))  # (B, hidden_channels)
+        # align meta_cat dims to hidden_channels
+        meta_emb = self.meta_proj(meta_cat)
+
+        fused = graph_embs * (1 - gate_vec) + meta_emb * gate_vec  # elementwise fusion
+
+        # ---- Predictions ----
+        fused_logits = self.to_logits(fused)
+        out = {"fused": fused_logits, "gate": gate_vec}
+
+        if self.aux_head is not None:
+            out["gnn_only"] = self.aux_head(graph_embs)
+
+        return out
 
 
 
