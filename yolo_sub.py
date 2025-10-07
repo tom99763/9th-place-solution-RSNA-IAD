@@ -1,4 +1,8 @@
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.031376Z","iopub.execute_input":"2025-10-01T21:21:49.031922Z","iopub.status.idle":"2025-10-01T21:21:49.038786Z","shell.execute_reply.started":"2025-10-01T21:21:49.031884Z","shell.execute_reply":"2025-10-01T21:21:49.038120Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"execution":{"iopub.status.busy":"2025-10-06T17:23:04.032953Z","iopub.execute_input":"2025-10-06T17:23:04.033214Z","iopub.status.idle":"2025-10-06T17:25:23.581752Z","shell.execute_reply.started":"2025-10-06T17:23:04.033193Z","shell.execute_reply":"2025-10-06T17:25:23.580791Z"},"jupyter":{"outputs_hidden":false}}
+!tar -xzvf /kaggle/input/offline-install-tensorrt/packages.tar.gz
+!pip install --no-index --find-links=./packages tensorrt-cu12 tensorrt-cu12-bindings tensorrt-cu12-libs onnxruntime-gpu onnxslim
+
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:25:23.583987Z","iopub.execute_input":"2025-10-06T17:25:23.584467Z","iopub.status.idle":"2025-10-06T17:26:13.995998Z","shell.execute_reply.started":"2025-10-06T17:25:23.584432Z","shell.execute_reply":"2025-10-06T17:26:13.995188Z"}}
 import os
 import numpy as np
 import pydicom
@@ -48,7 +52,7 @@ from cupyx.scipy.ndimage import zoom
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.039968Z","iopub.execute_input":"2025-10-01T21:21:49.040291Z","iopub.status.idle":"2025-10-01T21:21:49.057025Z","shell.execute_reply.started":"2025-10-01T21:21:49.040267Z","shell.execute_reply":"2025-10-01T21:21:49.056377Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:13.996903Z","iopub.execute_input":"2025-10-06T17:26:13.997351Z","iopub.status.idle":"2025-10-06T17:26:14.003183Z","shell.execute_reply.started":"2025-10-06T17:26:13.997324Z","shell.execute_reply":"2025-10-06T17:26:14.002399Z"}}
 
 # Optimization settings
 torch.set_float32_matmul_precision('medium')
@@ -97,7 +101,7 @@ YOLO_LABELS_TO_IDX = {
 
 YOLO_LABELS = sorted(list(YOLO_LABELS_TO_IDX.keys()))
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.057630Z","iopub.execute_input":"2025-10-01T21:21:49.057837Z","iopub.status.idle":"2025-10-01T21:21:49.075419Z","shell.execute_reply.started":"2025-10-01T21:21:49.057817Z","shell.execute_reply":"2025-10-01T21:21:49.074940Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:14.004092Z","iopub.execute_input":"2025-10-06T17:26:14.004864Z","iopub.status.idle":"2025-10-06T17:26:14.027078Z","shell.execute_reply.started":"2025-10-06T17:26:14.004832Z","shell.execute_reply":"2025-10-06T17:26:14.026492Z"}}
 
 
 # ====================================================
@@ -135,8 +139,24 @@ def min_max_normalize(img: np.ndarray) -> np.ndarray:
     norm = (img - mn) / (mx - mn)
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
 
+#def process_dicom_file_yolo(dcm_path: Path) -> List[np.ndarray]:
+#    """Process single DICOM file for YOLO - for parallel processing"""
+#    try:
+#        frames = read_dicom_frames_hu(dcm_path)
+#        processed_slices = []
+#        for f in frames:
+#            img_u8 = min_max_normalize(f)
+#            if img_u8.ndim == 2:
+#                img_u8 = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
+#            processed_slices.append(img_u8)
+#        return processed_slices
+#    except Exception as e:
+#        return []
+
 def process_dicom_file_yolo(dcm_path: Path) -> List[np.ndarray]:
-    """Process single DICOM file for YOLO - for parallel processing"""
+    """Process single DICOM file for YOLO - for parallel processing
+    Ensures all outputs are exactly 512x512 to match TensorRT engine expectations
+    """
     try:
         frames = read_dicom_frames_hu(dcm_path)
         processed_slices = []
@@ -144,6 +164,7 @@ def process_dicom_file_yolo(dcm_path: Path) -> List[np.ndarray]:
             img_u8 = min_max_normalize(f)
             if img_u8.ndim == 2:
                 img_u8 = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
+                        
             processed_slices.append(img_u8)
         return processed_slices
     except Exception as e:
@@ -162,7 +183,7 @@ def collect_series_slices(series_dir: Path) -> List[Path]:
     dcm_paths.sort()
     return dcm_paths
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.076473Z","iopub.execute_input":"2025-10-01T21:21:49.076673Z","iopub.status.idle":"2025-10-01T21:21:49.127371Z","shell.execute_reply.started":"2025-10-01T21:21:49.076658Z","shell.execute_reply":"2025-10-01T21:21:49.126820Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:14.028632Z","iopub.execute_input":"2025-10-06T17:26:14.028832Z","iopub.status.idle":"2025-10-06T17:26:14.045321Z","shell.execute_reply.started":"2025-10-06T17:26:14.028816Z","shell.execute_reply":"2025-10-06T17:26:14.044694Z"}}
 # %load ../src/models/segmentation_classification.py
 
 
@@ -184,26 +205,26 @@ YOLO_MODEL_CONFIGS = [
         "path": "/kaggle/input/rsna-yolo-models/yolo_11_m_fold12/weights/best.engine",
         "fold": "1",
         "weight": 1.0,
-        "name": "YOLOv11m_fold1"
+        "name": "YOLOv11n_fold1"
     },
     {
         "path": "/kaggle/input/rsna-yolo-models/yolo_11_m_fold2/weights/best.engine",
-        "fold": "3",
+        "fold": "2",
         "weight": 1.0,
-        "name": "YOLOv11m_fold1"
+        "name": "YOLOv11n_fold2"
     }, 
     {
         "path": "/kaggle/input/rsna-yolo-models/yolo_11_m_fold3/weights/best.engine",
+        "fold": "3",
+        "weight": 1.0,
+        "name": "YOLOv11n_fold3"
+    },   
+    {
+        "path": "/kaggle/input/rsna-yolo-models/yolo_11_m_fold4/weights/best.engine",
         "fold": "4",
         "weight": 1.0,
-        "name": "mobile_net_more_negatives"
-    },   
-    #{
-    #    "path": "/kaggle/input/rsna-sergio-models/cv_y11m_with_mix_up_mosaic_fold2/weights/best.pt",
-    #    "fold": "2",
-    #    "weight": 1.0,
-    #    "name": "YOLOv11n_fold2"
-    #}
+        "name": "YOLOv11n_fold4"
+    }
 ]
 
 # ====================================================
@@ -213,56 +234,53 @@ YOLO_MODEL_CONFIGS = [
 YOLO_MODELS = []
 EFFNET_AUX_MODELS = []
 EFFNET_AUX_TRANSFORM = None
+_MODELS_LOADED = False
 
 CONVNEXT_AUX_LOSS_CKPTS = [
 
     
 ]
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.127992Z","iopub.execute_input":"2025-10-01T21:21:49.128204Z","iopub.status.idle":"2025-10-01T21:21:49.131358Z","shell.execute_reply.started":"2025-10-01T21:21:49.128183Z","shell.execute_reply":"2025-10-01T21:21:49.130657Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:14.045967Z","iopub.execute_input":"2025-10-06T17:26:14.046147Z","iopub.status.idle":"2025-10-06T17:26:14.063924Z","shell.execute_reply.started":"2025-10-06T17:26:14.046133Z","shell.execute_reply":"2025-10-06T17:26:14.063298Z"}}
 # !ls /kaggle/input/rsna-iad-modelzoo
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.217034Z","iopub.execute_input":"2025-10-01T21:21:49.217308Z","iopub.status.idle":"2025-10-01T21:21:49.223573Z","shell.execute_reply.started":"2025-10-01T21:21:49.217282Z","shell.execute_reply":"2025-10-01T21:21:49.222814Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:14.064502Z","iopub.execute_input":"2025-10-06T17:26:14.064744Z","iopub.status.idle":"2025-10-06T17:26:14.078372Z","shell.execute_reply.started":"2025-10-06T17:26:14.064728Z","shell.execute_reply":"2025-10-06T17:26:14.077878Z"}}
 
 def load_yolo_models():
-    """Load all YOLO models"""
+    """Load YOLO models with proper device assignment to avoid OOM"""
     models = []
-    for config in YOLO_MODEL_CONFIGS:
-        # YOLO automatically handles both .pt and .engine files
+    
+    num_gpus = torch.cuda.device_count()
+    
+    for idx, config in enumerate(YOLO_MODEL_CONFIGS):
+        device_id = 0
+        
         model = YOLO(config["path"], task='detect')
         
         model_dict = {
             "model": model,
             "weight": config["weight"],
             "name": config["name"],
-            "fold": config["fold"]
+            "fold": config["fold"],
+            "device": device_id  # Store assigned device
         }
         models.append(model_dict)
+    
     return models
 
 def load_all_models():
-    """Load all models (EfficientNet + YOLO)"""
-    global YOLO_MODELS, EFFNET_AUX_MODELS, EFFNET_AUX_TRANSFORM
-    
+    """Load all models with memory-efficient warmup"""
+    global YOLO_MODELS, EFFNET_AUX_MODELS, _MODELS_LOADED
 
-
+    if _MODELS_LOADED:
+        return
 
     # Load YOLO models
     YOLO_MODELS = load_yolo_models()
-    
-    # Initialize transforms
-    
-    # Warm up models
-    dummy_yolo_image = np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8)
 
-    
-    with torch.no_grad():
-        
-        for model_dict in YOLO_MODELS:
-            model = model_dict["model"]
-            _ = model.predict([dummy_yolo_image], verbose=False, device=device)
+    _MODELS_LOADED = True
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.224967Z","iopub.execute_input":"2025-10-01T21:21:49.225169Z","iopub.status.idle":"2025-10-01T21:21:49.243813Z","shell.execute_reply.started":"2025-10-01T21:21:49.225155Z","shell.execute_reply":"2025-10-01T21:21:49.243007Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:14.079180Z","iopub.execute_input":"2025-10-06T17:26:14.079727Z","iopub.status.idle":"2025-10-06T17:26:14.100575Z","shell.execute_reply.started":"2025-10-06T17:26:14.079690Z","shell.execute_reply":"2025-10-06T17:26:14.099916Z"}}
 
 
 ###
@@ -272,15 +290,15 @@ def aggregate_top3(confs: List[float]) -> float:
     if not confs:
         return 0.0
     arr = np.array(confs)
-    if len(arr) < 3:
+    if len(arr) < 1:
         return float(np.mean(arr))
-    top_3 = np.partition(arr, -3)[-3:]
+    top_3 = np.partition(arr, -1)[-1:]
     return float(np.mean(top_3))
 
 
 @torch.no_grad()
 def predict_yolo_ensemble(slices: List[np.ndarray]):
-    """Run YOLO inference using all models"""
+    """Run YOLO inference using all models with proper device management"""
     if not slices:
         return 0.1, np.ones(len(YOLO_LABELS)) * 0.1
     
@@ -291,6 +309,7 @@ def predict_yolo_ensemble(slices: List[np.ndarray]):
     for model_dict in YOLO_MODELS:
         model = model_dict["model"]
         weight = model_dict["weight"]
+        device_id = model_dict.get("device", 0)  # Get assigned device
         
         try:
             all_confs = []
@@ -299,13 +318,16 @@ def predict_yolo_ensemble(slices: List[np.ndarray]):
             # Process in batches
             for i in range(0, len(slices), BATCH_SIZE):
                 batch_slices = slices[i:i+BATCH_SIZE]
+                
                 with torch.no_grad():
                     results = model.predict(
                         batch_slices, 
-                        verbose=False, 
+                        verbose=False,
+                        imgsz=512,
                         batch=len(batch_slices), 
-                        device=device, 
-                        conf=0.01
+                        device=device_id, 
+                        conf=0.01,
+                        half=True
                     )
                     
                 for r in results:
@@ -332,28 +354,37 @@ def predict_yolo_ensemble(slices: List[np.ndarray]):
             per_class_agg = np.array([aggregate_top3(confs) if confs else 0.0 
                                       for confs in per_class_confs], dtype=np.float32)
             
+            print(model_dict["name"], per_class_agg)
             ensemble_cls_preds.append(agg_conf * weight)
             ensemble_loc_preds.append(per_class_agg * weight)
             total_weight += weight
             
+            # Clear cache after each model to free memory
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
         except Exception as e:
+            print(f"Error with model {model_dict['name']}: {e}")
             ensemble_cls_preds.append(0.1 * weight)
             ensemble_loc_preds.append(np.ones(len(YOLO_LABELS)) * 0.1 * weight)
             total_weight += weight
-    
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     if total_weight > 0:
         final_cls_pred = sum(ensemble_cls_preds) / total_weight
         final_loc_preds = sum(ensemble_loc_preds) / total_weight
     else:
         final_cls_pred = 0.1
         final_loc_preds = np.ones(len(YOLO_LABELS)) * 0.1
-    
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return final_cls_pred, final_loc_preds
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.244621Z","iopub.execute_input":"2025-10-01T21:21:49.244865Z","iopub.status.idle":"2025-10-01T21:21:49.261256Z","shell.execute_reply.started":"2025-10-01T21:21:49.244844Z","shell.execute_reply":"2025-10-01T21:21:49.260611Z"},"jupyter":{"outputs_hidden":false}}
-
-
-
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:14.101246Z","iopub.execute_input":"2025-10-06T17:26:14.101428Z","iopub.status.idle":"2025-10-06T17:26:14.118359Z","shell.execute_reply.started":"2025-10-06T17:26:14.101414Z","shell.execute_reply":"2025-10-06T17:26:14.117797Z"}}
 def process_dicom_for_yolo(series_path: str) -> List[np.ndarray]:
     """Process DICOM for YOLO with parallel processing"""
     series_path = Path(series_path)
@@ -373,7 +404,7 @@ def process_dicom_for_yolo(series_path: str) -> List[np.ndarray]:
     
     return all_slices
 
-# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-01T21:21:49.261975Z","iopub.execute_input":"2025-10-01T21:21:49.262172Z","iopub.status.idle":"2025-10-01T21:21:49.282583Z","shell.execute_reply.started":"2025-10-01T21:21:49.262157Z","shell.execute_reply":"2025-10-01T21:21:49.281966Z"}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:14.119191Z","iopub.execute_input":"2025-10-06T17:26:14.119392Z","iopub.status.idle":"2025-10-06T17:26:14.135860Z","shell.execute_reply.started":"2025-10-06T17:26:14.119376Z","shell.execute_reply":"2025-10-06T17:26:14.135131Z"}}
 
 def _predict_inner(series_path: str) -> pl.DataFrame:
     """Main ensemble prediction logic"""
@@ -393,15 +424,6 @@ def _predict_inner(series_path: str) -> pl.DataFrame:
         # Get YOLO predictions
         yolo_cls_pred, yolo_loc_preds = predict_yolo_ensemble(yolo_slices)
 
-        #generate eff preds match the label cols
-        # eff_full_preds = effnet_preds
-        # eff_full_preds = np.zeros(len(LABEL_COLS))
-        # for i, label in enumerate(EFF_LABELS):
-        #     if label in LABEL_COLS:
-        #         label_idx = LABEL_COLS.index(label)
-        #         eff_full_preds[label_idx] = effnet_preds[i]
-
-        #generate yolo preds match the label cols
         yolo_full_preds = np.zeros(len(LABEL_COLS))
         for i, label in enumerate(YOLO_LABELS):
             if label in LABEL_COLS:
@@ -420,7 +442,9 @@ def _predict_inner(series_path: str) -> pl.DataFrame:
         return predictions_df
         
     except Exception as e:
-        print(e)
+        print(f"Critical error in prediction: {e}")
+        # Reset models to force reload on next attempt
+        reset_models()
         # Return conservative predictions
         conservative_preds = [0.1] * len(LABEL_COLS)
         predictions_df = pl.DataFrame(
@@ -452,16 +476,17 @@ def predict(series_path: str) -> pl.DataFrame:
         shared_dir = '/kaggle/shared'
         shutil.rmtree(shared_dir, ignore_errors=True)
         os.makedirs(shared_dir, exist_ok=True)
-        
-        # Memory cleanup
+
+        # Aggressive memory cleanup
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
         gc.collect()
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.284054Z","iopub.execute_input":"2025-10-01T21:21:49.284247Z","iopub.status.idle":"2025-10-01T21:21:49.299796Z","shell.execute_reply.started":"2025-10-01T21:21:49.284232Z","shell.execute_reply":"2025-10-01T21:21:49.299244Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:14.136629Z","iopub.execute_input":"2025-10-06T17:26:14.136857Z","iopub.status.idle":"2025-10-06T17:26:14.155081Z","shell.execute_reply.started":"2025-10-06T17:26:14.136838Z","shell.execute_reply":"2025-10-06T17:26:14.154588Z"}}
 # _predict_inner("/kaggle/input/rsna-intracranial-aneurysm-detection/series/1.2.826.0.1.3680043.8.498.10023411164590664678534044036963716636")
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:21:49.300377Z","iopub.execute_input":"2025-10-01T21:21:49.300544Z","iopub.status.idle":"2025-10-01T21:23:06.410319Z","shell.execute_reply.started":"2025-10-01T21:21:49.300529Z","shell.execute_reply":"2025-10-01T21:23:06.409690Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:14.155734Z","iopub.execute_input":"2025-10-06T17:26:14.155926Z","iopub.status.idle":"2025-10-06T17:26:49.787248Z","shell.execute_reply.started":"2025-10-06T17:26:14.155906Z","shell.execute_reply":"2025-10-06T17:26:49.786378Z"}}
 if __name__ == "__main__":
     start_time = time.time()
     
@@ -481,5 +506,5 @@ if __name__ == "__main__":
     
     print(f"Total execution time: {time.time() - start_time:.2f} seconds")
 
-# %% [code] {"execution":{"iopub.status.busy":"2025-10-01T21:23:06.410989Z","iopub.execute_input":"2025-10-01T21:23:06.411231Z","iopub.status.idle":"2025-10-01T21:23:06.414542Z","shell.execute_reply.started":"2025-10-01T21:23:06.411214Z","shell.execute_reply":"2025-10-01T21:23:06.413848Z"},"jupyter":{"outputs_hidden":false}}
+# %% [code] {"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2025-10-06T17:26:49.788125Z","iopub.execute_input":"2025-10-06T17:26:49.788369Z","iopub.status.idle":"2025-10-06T17:26:49.792430Z","shell.execute_reply.started":"2025-10-06T17:26:49.788340Z","shell.execute_reply":"2025-10-06T17:26:49.791851Z"}}
 # !ls /kaggle/input/rsna-iad-modelzoo

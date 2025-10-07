@@ -105,7 +105,7 @@ def parse_args():
     ap.add_argument(
         "--neg-per-series",
         type=int,
-        default=10,
+        default=0,
         help="Number of negative slices to sample per series without positives.",
     )
     # YAML outputs

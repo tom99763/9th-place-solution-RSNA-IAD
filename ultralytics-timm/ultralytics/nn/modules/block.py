@@ -2090,7 +2090,7 @@ class Timm(nn.Module):
 
     def forward(self, x):
         """Forward pass through the model with ImageNet normalization."""
-        x = (x - self.mean) / self.std
+        #x = (x - self.mean) / self.std
         y = self.m(x)
         if not self.unwrap:
             return y 
