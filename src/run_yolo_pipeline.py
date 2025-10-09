@@ -180,6 +180,7 @@ def run():
             '--batch-size', str(args.val_batch),
             '--slice-step', str(args.slice_step),
             '--img-size', str(args.img),
+            '--rgb-mode', 
         ]
         if args.max_slices:
             cmd += ['--max-slices', str(args.max_slices)]

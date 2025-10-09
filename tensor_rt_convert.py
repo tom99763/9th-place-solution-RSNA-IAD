@@ -6,7 +6,7 @@ sys.path.insert(0, "ultralytics-timm")
 from ultralytics import YOLO
 
 # Load the YOLO11 model
-model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo_11_m_fold4/weights/best.pt"
+model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_positive_only/cv_effnetv2s_v2_drop_path_25d_fold0/weights/best.pt"
 model = YOLO(model_path)
 
 # Export the model to TensorRT format

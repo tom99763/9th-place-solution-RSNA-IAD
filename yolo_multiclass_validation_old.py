@@ -1,8 +1,8 @@
 """Validate a 13-class YOLO aneurysm detector at series level.
 
 Preprocessing:
-    - DICOM -> HU -> per-slice min-max -> uint8 (BGR for YOLO inference)
-    - BGR mode: stacks 3 consecutive slices [i-1, i, i+1] as 3-channel images
+    - DICOM -> HU -> per-slice min-max -> uint8 (rgb for YOLO inference)
+    - rgb mode: stacks 3 consecutive slices [i-1, i, i+1] as 3-channel images
 
 Series scores:
     - Aneurysm Present = max detection confidence across ALL 13 classes over processed slices/MIP windows
@@ -15,7 +15,6 @@ Outputs:
 
 Notes:
     - Requires ultralytics (YOLOv8/11) and 13-class weights.
-    - Use --mip-window > 0 for sliding-window MIPs; 0 for per-slice; --bgr-mode for 3-slice stacking.
 """
 import argparse
 from pathlib import Path
@@ -68,8 +67,8 @@ def parse_args():
     ap.add_argument('--wandb-group', type=str, default='', help='Optional W&B group')
     ap.add_argument('--wandb-tags', type=str, default='', help='Comma-separated W&B tags')
     ap.add_argument('--wandb-mode', type=str, default='online', choices=['online', 'offline'], help='W&B mode (online/offline)')
-    ap.add_argument('--bgr-mode', action='store_true', help='Use BGR mode (3-channel images from stacked slices)')
-    ap.add_argument('--bgr-non-overlapping', action='store_true', help='Use non-overlapping 3-slice windows in BGR mode (e.g., [1,2,3],[4,5,6],[7,8,9])')
+    ap.add_argument('--rgb-mode', action='store_true', help='Use rgb mode (3-channel images from stacked slices)')
+    ap.add_argument('--rgb-non-overlapping', action='store_true', help='Use non-overlapping 3-slice windows in rgb mode (e.g., [1,2,3],[4,5,6],[7,8,9])')
     ap.add_argument('--wandb-resume-id', type=str, default='', help='Resume W&B run id (optional)')
     ap.add_argument('--single-cls', action='store_true', help='Single class mode: only classify aneurysm present/absent (no location prediction)')
     return ap.parse_args()
@@ -88,7 +87,7 @@ def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
         # RGB or multi-frame
         if pix.shape[-1] == 3 and pix.shape[0] != 3:
             try:
-                gray = cv2.cvtColor(pix.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+                gray = cv2.cvtColor(pix.astype(np.uint8), cv2.COLOR_rgb2GRAY).astype(np.float32)
             except Exception:
                 gray = pix[..., 0].astype(np.float32)
             frames.append(gray * slope + intercept)
@@ -107,8 +106,49 @@ def min_max_normalize(img: np.ndarray) -> np.ndarray:
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
 
 
-def collect_series_slices(series_dir: Path) -> List[Path]:
-    return sorted(series_dir.glob('*.dcm'))
+def ordered_dcm_paths(series_dir: Path) -> Tuple[List[Path], Dict[str, int]]:
+    """Collect all DICOM files in series directory and sort by spatial position."""
+    dicom_files = list(series_dir.glob("*.dcm"))
+    
+    if not dicom_files:
+        return [], {}
+    
+    # First pass: collect all slices with their spatial information
+    temp_slices = []
+    for filepath in dicom_files:
+        try:
+            ds = pydicom.dcmread(str(filepath), stop_before_pixels=True)
+            
+            # Priority order for sorting: SliceLocation > ImagePositionPatient > InstanceNumber
+            if hasattr(ds, "SliceLocation"):
+                # SliceLocation is the most reliable for slice ordering
+                sort_val = float(ds.SliceLocation)
+            elif hasattr(ds, "ImagePositionPatient") and len(ds.ImagePositionPatient) >= 3:
+                # Fallback to z-coordinate from ImagePositionPatient
+                sort_val = float(ds.ImagePositionPatient[-1])
+            else:
+                # Final fallback to InstanceNumber
+                sort_val = float(getattr(ds, "InstanceNumber", 0))
+            
+            # Store filepath with its sort value
+            temp_slices.append((sort_val, filepath))
+            
+        except Exception as e:
+            # Fallback: use filename as last resort
+            temp_slices.append((str(filepath.name), filepath))
+            continue
+    
+    if not temp_slices:
+        return [], {}
+    
+    # Sort slices by the determined sort value (spatial order)
+    temp_slices.sort(key=lambda x: x[0])
+    
+    # Extract the sorted filepaths
+    sorted_files = [item[1] for item in temp_slices]
+    sop_to_idx = {p.stem: i for i, p in enumerate(sorted_files)}
+    return sorted_files, sop_to_idx
+
 
 
 def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_id: int) -> Tuple[Dict[str, float], pd.DataFrame]:
@@ -193,7 +233,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
             if args.verbose:
                 print(f"[MISS] {sid} (no directory)")
             continue
-        dicoms = collect_series_slices(series_dir)
+        dicoms, sop_to_idx = ordered_dcm_paths(series_dir)
         if not dicoms:
             if args.verbose:
                 print(f"[EMPTY] {sid}")
@@ -305,8 +345,8 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     flush_batch(batch)
                     batch.clear()
             flush_batch(batch)
-        elif getattr(args, 'bgr_mode', False):
-            # BGR mode: stack 3 consecutive slices as channels
+        elif getattr(args, 'rgb_mode', False):
+            # rgb mode: stack 3 consecutive slices as channels
             slices_hu: list[np.ndarray] = []
             for dcm_path in dicoms:
                 try:
@@ -320,14 +360,16 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     slices_hu.append(f)
 
             if len(slices_hu) < 3:
-                # Not enough slices for BGR mode, skip this series
+                print("Not enough slices for rgb mode, skip this series")
+                # Not enough slices for rgb mode, skip this series
                 series_probs[sid] = 0.0
                 series_pred_loc_probs.append(np.zeros(N_LOC, dtype=np.float32))
                 series_pred_counts[sid] = 0
                 continue
 
-            if getattr(args, 'bgr_non_overlapping', False):
+            if getattr(args, 'rgb_non_overlapping', False):
                 # Non-overlapping 3-slice windows: [0,1,2], [3,4,5], [6,7,8], etc.
+                # This creates a sliding window that processes all slices with stride=3
                 window_starts = list(range(0, len(slices_hu) - 2, 3))  # Start every 3 slices, ensure we have at least 3 slices
                 if args.max_slices and len(window_starts) > args.max_slices:
                     window_starts = window_starts[:args.max_slices]
@@ -348,20 +390,21 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                         processed_slices.append(slice_u8)
 
                     # Stack as 3-channel image
-                    bgr_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
+                    rgb_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
 
                     # Resize if needed
-                    if args.img_size > 0 and (bgr_img.shape[0] != args.img_size or bgr_img.shape[1] != args.img_size):
-                        bgr_img = cv2.resize(bgr_img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                    if args.img_size > 0 and (rgb_img.shape[0] != args.img_size or rgb_img.shape[1] != args.img_size):
+                        rgb_img = cv2.resize(rgb_img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
 
-                    batch.append(bgr_img)
+                    batch.append(rgb_img)
                     if len(batch) >= args.batch_size:
                         flush_batch(batch)
                         batch.clear()
             else:
-                # Original overlapping BGR mode: [i-1,i,i+1] for each i
+                # Overlapping sliding window rgb mode: [i-1,i,i+1] for each i
+                # This creates a dense sliding window that processes all slices with configurable stride
                 step = max(1, args.slice_step)
-                slice_indices = list(range(0, len(slices_hu), step))
+                slice_indices = list(range(1, len(slices_hu)-1, step))
                 if args.max_slices and len(slice_indices) > args.max_slices:
                     slice_indices = slice_indices[:args.max_slices]
 
@@ -392,13 +435,13 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                         processed_slices.append(slice_u8)
 
                     # Stack as 3-channel image
-                    bgr_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
+                    rgb_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
 
                     # Resize if needed
-                    if args.img_size > 0 and (bgr_img.shape[0] != args.img_size or bgr_img.shape[1] != args.img_size):
-                        bgr_img = cv2.resize(bgr_img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                    if args.img_size > 0 and (rgb_img.shape[0] != args.img_size or rgb_img.shape[1] != args.img_size):
+                        rgb_img = cv2.resize(rgb_img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
 
-                    batch.append(bgr_img)
+                    batch.append(rgb_img)
                     if len(batch) >= args.batch_size:
                         flush_batch(batch)
                         batch.clear()
@@ -417,7 +460,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     if args.img_size > 0 and (img_uint8.shape[0] != args.img_size or img_uint8.shape[1] != args.img_size):
                         img_uint8 = cv2.resize(img_uint8, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                     if img_uint8.ndim == 2:
-                        img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
+                        img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2rgb)
                     batch.append(img_uint8)
                     if len(batch) >= args.batch_size:
                         flush_batch(batch)
@@ -606,8 +649,8 @@ def _maybe_init_wandb(args: argparse.Namespace, fold_id: int, weights_path: str)
         'mip_window': args.mip_window,
         'img_size': args.img_size,
         'mip_no_overlap': args.mip_no_overlap,
-        'bgr_mode': args.bgr_mode,
-        'bgr_non_overlapping': args.bgr_non_overlapping,
+        'rgb_mode': args.rgb_mode,
+        'rgb_non_overlapping': args.rgb_non_overlapping,
         'batch_size': args.batch_size,
         'series_limit': args.series_limit,
         'max_slices': args.max_slices,
