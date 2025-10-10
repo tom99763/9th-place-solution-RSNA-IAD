@@ -4,7 +4,7 @@ scales:
 
 backbone:
   # 0: full convnextv2_nano outputs
-  - [-1, 1, Timm, [768, 'convnextv2_tiny.fcmae_ft_in22k_in1k', True, True, 0, True, 0.2]]
+  - [-1, 1, Timm, [768, 'convnext_tiny.in12k_ft_in1k', True, True, 0, True, 0.2]]
   # use layers 1, 2, 3 from the backbone:
   - [0, 1, Index, [192, 1]]   # P3 → 192 ch @ 80×80 (for 640×640 input)
   - [0, 1, Index, [384, 2]]   # P4 → 384 ch @ 40×40
