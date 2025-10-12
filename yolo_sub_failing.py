@@ -62,7 +62,6 @@ DEBUG = False
 ENABLE_WARMUP = False
 
 # %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:15.951791Z","iopub.status.busy":"2025-10-12T08:00:15.951246Z","iopub.status.idle":"2025-10-12T08:00:15.957192Z","shell.execute_reply":"2025-10-12T08:00:15.956669Z"},"jupyter":{"outputs_hidden":false},"papermill":{"duration":0.013486,"end_time":"2025-10-12T08:00:15.958135","exception":false,"start_time":"2025-10-12T08:00:15.944649","status":"completed"},"tags":[]}
-
 # Optimization settings
 torch.set_float32_matmul_precision('medium')
 torch.backends.cudnn.benchmark = True
@@ -254,6 +253,26 @@ class FlayerDICOMPreprocessor:
             else:
                 return np.zeros_like(img, dtype=np.uint8)
     
+    def apply_windowing_or_normalize_vectorized(self, volume: np.ndarray, center: Optional[float], width: Optional[float]) -> np.ndarray:
+        """
+        Vectorized windowing/normalization for entire volume
+        """
+        # For MR or if windowing is not applied, use statistical normalization
+        p1, p99 = np.percentile(volume, [1, 99])
+        
+        if p99 > p1:
+            normalized = np.clip(volume, p1, p99)
+            normalized = (normalized - p1) / (p99 - p1 + 1e-6)
+            return (normalized * 255).astype(np.uint8)
+        else:
+            # Fallback: min-max normalization
+            vol_min, vol_max = volume.min(), volume.max()
+            if vol_max > vol_min:
+                normalized = (volume - vol_min) / (vol_max - vol_min + 1e-6)
+                return (normalized * 255).astype(np.uint8)
+            else:
+                return np.zeros_like(volume, dtype=np.uint8)
+    
     
     def extract_pixel_array(self, ds: pydicom.Dataset) -> np.ndarray:
         """
@@ -362,17 +381,9 @@ class FlayerDICOMPreprocessor:
             volume = volume * float(slope) + float(intercept)
             # #print(f"Applied rescaling: slope={slope}, intercept={intercept}")
         
-        # Get windowing settings
+        # Get windowing settings and apply vectorized windowing
         window_center, window_width = self.get_windowing_params(ds)
-        
-        # Apply windowing to each slice
-        processed_slices = []
-        for i in range(volume.shape[0]):
-            slice_img = volume[i]
-            processed_img = self.apply_windowing_or_normalize(slice_img, window_center, window_width)
-            processed_slices.append(processed_img)
-        
-        volume = np.stack(processed_slices, axis=0)
+        volume = self.apply_windowing_or_normalize_vectorized(volume, window_center, window_width)
         ##print(f"3D volume shape after windowing: {volume.shape}")
         
         # 3D resize
@@ -407,8 +418,6 @@ class FlayerDICOMPreprocessor:
         return final_volume
 
 # %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.00351Z","iopub.status.busy":"2025-10-12T08:00:16.003249Z","iopub.status.idle":"2025-10-12T08:00:16.013771Z","shell.execute_reply":"2025-10-12T08:00:16.013198Z"},"jupyter":{"outputs_hidden":false},"papermill":{"duration":0.017305,"end_time":"2025-10-12T08:00:16.014831","exception":false,"start_time":"2025-10-12T08:00:15.997526","status":"completed"},"tags":[]}
-
-
 # ====================================================
 # YOLO DICOM Processing
 # ====================================================
@@ -505,311 +514,6 @@ def collect_series_slices_sorted(series_dir: Path) -> List[Path]:
 def collect_series_slices(series_dir: Path) -> List[Path]:
     """Collect all DICOM files in a series directory (recursively) - legacy function."""
     return collect_series_slices_sorted(series_dir)
-
-# ====================================================
-# Unified DICOM Processing (Optimization)
-# ====================================================
-class UnifiedDICOMProcessor:
-    """
-    Unified DICOM processor that loads DICOMs once and processes for both YOLO and Flayer models.
-    This eliminates the major bottleneck of loading DICOMs twice.
-    """
-    
-    def __init__(self, flayer_target_shape: Tuple[int, int, int] = (64, 448, 448)):
-        self.flayer_preprocessor = FlayerDICOMPreprocessor(target_shape=flayer_target_shape)
-        
-    def _load_dicom_data_once(self, series_path: str) -> Tuple[List[Path], Dict[str, np.ndarray]]:
-        """Load all DICOM files once into memory"""
-        series_path = Path(series_path)
-        dicom_files = collect_series_slices_sorted(series_path)
-        
-        if not dicom_files:
-            raise ValueError(f"No DICOM files found in {series_path}")
-        
-        # Load pixel arrays once without caching (since series are always different)
-        pixel_data = {}
-        
-        # Use parallel loading for better performance
-        def load_single_dicom(dcm_path):
-            try:
-                # Try dicomsdl first for speed
-                arr = None
-                if HAS_DICOMSDL and dicom_sdl is not None:
-                    try:
-                        d = dicom_sdl.open(str(dcm_path))
-                        pix = d.pixelData() if hasattr(d, 'pixelData') else d.getPixelData()
-                        arr = np.asarray(pix)
-                    except Exception:
-                        arr = None
-                
-                # Fallback to pydicom
-                if arr is None:
-                    ds = pydicom.dcmread(str(dcm_path), force=True)
-                    arr = ds.pixel_array
-                
-                return str(dcm_path), arr
-            except Exception as e:
-                if DEBUG: print(f"Failed to load {dcm_path}: {e}")
-                return str(dcm_path), None
-        
-        # Load in parallel for speed
-        with ThreadPoolExecutor(max_workers=min(4, len(dicom_files))) as executor:
-            futures = [executor.submit(load_single_dicom, dcm_path) for dcm_path in dicom_files]
-            
-            for future in futures:
-                try:
-                    path, arr = future.result()
-                    if arr is not None:
-                        pixel_data[path] = arr
-                except Exception:
-                    continue
-                
-        return dicom_files, pixel_data
-    
-    def _process_for_yolo_from_cache(self, dicom_files: List[Path], pixel_cache: Dict[str, np.ndarray], mode: str = "2.5D") -> List[np.ndarray]:
-        """Process cached pixel arrays for YOLO inference"""
-        if mode == "2D":
-            all_slices = []
-            for dcm_path in dicom_files:
-                try:
-                    arr = pixel_cache.get(str(dcm_path))
-                    if arr is None:
-                        continue
-                        
-                    # Apply HU conversion
-                    ds_meta = pydicom.dcmread(str(dcm_path), stop_before_pixels=True, force=True)
-                    slope = float(getattr(ds_meta, 'RescaleSlope', 1.0))
-                    intercept = float(getattr(ds_meta, 'RescaleIntercept', 0.0))
-                    
-                    frames = self._extract_frames_from_array(arr, slope, intercept)
-                    for frame in frames:
-                        img_u8 = min_max_normalize(frame)
-                        if img_u8.ndim == 2:
-                            img_u8 = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)  # Convert to RGB for 2D
-                        all_slices.append(img_u8)
-                except Exception as e:
-                    if DEBUG: print(f"Error processing {dcm_path} for YOLO 2D: {e}")
-                    continue
-            return all_slices
-        
-        elif mode == "2.5D":
-            # Extract all frames first
-            all_frames = []
-            for dcm_path in dicom_files:
-                try:
-                    arr = pixel_cache.get(str(dcm_path))
-                    if arr is None:
-                        continue
-                        
-                    ds_meta = pydicom.dcmread(str(dcm_path), stop_before_pixels=True, force=True)
-                    slope = float(getattr(ds_meta, 'RescaleSlope', 1.0))
-                    intercept = float(getattr(ds_meta, 'RescaleIntercept', 0.0))
-                    
-                    frames = self._extract_frames_from_array(arr, slope, intercept)
-                    for frame in frames:
-                        img_u8 = min_max_normalize(frame)
-                        all_frames.append(img_u8)
-                except Exception as e:
-                    if DEBUG: print(f"Error processing {dcm_path} for YOLO 2.5D: {e}")
-                    continue
-            
-            if len(all_frames) < 3:
-                if DEBUG: print(f"Warning: Only {len(all_frames)} frames available, need at least 3 for 2.5D")
-                return all_frames
-            
-            # Create 2.5D RGB triplets
-            rgb_slices = []
-            for i in range(1, len(all_frames) - 1):
-                try:
-                    prev_frame = all_frames[i-1]
-                    curr_frame = all_frames[i]
-                    next_frame = all_frames[i+1]
-                    
-                    if not (prev_frame.shape == curr_frame.shape == next_frame.shape):
-                        continue
-                    
-                    rgb_img = np.stack([prev_frame, curr_frame, next_frame], axis=-1)
-                    if rgb_img.shape[-1] == 3 and rgb_img.ndim == 3:
-                        rgb_slices.append(rgb_img)
-                except Exception as e:
-                    if DEBUG: print(f"Error creating RGB triplet at index {i}: {e}")
-                    continue
-            
-            return rgb_slices if rgb_slices else all_frames
-        
-        else:
-            raise ValueError(f"Unsupported YOLO mode: {mode}")
-    
-    def _extract_frames_from_array(self, arr: np.ndarray, slope: float, intercept: float) -> List[np.ndarray]:
-        """Extract frames from pixel array and apply HU conversion"""
-        frames = []
-        
-        if arr.ndim == 2:
-            img = arr.astype(np.float32)
-            frames.append(img * slope + intercept)
-        elif arr.ndim == 3:
-            if arr.shape[-1] == 3 and (arr.shape[0] != 3 or arr.shape[1] != 3):
-                # RGB image, convert to grayscale
-                try:
-                    gray = cv2.cvtColor(arr.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
-                except Exception:
-                    gray = arr[..., 0].astype(np.float32)
-                frames.append(gray * slope + intercept)
-            else:
-                # Multi-frame volume
-                for i in range(arr.shape[0]):
-                    frame = arr[i].astype(np.float32)
-                    frames.append(frame * slope + intercept)
-        
-        return frames
-    
-    def _process_for_flayer_from_cache(self, series_path: str, dicom_files: List[Path], pixel_cache: Dict[str, np.ndarray]) -> np.ndarray:
-        """Process cached pixel arrays for Flayer inference"""
-        try:
-            # Use existing Flayer preprocessing but with cached data
-            # We need to create fake datasets with cached pixel arrays
-            datasets = []
-            for dcm_path in dicom_files:
-                try:
-                    ds = pydicom.dcmread(str(dcm_path), force=True)
-                    # Replace pixel_array with cached version if available
-                    cached_arr = pixel_cache.get(str(dcm_path))
-                    if cached_arr is not None:
-                        # Create a custom attribute to store cached array
-                        ds._cached_pixel_array = cached_arr
-                    datasets.append(ds)
-                except Exception as e:
-                    if DEBUG: print(f"Error loading dataset {dcm_path}: {e}")
-                    continue
-            
-            if not datasets:
-                raise ValueError(f"No valid datasets loaded from {series_path}")
-            
-            # Check if single 3D or multiple 2D
-            first_ds = datasets[0]
-            first_arr = getattr(first_ds, '_cached_pixel_array', None)
-            if first_arr is None:
-                first_arr = first_ds.pixel_array
-            
-            nframes = int(getattr(first_ds, 'NumberOfFrames', 0) or 0)
-            if first_arr is not None and first_arr.ndim == 3 and not (first_arr.shape[-1] == 3 and (first_arr.shape[0] != 3 or first_arr.shape[1] != 3)):
-                nframes = first_arr.shape[0]
-            
-            if len(datasets) == 1 and nframes > 1:
-                return self._process_single_3d_cached(first_ds)
-            else:
-                return self._process_multiple_2d_cached(datasets)
-                
-        except Exception as e:
-            if DEBUG: print(f"Error in Flayer processing: {e}")
-            # Fallback to original method
-            return self.flayer_preprocessor.process_series(series_path)
-    
-    def _process_single_3d_cached(self, ds: pydicom.Dataset) -> np.ndarray:
-        """Process single 3D DICOM with cached data"""
-        # Get cached array or fallback to original
-        volume = getattr(ds, '_cached_pixel_array', None)
-        if volume is None:
-            volume = ds.pixel_array
-        volume = volume.astype(np.float32)
-        
-        # Apply slope/intercept
-        slope = getattr(ds, 'RescaleSlope', 1)
-        intercept = getattr(ds, 'RescaleIntercept', 0)
-        if slope != 1 or intercept != 0:
-            volume = volume * float(slope) + float(intercept)
-        
-        # Apply windowing
-        window_center, window_width = self.flayer_preprocessor.get_windowing_params(ds)
-        processed_slices = []
-        for i in range(volume.shape[0]):
-            slice_img = volume[i]
-            processed_img = self.flayer_preprocessor.apply_windowing_or_normalize(slice_img, window_center, window_width)
-            processed_slices.append(processed_img)
-        
-        volume = np.stack(processed_slices, axis=0)
-        return self.flayer_preprocessor.resize_volume_3d(volume)
-    
-    def _process_multiple_2d_cached(self, datasets: List[pydicom.Dataset]) -> np.ndarray:
-        """Process multiple 2D DICOMs with cached data"""
-        slice_info = self.flayer_preprocessor.extract_slice_info(datasets)
-        sorted_slices = self.flayer_preprocessor.sort_slices_by_position(slice_info)
-        
-        processed_slices = []
-        first_processed = False
-        window_center, window_width = None, None
-        
-        for slice_data in sorted_slices:
-            ds = slice_data['dataset']
-            
-            # Use cached array if available
-            cached_arr = getattr(ds, '_cached_pixel_array', None)
-            if cached_arr is not None:
-                img = self._extract_2d_from_cached_array(cached_arr, ds)
-            else:
-                img = self.flayer_preprocessor.extract_pixel_array(ds)
-            
-            # Get windowing params from first slice
-            if not first_processed:
-                window_center, window_width = self.flayer_preprocessor.get_windowing_params(ds, img)
-                first_processed = True
-            
-            processed_img = self.flayer_preprocessor.apply_windowing_or_normalize(img, window_center, window_width)
-            resized_img = cv2.resize(processed_img, (self.flayer_preprocessor.target_width, self.flayer_preprocessor.target_height))
-            processed_slices.append(resized_img)
-        
-        volume = np.stack(processed_slices, axis=0)
-        return self.flayer_preprocessor.resize_volume_3d(volume)
-    
-    def _extract_2d_from_cached_array(self, arr: np.ndarray, ds: pydicom.Dataset) -> np.ndarray:
-        """Extract 2D image from cached array similar to FlayerDICOMPreprocessor.extract_pixel_array"""
-        img = None
-        
-        # Handle RGB case
-        if arr.ndim == 3 and arr.shape[-1] == 3 and (arr.shape[0] != 3 or arr.shape[1] != 3):
-            try:
-                img = cv2.cvtColor(arr.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
-            except Exception:
-                img = arr[..., 0].astype(np.float32)
-        elif arr.ndim == 3:
-            # Multi-frame: take middle frame
-            frame_idx = arr.shape[0] // 2
-            img = arr[frame_idx].astype(np.float32)
-        else:
-            img = arr.astype(np.float32)
-        
-        # Apply slope/intercept
-        slope = getattr(ds, 'RescaleSlope', 1)
-        intercept = getattr(ds, 'RescaleIntercept', 0)
-        if slope != 1 or intercept != 0:
-            img = img * float(slope) + float(intercept)
-        
-        return img
-    
-    def process_series_unified(self, series_path: str, yolo_mode: str = "2.5D") -> Tuple[List[np.ndarray], np.ndarray]:
-        """
-        Main unified processing function.
-        Returns: (yolo_slices, flayer_volume)
-        """
-        try:
-            # Load DICOMs once
-            dicom_files, pixel_cache = self._load_dicom_data_once(series_path)
-            
-            # Process for both models using cached data
-            yolo_slices = self._process_for_yolo_from_cache(dicom_files, pixel_cache, yolo_mode)
-            flayer_volume = self._process_for_flayer_from_cache(series_path, dicom_files, pixel_cache)
-            
-            return yolo_slices, flayer_volume
-            
-        except Exception as e:
-            if DEBUG: print(f"Error in unified processing: {e}")
-            # Fallback to original separate processing
-            yolo_slices = process_dicom_for_yolo(series_path, yolo_mode)
-            flayer_volume = process_dicom_series_for_flayer(series_path, self.flayer_preprocessor.target_shape)
-            return yolo_slices, flayer_volume
-
-# Global unified processor instance
-UNIFIED_PROCESSOR = None
 
 # %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.025643Z","iopub.status.busy":"2025-10-12T08:00:16.025381Z","iopub.status.idle":"2025-10-12T08:00:16.033364Z","shell.execute_reply":"2025-10-12T08:00:16.03266Z"},"jupyter":{"outputs_hidden":false},"papermill":{"duration":0.014712,"end_time":"2025-10-12T08:00:16.034415","exception":false,"start_time":"2025-10-12T08:00:16.019703","status":"completed"},"tags":[]}
 # ====================================================
@@ -1122,7 +826,6 @@ def load_flayer_models():
           f"from {len(model_dirs)} dirs, folds: {list(FLAYER_CFG.trn_fold)}.")
 
 # %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.072204Z","iopub.status.busy":"2025-10-12T08:00:16.071998Z","iopub.status.idle":"2025-10-12T08:00:16.076169Z","shell.execute_reply":"2025-10-12T08:00:16.075689Z"},"jupyter":{"outputs_hidden":false},"papermill":{"duration":0.010659,"end_time":"2025-10-12T08:00:16.077212","exception":false,"start_time":"2025-10-12T08:00:16.066553","status":"completed"},"tags":[]}
-
 def load_yolo_models():
     models = []
     
@@ -1143,36 +846,15 @@ def load_yolo_models():
     return models
 
 def load_all_models():
-    """Load all models (EfficientNet + YOLO) with optimization"""
-    global YOLO_MODELS, FLAYER_MODELS, UNIFIED_PROCESSOR
+    """Load all models (EfficientNet + YOLO)"""
+    global YOLO_MODELS, FLAYER_MODELS
     
-    if DEBUG: print("Loading all models at startup...")
-    start_time = time.time()
-    
+
     # Load YOLO models
-    if not YOLO_MODELS:
-        YOLO_MODELS = load_yolo_models()
-        if DEBUG: print(f"Loaded {len(YOLO_MODELS)} YOLO models")
+    YOLO_MODELS = load_yolo_models()
     
-    # Load Flayer models
     if not FLAYER_MODELS:
         load_flayer_models()
-        if DEBUG: print(f"Loaded {len(FLAYER_MODELS)} Flayer models")
-    
-    # Initialize unified processor
-    if UNIFIED_PROCESSOR is None:
-        UNIFIED_PROCESSOR = UnifiedDICOMProcessor(FLAYER_CFG.target_shape)
-        if DEBUG: print("Initialized unified DICOM processor")
-    
-    if DEBUG: print(f"Model loading completed in {time.time() - start_time:.2f}s")
-
-def ensure_models_loaded():
-    """Ensure models are loaded, with fallback for lazy loading"""
-    global YOLO_MODELS, FLAYER_MODELS, UNIFIED_PROCESSOR
-    
-    if not YOLO_MODELS or not FLAYER_MODELS or UNIFIED_PROCESSOR is None:
-        if DEBUG: print("Models not pre-loaded, loading now...")
-        load_all_models()
 
 # %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.088146Z","iopub.status.busy":"2025-10-12T08:00:16.087941Z","iopub.status.idle":"2025-10-12T08:00:16.102992Z","shell.execute_reply":"2025-10-12T08:00:16.10249Z"},"jupyter":{"outputs_hidden":false},"papermill":{"duration":0.021754,"end_time":"2025-10-12T08:00:16.104006","exception":false,"start_time":"2025-10-12T08:00:16.082252","status":"completed"},"tags":[]}
 #ytt avg then sigmoid 
@@ -1265,40 +947,31 @@ def predict_flayer_ensemble(image: np.ndarray) -> np.ndarray:
 
 @torch.no_grad()
 def predict_yolo_ensemble(slices: List[np.ndarray]):
-    """Run YOLO inference using all models with optimized memory usage"""
+    """Run YOLO inference using all models"""
     if not slices:
-        return 0.1, np.ones(len(YOLO_LABELS), dtype=np.float32) * 0.1
+        return 0.1, np.ones(len(YOLO_LABELS)) * 0.1
 
-    # Pre-allocate arrays for better memory efficiency
+    ensemble_cls_preds = []
     ensemble_loc_preds = []
     total_weight = 0.0
-    
-    # Pre-allocate per-class max array once
-    per_class_max = np.zeros(len(YOLO_LABELS), dtype=np.float32)
     
     for fold_id, model_dict in enumerate(YOLO_MODELS):
         model = model_dict["model"]
         weight = model_dict["weight"]
         model_name = model_dict['name']
         mode = model_dict.get('mode', '2.5D')  
-        device_id = model_dict.get("device", 0)
+        device_id = model_dict.get("device", 0)  # Get assigned device
+        
         
         try:
-            # Reset per-class max for this model (reuse array)
-            per_class_max.fill(0.0)
+            max_conf_all = 0.0
+            per_class_max = np.zeros(len(YOLO_LABELS), dtype=np.float32)
             
-            # Optimize batch processing - avoid unnecessary padding
-            optimal_batch_size = min(BATCH_SIZE, len(slices))
-            
-            # Process in optimized batches
-            for i in range(0, len(slices), optimal_batch_size):
-                batch_slices = slices[i:i+optimal_batch_size]
-                
-                # Only pad if necessary and batch is significantly small
-                if len(batch_slices) < optimal_batch_size // 2 and len(batch_slices) < 16:
-                    # Use more efficient padding strategy
-                    padding_needed = optimal_batch_size - len(batch_slices)
-                    batch_slices = batch_slices + [batch_slices[-1]] * padding_needed
+            # Process in batches
+            for i in range(0, len(slices), BATCH_SIZE):
+                batch_slices = slices[i:i+BATCH_SIZE]
+                if (len(batch_slices) < 32): #and (model_name == 'effv2s'):
+                    batch_slices += [batch_slices[0]] * (32 - len(batch_slices))
                 
                 with torch.no_grad():
                     results = model.predict(
@@ -1351,12 +1024,10 @@ def predict_yolo_ensemble(slices: List[np.ndarray]):
     return final_cls_pred, final_loc_preds
 
 # %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.114998Z","iopub.status.busy":"2025-10-12T08:00:16.114816Z","iopub.status.idle":"2025-10-12T08:00:16.123569Z","shell.execute_reply":"2025-10-12T08:00:16.12305Z"},"jupyter":{"outputs_hidden":false},"papermill":{"duration":0.015572,"end_time":"2025-10-12T08:00:16.12463","exception":false,"start_time":"2025-10-12T08:00:16.109058","status":"completed"},"tags":[]}
-
-
 # Safe processing function with memory cleanup
 def process_dicom_series_for_flayer(series_path: str, target_shape: Tuple[int, int, int] = (32, 384, 384)) -> np.ndarray:
     """
-    Safe DICOM processing with memory cleanup
+    Safe DICOM processing with reduced memory cleanup frequency
     
     Args:
         series_path: Path to DICOM series
@@ -1365,11 +1036,8 @@ def process_dicom_series_for_flayer(series_path: str, target_shape: Tuple[int, i
     Returns:
         np.ndarray: Processed volume
     """
-    try:
-        preprocessor = FlayerDICOMPreprocessor(target_shape=target_shape)
-        return preprocessor.process_series(series_path)
-    finally:
-        gc.collect()
+    preprocessor = FlayerDICOMPreprocessor(target_shape=target_shape)
+    return preprocessor.process_series(series_path)
 
 
 
@@ -1453,39 +1121,38 @@ def process_dicom_for_yolo(series_path: str, mode: str = "2.5D") -> List[np.ndar
 
 # %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.135448Z","iopub.status.busy":"2025-10-12T08:00:16.135215Z","iopub.status.idle":"2025-10-12T08:00:16.142782Z","shell.execute_reply":"2025-10-12T08:00:16.142242Z"},"jupyter":{"outputs_hidden":false},"papermill":{"duration":0.014282,"end_time":"2025-10-12T08:00:16.143843","exception":false,"start_time":"2025-10-12T08:00:16.129561","status":"completed"},"tags":[]}
 def _predict_inner(series_path: str) -> pl.DataFrame:
-    """Optimized ensemble prediction logic using unified DICOM processing"""
-    global YOLO_MODELS, FLAYER_MODELS, UNIFIED_PROCESSOR
+    """Main ensemble prediction logic"""
+    global YOLO_MODELS, FLAYER_MODELS
     
-    # Ensure models are loaded
-    ensure_models_loaded()
-    
+    # Load models if not already loaded
+    if  not YOLO_MODELS or not FLAYER_MODELS:
+        load_all_models()
     try:
-        # Use unified processing to load DICOMs once
-        yolo_slices, flayer_volume = UNIFIED_PROCESSOR.process_series_unified(series_path, yolo_mode="2.5D")
         
-        if DEBUG: print(f"Unified processing complete - YOLO slices: {len(yolo_slices)}, Flayer volume: {flayer_volume.shape}")
+        # Process DICOM for both models
+        yolo_slices = process_dicom_for_yolo(series_path, mode="2.5D")
+        flayer_volume = process_dicom_series_for_flayer(series_path, FLAYER_CFG.target_shape)
+        if DEBUG: print(f"{flayer_volume.shape=}")
 
-        # Get predictions from both models
+        # Get YOLO predictions
         yolo_cls_pred, yolo_loc_preds = predict_yolo_ensemble(yolo_slices)
         flayer_preds = predict_flayer_ensemble(flayer_volume)
         flayer_preds = np.asarray(flayer_preds, dtype=np.float32)
-        
         if flayer_preds.shape[0] != len(LABEL_COLS):
             raise ValueError("Flayer ensemble output length mismatch")
 
-        # Map YOLO predictions to full label order
-        yolo_full_preds = np.zeros(len(LABEL_COLS), dtype=np.float32)
+        # yolo_full_preds has preds in LABEL_COLS order now
+        yolo_full_preds = np.zeros(len(LABEL_COLS))
         for i, label in enumerate(YOLO_LABELS):
             idx = YOLO_TO_LABEL_IDX[i]
             if idx != -1:
                 yolo_full_preds[idx] = yolo_loc_preds[i]
-        
         aneurysm_idx = ANEURYSM_IDX
 
-        # Ensemble predictions with 70/30 weighting
-        ensemble_preds = yolo_full_preds.copy()
+        ensemble_preds = yolo_full_preds
         ensemble_preds[:aneurysm_idx] = (0.7 * ensemble_preds[:aneurysm_idx]) + (0.3 * flayer_preds[:aneurysm_idx])
-        ensemble_preds[aneurysm_idx] = (0.7 * yolo_cls_pred) + (0.3 * flayer_preds[aneurysm_idx])
+        ensemble_preds[aneurysm_idx]  = (0.7 * yolo_cls_pred) + (0.3 * flayer_preds[aneurysm_idx])
+
         
         # Create output dataframe
         predictions_df = pl.DataFrame(
@@ -1497,45 +1164,15 @@ def _predict_inner(series_path: str) -> pl.DataFrame:
         return predictions_df
         
     except Exception as e:
-        if DEBUG: print(f"Error in optimized prediction: {e}")
-        
-        # Fallback to original method if unified processing fails
-        try:
-            yolo_slices = process_dicom_for_yolo(series_path, mode="2.5D")
-            flayer_volume = process_dicom_series_for_flayer(series_path, FLAYER_CFG.target_shape)
-            
-            yolo_cls_pred, yolo_loc_preds = predict_yolo_ensemble(yolo_slices)
-            flayer_preds = predict_flayer_ensemble(flayer_volume)
-            flayer_preds = np.asarray(flayer_preds, dtype=np.float32)
-            
-            yolo_full_preds = np.zeros(len(LABEL_COLS), dtype=np.float32)
-            for i, label in enumerate(YOLO_LABELS):
-                idx = YOLO_TO_LABEL_IDX[i]
-                if idx != -1:
-                    yolo_full_preds[idx] = yolo_loc_preds[i]
-            
-            aneurysm_idx = ANEURYSM_IDX
-            ensemble_preds = yolo_full_preds.copy()
-            ensemble_preds[:aneurysm_idx] = (0.7 * ensemble_preds[:aneurysm_idx]) + (0.3 * flayer_preds[:aneurysm_idx])
-            ensemble_preds[aneurysm_idx] = (0.7 * yolo_cls_pred) + (0.3 * flayer_preds[aneurysm_idx])
-            
-            predictions_df = pl.DataFrame(
-                data=[ensemble_preds.tolist()],
-                schema=LABEL_COLS,
-                orient='row'
-            )
-            return predictions_df
-            
-        except Exception as fallback_e:
-            if DEBUG: print(f"Fallback also failed: {fallback_e}")
-            # Return conservative predictions
-            conservative_preds = [0.1] * len(LABEL_COLS)
-            predictions_df = pl.DataFrame(
-                data=[conservative_preds],
-                schema=LABEL_COLS,
-                orient='row'
-            )
-            return predictions_df
+        print(e)
+        # Return conservative predictions
+        conservative_preds = [0.1] * len(LABEL_COLS)
+        predictions_df = pl.DataFrame(
+            data=[conservative_preds],
+            schema=LABEL_COLS,
+            orient='row'
+        )
+        return predictions_df
 
 def predict(series_path: str) -> pl.DataFrame:
     """
@@ -1555,17 +1192,16 @@ def predict(series_path: str) -> pl.DataFrame:
         )
         return predictions
     finally:
-        # Cleanup
+        # Cleanup shared directory only
         shared_dir = '/kaggle/shared'
         shutil.rmtree(shared_dir, ignore_errors=True)
         os.makedirs(shared_dir, exist_ok=True)
         
-        # Memory cleanup
+        # Reduced frequency memory cleanup - only CUDA cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        gc.collect()
 
-# %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.154831Z","iopub.status.busy":"2025-10-12T08:00:16.154633Z","iopub.status.idle":"2025-10-12T08:00:16.18524Z","shell.execute_reply":"2025-10-12T08:00:16.184546Z"},"papermill":{"duration":0.037571,"end_time":"2025-10-12T08:00:16.186348","exception":false,"start_time":"2025-10-12T08:00:16.148777","status":"completed"},"tags":["dicomsdl-opt"]}
+# %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.154831Z","iopub.status.busy":"2025-10-12T08:00:16.154633Z","iopub.status.idle":"2025-10-12T08:00:16.18524Z","shell.execute_reply":"2025-10-12T08:00:16.184546Z"},"papermill":{"duration":0.037571,"end_time":"2025-10-12T08:00:16.186348","exception":false,"start_time":"2025-10-12T08:00:16.148777","status":"completed"},"tags":["dicomsdl-opt"],"jupyter":{"outputs_hidden":false}}
 # --- dicomsdl-optimized DICOM I/O (overrides) [parity fix] ---
 try:
     import dicomsdl as dicom_sdl
@@ -1797,8 +1433,7 @@ def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
                 frames.append(frm * slope + intercept)
     return frames
 
-
-# %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.196914Z","iopub.status.busy":"2025-10-12T08:00:16.196715Z","iopub.status.idle":"2025-10-12T08:00:16.201087Z","shell.execute_reply":"2025-10-12T08:00:16.200597Z"},"papermill":{"duration":0.010793,"end_time":"2025-10-12T08:00:16.202116","exception":false,"start_time":"2025-10-12T08:00:16.191323","status":"completed"},"tags":["dicomsdl-patch"]}
+# %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.196914Z","iopub.status.busy":"2025-10-12T08:00:16.196715Z","iopub.status.idle":"2025-10-12T08:00:16.201087Z","shell.execute_reply":"2025-10-12T08:00:16.200597Z"},"papermill":{"duration":0.010793,"end_time":"2025-10-12T08:00:16.202116","exception":false,"start_time":"2025-10-12T08:00:16.191323","status":"completed"},"tags":["dicomsdl-patch"],"jupyter":{"outputs_hidden":false}}
 # Parity patch: ensure 2D slice resizing matches original
 def __patch__process_multiple_2d_dicoms(self, datasets, series_name):
     slice_info = self.extract_slice_info(datasets)
@@ -1817,32 +1452,23 @@ def __patch__process_multiple_2d_dicoms(self, datasets, series_name):
     return final_volume
 FlayerDICOMPreprocessor._process_multiple_2d_dicoms = __patch__process_multiple_2d_dicoms
 
-
-# %% [code] {"tags":["cache-opt"]}
-# --- Optimized DICOM cache (output-identical) ---
+# %% [code] {"tags":["cache-opt"],"jupyter":{"outputs_hidden":false}}
+# --- Per-series shared DICOM cache (output-identical) ---
 DICOM_SERIES_CACHE: dict = {}
 
 def reset_series_cache():
-    """Clear the series cache and force garbage collection"""
     DICOM_SERIES_CACHE.clear()
-    gc.collect()
 
-def _load_arr_cached(path: str, use_dicomsdl: bool = True):
-    """Optimized cached DICOM loading with memory management"""
+def _load_arr_cached(path: str):
     if not path:
         return None
-    
-    # Check cache first
     arr = DICOM_SERIES_CACHE.get(path)
     if arr is not None:
         return arr
-    
-    # Load with optimized fallback strategy
+    # Try dicomsdl first (if available), fallback to pydicom pixel_array
     arr = None
-    
-    # Try dicomsdl first (fastest) if available and requested
-    if use_dicomsdl and HAS_DICOMSDL and dicom_sdl is not None:
-        try:
+    try:
+        if 'dicom_sdl' in globals() and dicom_sdl is not None:
             d = dicom_sdl.open(str(path))
             try:
                 pix = d.pixelData()
@@ -1853,41 +1479,17 @@ def _load_arr_cached(path: str, use_dicomsdl: bool = True):
                     pix = None
             if pix is not None:
                 arr = np.asarray(pix)
-        except Exception:
-            arr = None
-    
-    # Fallback to pydicom if dicomsdl failed or unavailable
+    except Exception:
+        arr = None
     if arr is None:
         try:
             ds_pix = pydicom.dcmread(str(path), force=True)
             arr = ds_pix.pixel_array
         except Exception:
             arr = None
-    
-    # Cache the result (even if None to avoid repeated failures)
     if arr is not None:
         DICOM_SERIES_CACHE[path] = arr
-    
     return arr
-
-def preload_series_cache(dicom_files: List[Path], max_workers: int = 4):
-    """Preload multiple DICOM files into cache using parallel processing"""
-    def load_single(dcm_path):
-        try:
-            return str(dcm_path), _load_arr_cached(str(dcm_path))
-        except Exception:
-            return str(dcm_path), None
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(load_single, dcm_path) for dcm_path in dicom_files]
-        
-        for future in futures:
-            try:
-                path, arr = future.result()
-                if arr is not None:
-                    DICOM_SERIES_CACHE[path] = arr
-            except Exception:
-                continue
 
 # Patch FlayerDICOMPreprocessor.extract_pixel_array to reuse cache
 def _extract_pixel_array_cached(self, ds: pydicom.Dataset) -> np.ndarray:
@@ -1974,15 +1576,9 @@ try:
 except NameError:
     pass
 
-
 # %% [code] {"execution":{"iopub.execute_input":"2025-10-12T08:00:16.213556Z","iopub.status.busy":"2025-10-12T08:00:16.21334Z","iopub.status.idle":"2025-10-12T08:01:40.950735Z","shell.execute_reply":"2025-10-12T08:01:40.950033Z"},"jupyter":{"outputs_hidden":false},"papermill":{"duration":84.750401,"end_time":"2025-10-12T08:01:40.957602","exception":false,"start_time":"2025-10-12T08:00:16.207201","status":"completed"},"tags":[]}
 if __name__ == "__main__":
     start_time = time.time()
-    
-    # Pre-load all models for optimal performance
-    print("Pre-loading models for optimized inference...")
-    load_all_models()
-    print(f"Model loading completed in {time.time() - start_time:.2f} seconds")
     
     # Initialize the inference server
     inference_server = kaggle_evaluation.rsna_inference_server.RSNAInferenceServer(predict)

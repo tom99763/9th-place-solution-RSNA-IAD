@@ -502,7 +502,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                 except Exception:
                     loc_vec[idx] = 0.0
         loc_labels.append(loc_vec)
-        print("series_name", sid, "series_probs", series_probs)
+        #print("series_name", sid, "series_probs", series_probs)
         
         # Track partial AUC every 10 series
         processed_count += 1
