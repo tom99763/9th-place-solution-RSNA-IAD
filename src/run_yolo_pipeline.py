@@ -74,11 +74,10 @@ def run():
     print("waiting")
     import time
     args = parse_args()
-    #time.sleep(60*60*3) # 2 hours
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']
 
     # Call the validation script programmatically
-    val_script = ROOT / 'yolo_multiclass_validation_old.py'
+    val_script = ROOT / 'yolo_multiclass_validation_old_copy.py'
     if not val_script.exists():
         raise SystemExit(f"Validation script not found at {val_script}")
 

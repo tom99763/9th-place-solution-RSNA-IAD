@@ -68,33 +68,41 @@ def parse_args():
     ap.add_argument('--wandb-tags', type=str, default='', help='Comma-separated W&B tags')
     ap.add_argument('--wandb-mode', type=str, default='online', choices=['online', 'offline'], help='W&B mode (online/offline)')
     ap.add_argument('--rgb-mode', action='store_true', help='Use rgb mode (3-channel images from stacked slices)')
-    ap.add_argument('--rgb-non-overlapping', action='store_true', help='Use non-overlapping 3-slice windows in rgb mode (e.g., [1,2,3],[4,5,6],[7,8,9])')
     ap.add_argument('--wandb-resume-id', type=str, default='', help='Resume W&B run id (optional)')
     ap.add_argument('--single-cls', action='store_true', help='Single class mode: only classify aneurysm present/absent (no location prediction)')
     return ap.parse_args()
 
 
+
+
 def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
+    """Read a DICOM file and return a list of frames in HU (float32).
+
+    Supports:
+      - 2D single-slice DICOM -> one frame [H,W]
+      - 3D multi-frame -> list of frames [N,H,W]
+      - 3-channel RGB DICOM -> converted to single grayscale frame
+    """
     ds = pydicom.dcmread(str(path), force=True)
     pix = ds.pixel_array
-    slope = float(getattr(ds, 'RescaleSlope', 1.0))
-    intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+    slope = float(getattr(ds, "RescaleSlope", 1.0))
+    intercept = float(getattr(ds, "RescaleIntercept", 0.0))
     frames: List[np.ndarray] = []
     if pix.ndim == 2:
         img = pix.astype(np.float32)
         frames.append(img * slope + intercept)
     elif pix.ndim == 3:
-        # RGB or multi-frame
+        # If RGB (H,W,3), take first channel; else assume multi-frame (N,H,W)
         if pix.shape[-1] == 3 and pix.shape[0] != 3:
-            try:
-                gray = cv2.cvtColor(pix.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
-            except Exception:
-                gray = pix[..., 0].astype(np.float32)
+            gray = pix[..., 0].astype(np.float32)
             frames.append(gray * slope + intercept)
         else:
             for i in range(pix.shape[0]):
                 frm = pix[i].astype(np.float32)
                 frames.append(frm * slope + intercept)
+    else:
+        # Unsupported layout
+        pass
     return frames
 
 
@@ -104,6 +112,50 @@ def min_max_normalize(img: np.ndarray) -> np.ndarray:
         return np.zeros_like(img, dtype=np.uint8)
     norm = (img - mn) / (mx - mn)
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
+
+
+def letterbox(
+    img: np.ndarray, new_shape: Tuple[int, int] = (640, 640)
+) -> Tuple[np.ndarray, Tuple[float, float]]:
+    """
+    Resize and pad image while maintaining aspect ratio.
+
+    Args:
+        img (np.ndarray): Input image with shape (H, W, C).
+        new_shape (Tuple[int, int]): Target shape (height, width).
+
+    Returns:
+        (np.ndarray): Resized and padded image.
+        (Tuple[float, float]): Padding ratios (top/height, left/width) for coordinate adjustment.
+    """
+    shape = img.shape[:2]  # Current shape [height, width]
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+
+    # Compute padding
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = (new_shape[1] - new_unpad[0]) / 2, (new_shape[0] - new_unpad[1]) / 2  # wh padding
+
+    if shape[::-1] != new_unpad:  # Resize if needed
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+
+    return img, (top / img.shape[0], left / img.shape[1])
+
+
+def create_rgb_from_slices(slice_prev: np.ndarray, slice_curr: np.ndarray, slice_next: np.ndarray) -> np.ndarray:
+    """Create RGB image from three adjacent slices, normalizing each channel individually."""
+    # Normalize each slice individually
+    r_channel = min_max_normalize(slice_prev)
+    g_channel = min_max_normalize(slice_curr)
+    b_channel = min_max_normalize(slice_next)
+    
+    # Stack as RGB channels
+    rgb_img = np.stack([r_channel, g_channel, b_channel], axis=-1)
+    return rgb_img
 
 
 def ordered_dcm_paths(series_dir: Path) -> Tuple[List[Path], Dict[str, int]]:
@@ -254,7 +306,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
             nonlocal max_conf_all, total_dets, per_class_max
             if not batch_imgs:
                 return
-            results = model.predict(batch_imgs, verbose=False, conf=0.01)
+            results = model.predict(batch_imgs, verbose=False, conf=0.01, imgsz= 512)
             for r in results:
                 if not r or r.boxes is None or r.boxes.conf is None or len(r.boxes) == 0:
                     continue
@@ -337,16 +389,16 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                         arr = a
                     mip_hu = arr if mip_hu is None else np.maximum(mip_hu, arr)
                 mip_u8 = min_max_normalize(mip_hu)
-                if args.img_size > 0 and (mip_u8.shape[0] != args.img_size or mip_u8.shape[1] != args.img_size):
-                    mip_u8 = cv2.resize(mip_u8, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
-                mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2BGR) if mip_u8.ndim == 2 else mip_u8
+                if args.img_size > 0:
+                    mip_u8, _ = letterbox(mip_u8, (args.img_size, args.img_size))
+                mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2RGB) if mip_u8.ndim == 2 else mip_u8
                 batch.append(mip_rgb)
                 if len(batch) >= args.batch_size:
                     flush_batch(batch)
                     batch.clear()
             flush_batch(batch)
         elif getattr(args, 'rgb_mode', False):
-            # rgb mode: stack 3 consecutive slices as channels
+            # RGB mode: stack 3 consecutive slices as channels (match data preparation approach)
             slices_hu: list[np.ndarray] = []
             for dcm_path in dicoms:
                 try:
@@ -356,8 +408,8 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                         print(f"[SKIP] {dcm_path.name}: {e}")
                     continue
                 for f in frames:
-                    f = f.astype(np.float32)
-                    slices_hu.append(f)
+                    # Keep as HU values, don't normalize yet (match data prep approach)
+                    slices_hu.append(f.astype(np.float32))
 
             if len(slices_hu) < 3:
                 print("Not enough slices for rgb mode, skip this series")
@@ -367,84 +419,48 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                 series_pred_counts[sid] = 0
                 continue
 
-            if getattr(args, 'rgb_non_overlapping', False):
-                # Non-overlapping 3-slice windowsdel: [0,1,2], [3,4,5], [6,7,8], etc.
-                # This creates a sliding window that processes all slices with stride=3
-                window_starts = list(range(0, len(slices_hu) - 2, 3))  # Start every 3 slices, ensure we have at least 3 slices
-                if args.max_slices and len(window_starts) > args.max_slices:
-                    window_starts = window_starts[:args.max_slices]
-                
-                for start_idx in window_starts:
-                    # Get exactly 3 consecutive slices: [start_idx, start_idx+1, start_idx+2]
-                    slice_indices_3 = [start_idx, start_idx + 1, start_idx + 2]
-                    
-                    # Load and normalize the 3 slices
-                    processed_slices = []
-                    target_shape = slices_hu[0].shape
-                    for idx in slice_indices_3:
-                        slice_hu = slices_hu[idx]
-                        # Resize if needed to match target shape
-                        if slice_hu.shape != target_shape:
-                            slice_hu = cv2.resize(slice_hu, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
-                        slice_u8 = min_max_normalize(slice_hu)
-                        processed_slices.append(slice_u8)
+            # Apply slice stepping at slice level (match data prep exactly)
+            step = max(1, args.slice_step)
+            slice_indices = list(range(1, len(slices_hu)-1, step))
+            if args.max_slices and len(slice_indices) > args.max_slices:
+                slice_indices = slice_indices[:args.max_slices]
 
-                    # Stack as 3-channel image
-                    rgb_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
+            # Create RGB triplets for 2.5D (match data preparation approach)
+            for i in slice_indices:
+                try:
+                    # Get 3 consecutive slices: [i-1, i, i+1] (match test script v1 exactly)
+                    prev_frame = slices_hu[i-1]
+                    curr_frame = slices_hu[i]
+                    next_frame = slices_hu[i+1]
 
-                    # Resize if needed
-                    if args.img_size > 0 and (rgb_img.shape[0] != args.img_size or rgb_img.shape[1] != args.img_size):
-                        rgb_img = cv2.resize(rgb_img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                    # Ensure all frames are valid and same shape
+                    if prev_frame is None or curr_frame is None or next_frame is None:
+                        continue
+                        
+                    if not (prev_frame.shape == curr_frame.shape == next_frame.shape):
+                        print(f"Warning: Frame shape mismatch at index {i}")
+                        continue
 
-                    batch.append(rgb_img)
-                    if len(batch) >= args.batch_size:
-                        flush_batch(batch)
-                        batch.clear()
-            else:
-                # Overlapping sliding window rgb mode: [i-1,i,i+1] for each i
-                # This creates a dense sliding window that processes all slices with configurable stride
-                step = max(1, args.slice_step)
-                slice_indices = list(range(1, len(slices_hu)-1, step))
-                if args.max_slices and len(slice_indices) > args.max_slices:
-                    slice_indices = slice_indices[:args.max_slices]
+                    # Create RGB using individual normalization per channel (match data prep)
+                    rgb_img = create_rgb_from_slices(prev_frame, curr_frame, next_frame)
 
-                for i in slice_indices:
-                    # Get 3 consecutive slices: [i-1, i, i+1], handling boundaries
-                    slice_indices_3 = []
-                    for offset in [-1, 0, 1]:
-                        idx = i + offset
-                        if 0 <= idx < len(slices_hu):
-                            slice_indices_3.append(idx)
-                        else:
-                            # For boundary cases, duplicate the center slice
-                            slice_indices_3.append(i)
+                    # Validate output shape
+                    if rgb_img.shape[-1] != 3 or rgb_img.ndim != 3:
+                        print(f"Warning: Invalid RGB shape {rgb_img.shape} at index {i}")
+                        continue
 
-                    # Ensure we have exactly 3 slices
-                    while len(slice_indices_3) < 3:
-                        slice_indices_3.append(i)
-
-                    # Load and normalize the 3 slices
-                    processed_slices = []
-                    target_shape = slices_hu[0].shape
-                    for idx in slice_indices_3[:3]:
-                        slice_hu = slices_hu[idx]
-                        # Resize if needed to match target shape
-                        if slice_hu.shape != target_shape:
-                            slice_hu = cv2.resize(slice_hu, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
-                        slice_u8 = min_max_normalize(slice_hu)
-                        processed_slices.append(slice_u8)
-
-                    # Stack as 3-channel image
-                    rgb_img = np.stack(processed_slices, axis=-1)  # Shape: (H, W, 3)
-
-                    # Resize if needed
-                    if args.img_size > 0 and (rgb_img.shape[0] != args.img_size or rgb_img.shape[1] != args.img_size):
-                        rgb_img = cv2.resize(rgb_img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                    # Apply letterbox resizing if specified (match data prep behavior)
+                    #if args.img_size > 0:
+                    #    rgb_img, _ = letterbox(rgb_img, (args.img_size, args.img_size))
 
                     batch.append(rgb_img)
                     if len(batch) >= args.batch_size:
                         flush_batch(batch)
                         batch.clear()
+
+                except Exception as e:
+                    print(f"Error creating RGB triplet at index {i}: {e}")
+                    continue
             flush_batch(batch)
         else:
             # Per-slice inference
@@ -457,10 +473,10 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     continue
                 for f in frames:
                     img_uint8 = min_max_normalize(f)
-                    if args.img_size > 0 and (img_uint8.shape[0] != args.img_size or img_uint8.shape[1] != args.img_size):
-                        img_uint8 = cv2.resize(img_uint8, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                    if args.img_size > 0:
+                        img_uint8, _ = letterbox(img_uint8, (args.img_size, args.img_size))
                     if img_uint8.ndim == 2:
-                        img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2rgb)
+                        img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2RGB)
                     batch.append(img_uint8)
                     if len(batch) >= args.batch_size:
                         flush_batch(batch)
@@ -486,7 +502,8 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                 except Exception:
                     loc_vec[idx] = 0.0
         loc_labels.append(loc_vec)
-        #print("series_name", sid, "series_probs", series_probs)
+        print("series_name", sid, "series_probs", series_probs)
+        
         # Track partial AUC every 10 series
         processed_count += 1
         if processed_count % partial_auc_interval == 0:
@@ -650,7 +667,6 @@ def _maybe_init_wandb(args: argparse.Namespace, fold_id: int, weights_path: str)
         'img_size': args.img_size,
         'mip_no_overlap': args.mip_no_overlap,
         'rgb_mode': args.rgb_mode,
-        'rgb_non_overlapping': args.rgb_non_overlapping,
         'batch_size': args.batch_size,
         'series_limit': args.series_limit,
         'max_slices': args.max_slices,
