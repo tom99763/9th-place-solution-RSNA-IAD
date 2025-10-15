@@ -1,0 +1,48 @@
+nc: 80
+scales:
+  n: [1.00, 1.00, 960]
+
+
+    # print shape of each feature map in output
+    # e.g.:
+    #  torch.Size([1, 32, 192, 192])
+    #  torch.Size([1, 48, 96, 96])
+    #  torch.Size([1, 80, 48, 48])
+    #  torch.Size([1, 160, 24, 24])
+    #  torch.Size([1, 960, 12, 12])
+
+backbone:
+  # 0: full efficientnetv2 outputs
+  # Args: [channels, model, pretrained, unwrap, truncate, split, drop_path_rate]
+  - [-1, 1, Timm, [960, 'mobilenetv4_hybrid_medium.ix_e550_r384_in1k', True, True, 0, True, 0.0]]
+  # use layers 2, 3, 4 from the backbone (skipping first two smaller feature maps):
+  - [0, 1, Index, [80, 2]]     # P3 → 64 ch @ 38×38
+  - [0, 1, Index, [160, 3]]    # P4 → 160 ch @ 19×19
+  - [0, 1, Index, [960, 4]]    # P5 → 256 ch @ 10×10
+  # SPPF & PSA on P5
+  - [-1, 1, SPPF, [960, 5]]
+  - [-1, 2, C2PSA, [960]]
+
+head:
+  # P5 → upsample → concat with P4 → C3k2
+  - [5,    1, nn.Upsample, [None, 2, "nearest"]]   # 6: 960×19×19
+  - [[6, 2], 1, Concat,        [1]]                 # 7: 960+160=1120 ch
+  - [7,    2, C3k2,            [480, False]]        # 8
+
+  # P4 → upsample → concat with P3 → C3k2
+  - [8,    1, nn.Upsample, [None, 2, "nearest"]]   # 9: 480×38×38
+  - [[9, 1], 1, Concat,       [1]]                  # 10: 160+80=240 ch
+  - [10,   2, C3k2,            [240, False]]         # 11
+
+  # top-down → bottom-up
+  - [11,   1, Conv,            [240, 3, 2]]          # 12: 80×19×19
+  - [[12, 8], 1, Concat,       [1]]                 # 13: 80+160=240 ch
+  - [13,   2, C3k2,            [480, False]]        # 14
+
+  # bottom-up → P5
+  - [14,   1, Conv,            [480, 3, 2]]         # 15: 160×10×10
+  - [[15, 5], 1, Concat,       [1]]                 # 16: 160+960=1120 ch
+  - [16,   2, C3k2,            [960, True]]         # 17
+
+  # Final Detect on (P3=11, P4=14, P5=17)
+  - [[11, 14, 17], 1, Detect,   [nc]]

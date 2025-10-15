@@ -1,0 +1,46 @@
+nc: 80
+scales:
+  n: [1.00, 1.00, 512]
+
+
+    # print shape of each feature map in output
+    # e.g.:
+    #  torch.Size([1, 16, 96, 96])
+    #  torch.Size([1, 32, 48, 48])
+    #  torch.Size([1, 48, 24, 24])
+    #  torch.Size([1, 112, 12, 12])
+    #  torch.Size([1, 192, 6, 6])
+
+backbone:
+  # 0: full efficientnetv2 outputs
+  - [-1, 1, Timm, [192, 'tf_efficientnetv2_b0.in1k', True, True, 0, True]]
+  - [0, 1, Index, [48, 2]]     # P3 → 64 ch @ 38×38
+  - [0, 1, Index, [112, 3]]    # P4 → 160 ch @ 19×19
+  - [0, 1, Index, [192, 4]]    # P5 → 256 ch @ 10×10
+  # SPPF & PSA on P5
+  - [-1, 1, SPPF, [192, 5]]
+  - [-1, 2, C2PSA, [192, 1.0]]
+
+head:
+  # P5 → upsample → concat with P4 → C3k2
+  - [5,    1, nn.Upsample, [None, 2, "nearest"]]   # 6: 192×19×19
+  - [[6, 2], 1, Concat,        [1]]                 # 7: 192+112=304 ch
+  - [7,    2, C3k2,            [112, False]]        # 8
+
+  # P4 → upsample → concat with P3 → C3k2
+  - [8,    1, nn.Upsample, [None, 2, "nearest"]]   # 9: 192×38×38
+  - [[9, 1], 1, Concat,       [1]]                  # 10: 192+48=240 ch
+  - [10,   2, C3k2,            [48, False]]         # 11
+
+  # top-down → bottom-up
+  - [11,   1, Conv,            [48, 3, 2]]         # 12: 96×19×19
+  - [[12, 8], 1, Concat,       [1]]                 # 13: 96+192=288 ch
+  - [13,   2, C3k2,            [112, False]]        # 14
+
+  # bottom-up → P5
+  - [14,   1, Conv,            [112, 3, 2]]         # 15: 192×10×10
+  - [[15, 5], 1, Concat,       [1]]                 # 16: 192+192=384 ch
+  - [16,   2, C3k2,            [192, True]]         # 17
+
+  # Final Detect on (P3=11, P4=14, P5=17)
+  - [[11, 14, 17], 1, Detect,   [nc]]
