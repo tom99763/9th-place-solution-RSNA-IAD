@@ -337,8 +337,8 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                         arr = a
                     mip_hu = arr if mip_hu is None else np.maximum(mip_hu, arr)
                 mip_u8 = min_max_normalize(mip_hu)
-                if args.img_size > 0 and (mip_u8.shape[0] != args.img_size or mip_u8.shape[1] != args.img_size):
-                    mip_u8 = cv2.resize(mip_u8, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                #if args.img_size > 0 and (mip_u8.shape[0] != args.img_size or mip_u8.shape[1] != args.img_size):
+                #    mip_u8 = cv2.resize(mip_u8, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                 mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2BGR) if mip_u8.ndim == 2 else mip_u8
                 batch.append(mip_rgb)
                 if len(batch) >= args.batch_size:
@@ -384,8 +384,8 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     for idx in slice_indices_3:
                         slice_hu = slices_hu[idx]
                         # Resize if needed to match target shape
-                        if slice_hu.shape != target_shape:
-                            slice_hu = cv2.resize(slice_hu, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
+                        #if slice_hu.shape != target_shape:
+                        #    slice_hu = cv2.resize(slice_hu, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
                         slice_u8 = min_max_normalize(slice_hu)
                         processed_slices.append(slice_u8)
 

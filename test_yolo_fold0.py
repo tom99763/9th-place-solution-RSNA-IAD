@@ -96,9 +96,9 @@ def process_dicom_file_yolo(dcm_path: Path, keep_grayscale: bool = False) -> Lis
         processed_slices = []
         for f in frames:
             img_u8 = min_max_normalize(f)
-            if img_u8.ndim == 2:
-                if not keep_grayscale:  # For 2D mode, convert to RGB
-                    img_u8 = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
+            #if img_u8.ndim == 2:
+            #    if not keep_grayscale:  # For 2D mode, convert to RGB
+            #        img_u8 = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
                 # For 2.5D mode, keep as grayscale (single channel)
             processed_slices.append(img_u8)
         return processed_slices
@@ -243,6 +243,9 @@ def process_dicom_for_yolo(series_path: str, mode: str = "2.5D") -> List[np.ndar
                     print(f"Warning: Invalid RGB shape {rgb_img.shape} at index {i}")
                     continue
 
+                if IMG_SIZE > 0 and (rgb_img.shape[0] != IMG_SIZE or rgb_img.shape[1] != IMG_SIZE):
+                    rgb_img = cv2.resize(rgb_img, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_LINEAR)
+
                 rgb_slices.append(rgb_img)
 
             except Exception as e:
@@ -321,7 +324,7 @@ def main():
     series_path = f"/home/sersasj/RSNA-IAD-Codebase/data/series/{series_uid}"
 
     # Model path
-    model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_fold0/weights/best.pt"
+    model_path = "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo-11m-2.5D_fold0/weights/best.pt"
 
     # Check if paths exist
     if not os.path.exists(series_path):

@@ -6,12 +6,20 @@ from sklearn.model_selection import train_test_split
 
 model_dicts = {
     'YOLO-11M_2.5D': {
-        "fold0": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo-11m-2.5D_fold0/series_validation/fold_0/per_series_predictions.csv"},
+        "fold0": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo-11m-2.5D_fold0/series_validation/per_series_predictions_old.csv"},
         "fold1": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo-11m-2.5D_fold1/series_validation/fold_1/per_series_predictions.csv"},
         "fold2": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo-11m-2.5D_fold22/series_validation/fold_2/per_series_predictions.csv"},
         "fold3": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo-11m-2.5D_fold3/series_validation/fold_3/per_series_predictions.csv"},
         "fold4": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo-11m-2.5D_fold4/series_validation/fold_4/per_series_predictions.csv"},
     },
+
+    'YOLO-11M_2.5D_letterbox': {
+        "fold0": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_yolo11m_25d_letterbox_fold0/series_validation/fold_0/per_series_predictions.csv"},
+        "fold1": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_yolo11m_25d_letterbox_fold1/series_validation/fold_1/per_series_predictions.csv"},
+        "fold2": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_yolo11m_25d_letterbox_fold2/series_validation/fold_2/per_series_prediction.csv"},
+        "fold3": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo-11m-2.5D_fold3/series_validation/fold_3/per_series_predictions.csv"},
+        "fold4": {"y11_yolo11m": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/yolo-11m-2.5D_fold4/series_validation/fold_4/per_series_predictions.csv"},
+    }, 
     #'EfficientNetV2-S': {
     #    "fold0": {"effnetv2s": "yolo_aneurysm_location_all_negatives/cv_effnetv2s_v2_drop_path_fold0/series_validation/fold_0/per_series_predictions.csv"},
     #    "fold1": {"effnetv2s": "yolo_aneurysm_location_all_negatives/cv_effnetv2s_v2_drop_path_fold1/series_validation/fold_1/per_series_predictions.csv"},
@@ -20,11 +28,11 @@ model_dicts = {
     #    "fold4": {"effnetv2s": "yolo_aneurysm_location_all_negatives/cv_effnetv2s_v2_drop_path_fold4/series_validation/fold_4/per_series_predictions.csv"}
     #},
     '2.5D effnetv2_s': {
-        "fold0": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_fold0/series_validation/fold_0/per_series_predictions.csv"},
-        "fold1": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_fold1/series_validation/fold_1/per_series_predictions.csv"},
-        "fold2": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_fold2/series_validation/fold_2/per_series_predictions.csv"},
-        "fold3": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_fold3/series_validation/fold_3/per_series_predictions.csv"},
-        "fold4": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_fold4/series_validation/fold_4/per_series_predictions.csv"},
+        "fold0": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_cls1_letterbox_fold0/series_validation/fold_0/per_series_predictions.csv"},
+        "fold1": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_cls1_letterbox_fold1/series_validation/fold_1/per_series_predictions.csv"},
+        "fold2": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_cls1_letterbox_fold2/series_validation/fold_2/per_series_predictions.csv"},
+        "fold3": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_cls1_letterbox_fold3/series_validation/fold_3/per_series_predictions.csv"},
+        "fold4": {"effnetv2s": "/home/sersasj/RSNA-IAD-Codebase/yolo_aneurysm_location_all_negatives/cv_effnetv2_s_drop_path_25d_cls1_letterbox_fold4/series_validation/fold_4/per_series_predictions.csv"},
 
     }
 }
