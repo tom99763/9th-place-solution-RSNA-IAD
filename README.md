@@ -1,7 +1,7 @@
 
 # RSNA IAD Codebase
 
-To reproduce 0.79 submission:
+To reproduce yolo 2.5D
 
 1. Download `ultralytics-timm` from kaggle using Download ultralytics-timm from Kaggle
 
