@@ -14,6 +14,8 @@ from tqdm import tqdm
 
 # Multilabel stratification for better balance across modality and classes
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold  # type: ignore
+from concurrent.futures import ProcessPoolExecutor
+import itertools
 
 # Allow importing project configs
 ROOT = Path(__file__).resolve().parent.parent
@@ -188,50 +190,59 @@ def load_labels(root: Path) -> pd.DataFrame:
     label_df["SOPInstanceUID"] = label_df["SOPInstanceUID"].astype(str)
     return label_df
 
+def _process_dcm_file(filepath: Path):
+    """
+    Reads a single DICOM file's metadata to determine its sort value.
+    Returns a tuple of (sort_value, filepath).
+    """
+    try:
+        # Read metadata only, which is faster than reading the whole file
+        ds = pydicom.dcmread(str(filepath), stop_before_pixels=True)
+
+        # Priority order for sorting: SliceLocation > ImagePositionPatient > InstanceNumber
+        if hasattr(ds, "SliceLocation"):
+            sort_val = float(ds.SliceLocation)
+        elif hasattr(ds, "ImagePositionPatient") and len(ds.ImagePositionPatient) >= 3:
+            # Fallback to the z-coordinate from ImagePositionPatient
+            sort_val = float(ds.ImagePositionPatient[-1])
+        else:
+            # Final fallback to InstanceNumber
+            sort_val = float(getattr(ds, "InstanceNumber", 0))
+
+        return (sort_val, filepath)
+
+    except Exception:
+        # If metadata reading fails, use the filename as a string-based fallback for sorting
+        return (str(filepath.name), filepath)
 
 def ordered_dcm_paths(series_dir: Path) -> Tuple[List[Path], Dict[str, int]]:
-    """Collect all DICOM files in series directory and sort by spatial position."""
+    """
+    Collects all DICOM files in a series directory and sorts them by spatial
+    position using parallel processing to speed up metadata reading.
+    """
     dicom_files = list(series_dir.glob("*.dcm"))
-    
+
     if not dicom_files:
         return [], {}
-    
-    # First pass: collect all slices with their spatial information
+
     temp_slices = []
-    for filepath in dicom_files:
-        try:
-            ds = pydicom.dcmread(str(filepath), stop_before_pixels=True)
-            
-            # Priority order for sorting: SliceLocation > ImagePositionPatient > InstanceNumber
-            if hasattr(ds, "SliceLocation"):
-                # SliceLocation is the most reliable for slice ordering
-                sort_val = float(ds.SliceLocation)
-            elif hasattr(ds, "ImagePositionPatient") and len(ds.ImagePositionPatient) >= 3:
-                # Fallback to z-coordinate from ImagePositionPatient
-                sort_val = float(ds.ImagePositionPatient[-1])
-            else:
-                # Final fallback to InstanceNumber
-                sort_val = float(getattr(ds, "InstanceNumber", 0))
-            
-            # Store filepath with its sort value
-            temp_slices.append((sort_val, filepath))
-            
-        except Exception as e:
-            # Fallback: use filename as last resort
-            temp_slices.append((str(filepath.name), filepath))
-            continue
-    
+    # Use a ProcessPoolExecutor to run the worker function on all files in parallel
+    with ProcessPoolExecutor() as executor:
+        # The executor.map function applies _process_dcm_file to each item
+        # in dicom_files and returns the results as they are completed.
+        temp_slices = list(executor.map(_process_dcm_file, dicom_files))
+
     if not temp_slices:
         return [], {}
-    
-    # Sort slices by the determined sort value (spatial order)
+
+    # Sort slices based on the sort value determined by the worker function
     temp_slices.sort(key=lambda x: x[0])
-    
-    # Extract the sorted filepaths
+
+    # Extract the sorted filepaths and create the SOP UID to index map
     sorted_files = [item[1] for item in temp_slices]
     sop_to_idx = {p.stem: i for i, p in enumerate(sorted_files)}
-    return sorted_files, sop_to_idx
 
+    return sorted_files, sop_to_idx
 
 def load_series_slices_selected(paths: List[Path], selected_indices: List[int] | None) -> List[np.ndarray]:
     indices = selected_indices if selected_indices is not None else list(range(len(paths)))
@@ -256,33 +267,205 @@ def get_adjacent_slices_for_rgb(paths: List[Path], target_sop: str, sop_to_idx: 
     slices = []
     for idx in [prev_idx, curr_idx, next_idx]:
         if 0 <= idx < len(paths):
-            frames = read_dicom_frames_hu(paths[idx])
-            if frames:
-                # Take the first frame if multi-frame DICOM
-                slices.append(frames[0])
-            else:
-                return None
+            curr_path = paths[idx]
+        elif idx < 0:
+            curr_path = paths[0]
         else:
-            # If we're at the boundary, duplicate the available slice
-            if idx < 0:
-                # Use the first slice for prev
-                frames = read_dicom_frames_hu(paths[0])
-                if frames:
-                    slices.append(frames[0])
-                else:
-                    return None
-            else:
-                # Use the last slice for next
-                frames = read_dicom_frames_hu(paths[-1])
-                if frames:
-                    slices.append(frames[0])
-                else:
-                    return None
+            curr_path = paths[-1]
+
+        frames = read_dicom_frames_hu(curr_path)
+        if frames:
+            slices.append(frames[0])
+        else:
+            return None
     
     if len(slices) == 3:
         return slices[0], slices[1], slices[2]
     return None
 
+def process_positive_series(uid, root, labels_for_series, paths, sop_to_idx, split, out_base):
+
+    total_pos = 0
+    total_series = 0
+    pos_saved = 0
+
+    # Track positive frames used per SOP to enable intra-DICOM adjacent negatives
+    for (sop, x, y, cls_id, f_idx) in labels_for_series:
+        dcm_path = root / "series" / uid / f"{sop}.dcm"
+        if not dcm_path.exists():
+            continue
+        
+        if args.rgb_mode:
+            # RGB mode: get three adjacent slices
+            adjacent_slices = get_adjacent_slices_for_rgb(paths, sop, sop_to_idx)
+            if adjacent_slices is None:
+                continue
+            slice_prev, slice_curr, slice_next = adjacent_slices
+            img = create_rgb_from_slices(slice_prev, slice_curr, slice_next)
+            # For RGB, we need to handle 3D array (H, W, C)
+            if args.img_size > 0 and (
+                img.shape[0] != args.img_size or img.shape[1] != args.img_size
+            ):
+                img_resized = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                resize_w = resize_h = args.img_size
+            else:
+                img_resized = img
+                resize_h, resize_w = img_resized.shape[:2]
+        else:
+            raise RuntimeError("Only RGB mode is supported!")
+
+        # Name images to include frame index for multi-frame DICOMs to avoid collisions
+        if args.rgb_mode:
+            stem = f"{uid}_{sop}_rgb"
+        else:
+            raise RuntimeError("Only RGB mode is supported!")
+        img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+        label_path = out_base / "labels" / split / f"{stem}.txt"
+        if img_path.exists() and label_path.exists() and not args.overwrite:
+            # Still count as existing positive example for balancing if files already present
+            pos_saved += 1
+            continue
+        cv2.imwrite(str(img_path), img_resized)
+
+        # Scale point if resized
+        if args.rgb_mode:
+            # For RGB mode, use the current slice shape as reference
+            orig_h, orig_w = slice_curr.shape
+        else:
+            raise RuntimeError("Only RGB mode is supported!")
+
+        if (resize_w, resize_h) != (orig_w, orig_h):
+            x_scaled = x * (resize_w / orig_w)
+            y_scaled = y * (resize_h / orig_h)
+        else:
+            x_scaled, y_scaled = x, y
+        xc, yc, bw, bh = build_box(x_scaled, y_scaled, args.box_size, resize_w, resize_h)
+
+        with open(label_path, "w") as f:
+            f.write(f"{cls_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
+
+        pos_saved += 1
+        total_pos += 1
+        total_series += 1
+
+    return pos_saved, total_pos, total_series
+
+def _get_frame_info_from_path(dcm_path: Path) -> List[Tuple[Path, int, int]]:
+    """
+    Worker function: Reads frames from a single DICOM file and returns
+    a list of tuples, each containing (path, frame_index, total_frames).
+    """
+    try:
+        frames = read_dicom_frames_hu(dcm_path)
+        if frames:
+            num_frames = len(frames)
+            # Return a list of info for all frames found in this one file
+            return [(dcm_path, i, num_frames) for i in range(num_frames)]
+    except Exception as e:
+        # It's good practice to log or print errors that happen in worker processes
+        print(f"Warning: Could not process file {dcm_path.name}. Error: {e}")
+    
+    # Return an empty list if reading fails or the file has no frames
+    return []
+
+def process_negative_series(uid, n_slices, paths, split, out_base):
+
+
+    def collect_all_frames_parallel(paths: List[Path]) -> List[Tuple[Path, int, int]]:
+        """
+        Collects frame information from all DICOM files in parallel.
+        """
+        all_frames_info = []
+        
+        with ProcessPoolExecutor() as executor:
+            results_iterator = executor.map(_get_frame_info_from_path, paths)
+            all_frames_info = list(itertools.chain.from_iterable(results_iterator))
+            
+        return all_frames_info
+
+    total_neg     = 0
+    total_series  = 0
+    # Negative series: choose evenly sampled slices and write empty labels
+    if n_slices == 0:
+        return total_neg, total_series
+    need = max(0, int(args.neg_per_series))
+    all_frames_info = collect_all_frames_parallel(paths)  # List of (dcm_path, frame_idx, total_frames_in_dcm)
+    
+    total_frames = len(all_frames_info)
+    if total_frames == 0:
+        return total_neg, total_series
+        
+    # Sample up to 'need' evenly spaced frames across all available frames
+    if need >= total_frames:
+        # If we need more frames than available, take all
+        pick = list(range(total_frames))
+    else:
+        pick = np.linspace(1, total_frames - 2, need, dtype=int).tolist()
+        
+    for frame_idx in pick:
+        dcm_path, frame_num, total_frames_in_dcm = all_frames_info[frame_idx]
+        
+        if args.rgb_mode:
+            # RGB mode: get three adjacent slices for negative samples
+            # Find the index of this DICOM in the sorted paths
+            dcm_idx = None
+            for i, path in enumerate(paths):
+                if path == dcm_path:
+                    dcm_idx = i
+                    break
+            
+            if dcm_idx is None:
+                continue
+            
+            # Get adjacent slices
+            prev_idx = dcm_idx - 1
+            curr_idx = dcm_idx
+            next_idx = dcm_idx + 1
+            
+            slices = []
+            for idx in [prev_idx, curr_idx, next_idx]:
+                if 0 <= idx < len(paths):
+                    frames = read_dicom_frames_hu(paths[idx])
+                    if frames:
+                        slices.append(frames[0])  # Take first frame
+                    else:
+                        break
+                else:
+                    # Handle boundary cases
+                    if idx < 0:
+                        frames = read_dicom_frames_hu(paths[0])
+                        if frames:
+                            slices.append(frames[0])
+                        else:
+                            break
+                    else:
+                        frames = read_dicom_frames_hu(paths[-1])
+                        if frames:
+                            slices.append(frames[0])
+                        else:
+                            break
+            
+            if len(slices) == 3:
+                img = create_rgb_from_slices(slices[0], slices[1], slices[2])
+                if args.img_size > 0 and (
+                    img.shape[0] != args.img_size or img.shape[1] != args.img_size
+                ):
+                    img = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                stem = f"{uid}_{dcm_path.stem}_rgb_neg"
+            else:
+                continue
+        else:
+            raise RuntimeError("Only RGB mode is supported!")
+            
+        img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
+        label_path = out_base / "labels" / split / f"{stem}.txt"
+        if not (img_path.exists() and label_path.exists()) or args.overwrite:
+            cv2.imwrite(str(img_path), img)
+            open(label_path, "w").close()
+            total_neg += 1
+            total_series += 1
+
+    return total_neg, total_series
 
 def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
     """Generate per-slice dataset for a single fold and return (out_base, fold_map)."""
@@ -367,190 +550,13 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
 
         # Per-slice generation (no MIP/BGR)
         if labels_for_series:
-            pos_saved = 0
-            # Track positive frames used per SOP to enable intra-DICOM adjacent negatives
-            sop_to_pos_frames: Dict[str, Set[int]] = {}
-            for (sop, x, y, cls_id, f_idx) in labels_for_series:
-                dcm_path = root / "series" / uid / f"{sop}.dcm"
-                if not dcm_path.exists():
-                    continue
-                
-                if args.rgb_mode:
-                    # RGB mode: get three adjacent slices
-                    adjacent_slices = get_adjacent_slices_for_rgb(paths, sop, sop_to_idx)
-                    if adjacent_slices is None:
-                        continue
-                    slice_prev, slice_curr, slice_next = adjacent_slices
-                    img = create_rgb_from_slices(slice_prev, slice_curr, slice_next)
-                    # For RGB, we need to handle 3D array (H, W, C)
-                    if args.img_size > 0 and (
-                        img.shape[0] != args.img_size or img.shape[1] != args.img_size
-                    ):
-                        img_resized = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
-                        resize_w = resize_h = args.img_size
-                    else:
-                        img_resized = img
-                        resize_h, resize_w = img_resized.shape[:2]
-                else:
-                    # Original mode: single slice
-                    frames = read_dicom_frames_hu(dcm_path)
-                    if not frames:
-                        continue
-                    # Select correct frame for positives. Treat 'f' as 0-based; fall back to 1-based if needed.
-                    frame_index = 0
-                    if len(frames) > 1 and f_idx is not None:
-                        if 0 <= f_idx < len(frames):
-                            frame_index = f_idx
-                        elif 1 <= f_idx <= len(frames):
-                            frame_index = f_idx - 1
-                    img = min_max_normalize(frames[frame_index])
-                    if args.img_size > 0 and (
-                        img.shape[0] != args.img_size or img.shape[1] != args.img_size
-                    ):
-                        img_resized = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
-                        resize_w = resize_h = args.img_size
-                    else:
-                        img_resized = img
-                        resize_h, resize_w = img_resized.shape
-
-                # Name images to include frame index for multi-frame DICOMs to avoid collisions
-                if args.rgb_mode:
-                    stem = f"{uid}_{sop}_rgb"
-                elif len(frames) > 1:
-                    stem = f"{uid}_{sop}_frame{frame_index}"
-                else:
-                    stem = f"{uid}_{sop}_slice"
-                img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
-                label_path = out_base / "labels" / split / f"{stem}.txt"
-                if img_path.exists() and label_path.exists() and not args.overwrite:
-                    # Still count as existing positive example for balancing if files already present
-                    pos_saved += 1
-                    continue
-                cv2.imwrite(str(img_path), img_resized)
-
-                # Scale point if resized
-                if args.rgb_mode:
-                    # For RGB mode, use the current slice shape as reference
-                    orig_h, orig_w = slice_curr.shape
-                else:
-                    orig_h, orig_w = frames[frame_index].shape
-                if (resize_w, resize_h) != (orig_w, orig_h):
-                    x_scaled = x * (resize_w / orig_w)
-                    y_scaled = y * (resize_h / orig_h)
-                else:
-                    x_scaled, y_scaled = x, y
-                xc, yc, bw, bh = build_box(x_scaled, y_scaled, args.box_size, resize_w, resize_h)
-                with open(label_path, "w") as f:
-                    f.write(f"{cls_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
-                total_pos += 1
-                total_series += 1
-                pos_saved += 1
-                # Track used positive frame indices per SOP
-                if not args.rgb_mode and len(frames) > 1:
-                    sop_to_pos_frames.setdefault(sop, set()).add(frame_index)
-
+            _, curr_total_pos, curr_total_series = process_positive_series(uid, root, labels_for_series, paths, sop_to_idx, split, out_base)
+            total_pos += curr_total_pos
+            total_series += curr_total_series
         else:
-            # Negative series: choose evenly sampled slices and write empty labels
-            if n_slices == 0:
-                continue
-            need = max(0, int(args.neg_per_series))
-            
-            # Collect all available frames from all DICOMs for proper even sampling
-            all_frames_info = []  # List of (dcm_path, frame_idx, total_frames_in_dcm)
-            for dcm_path in paths:
-                frames = read_dicom_frames_hu(dcm_path)
-                if frames:
-                    for frame_idx in range(len(frames)):
-                        all_frames_info.append((dcm_path, frame_idx, len(frames)))
-            
-            total_frames = len(all_frames_info)
-            if total_frames == 0:
-                continue
-                
-            # Sample up to 'need' evenly spaced frames across all available frames
-            if need >= total_frames:
-                # If we need more frames than available, take all
-                pick = list(range(total_frames))
-            else:
-                pick = np.linspace(1, total_frames - 2, need, dtype=int).tolist()
-                
-            for frame_idx in pick:
-                dcm_path, frame_num, total_frames_in_dcm = all_frames_info[frame_idx]
-                
-                if args.rgb_mode:
-                    # RGB mode: get three adjacent slices for negative samples
-                    # Find the index of this DICOM in the sorted paths
-                    dcm_idx = None
-                    for i, path in enumerate(paths):
-                        if path == dcm_path:
-                            dcm_idx = i
-                            break
-                    
-                    if dcm_idx is None:
-                        continue
-                    
-                    # Get adjacent slices
-                    prev_idx = dcm_idx - 1
-                    curr_idx = dcm_idx
-                    next_idx = dcm_idx + 1
-                    
-                    slices = []
-                    for idx in [prev_idx, curr_idx, next_idx]:
-                        if 0 <= idx < len(paths):
-                            frames = read_dicom_frames_hu(paths[idx])
-                            if frames:
-                                slices.append(frames[0])  # Take first frame
-                            else:
-                                break
-                        else:
-                            # Handle boundary cases
-                            if idx < 0:
-                                frames = read_dicom_frames_hu(paths[0])
-                                if frames:
-                                    slices.append(frames[0])
-                                else:
-                                    break
-                            else:
-                                frames = read_dicom_frames_hu(paths[-1])
-                                if frames:
-                                    slices.append(frames[0])
-                                else:
-                                    break
-                    
-                    if len(slices) == 3:
-                        img = create_rgb_from_slices(slices[0], slices[1], slices[2])
-                        if args.img_size > 0 and (
-                            img.shape[0] != args.img_size or img.shape[1] != args.img_size
-                        ):
-                            img = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
-                        stem = f"{uid}_{dcm_path.stem}_rgb_neg"
-                    else:
-                        continue
-                else:
-                    # Original mode: single slice
-                    frames = read_dicom_frames_hu(dcm_path)
-                    if not frames or frame_num >= len(frames):
-                        continue
-                        
-                    img = min_max_normalize(frames[frame_num])
-                    if args.img_size > 0 and (
-                        img.shape[0] != args.img_size or img.shape[1] != args.img_size
-                    ):
-                        img = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
-                    
-                    # Name images to include frame index for multi-frame DICOMs to avoid collisions
-                    if total_frames_in_dcm > 1:
-                        stem = f"{uid}_{dcm_path.stem}_frame{frame_num}_neg"
-                    else:
-                        stem = f"{uid}_{dcm_path.stem}_slice_neg"
-                    
-                img_path = out_base / "images" / split / f"{stem}.{args.image_ext}"
-                label_path = out_base / "labels" / split / f"{stem}.txt"
-                if not (img_path.exists() and label_path.exists()) or args.overwrite:
-                    cv2.imwrite(str(img_path), img)
-                    open(label_path, "w").close()
-                    total_neg += 1
-                    total_series += 1
+            curr_total_neg, curr_total_series = process_negative_series(uid, n_slices, paths, split, out_base)
+            total_neg += curr_total_neg
+            total_series += curr_total_series
 
     print(f"Series processed: {total_series}  (positive label files: {total_pos}, negative: {total_neg})")
     print(f"YOLO dataset root: {out_base}")
