@@ -74,7 +74,7 @@ def run():
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']
 
     # Call the validation script programmatically
-    val_script = ROOT / 'yolo_multiclass_validation.py'
+    val_script = ROOT / 'yolo_validation.py'
     if not val_script.exists():
         raise SystemExit(f"Validation script not found at {val_script}")
 
@@ -207,7 +207,8 @@ if __name__ == '__main__':
     run()
 
 
-# python3 -m src.run_yolo_pipeline  --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_location_all_negatives   --name yolo_11_m_one_loss --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --box 1.0 --cls 1.0 --dfl 1.0
+# python3 -m src.run_yolo_pipeline  --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_location_all_negatives   --name yolo_11_m_one_loss --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --box 1.0 --cls 1.0
+
 #  python3 -m src.run_yolo_pipeline    --epochs 100 --img 512 --batch 16   --model yolo8m.pt --project yolo_aneurysm_locations   --name yolo_8_m_one_loss --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 
 
 #  python3 -m src.run_yolo_pipeline     --epochs 100 --img 512 --batch 16   --project yolo_aneurysm_locations   --name cv_y11_efficientnet_v2_s --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0

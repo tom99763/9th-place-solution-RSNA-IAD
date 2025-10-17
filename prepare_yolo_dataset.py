@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 import pandas as pd
 import pydicom
+from tqdm import tqdm
+
 # Multilabel stratification for better balance across modality and classes
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold  # type: ignore
 
@@ -59,38 +61,6 @@ def min_max_normalize(img: np.ndarray) -> np.ndarray:
         return np.zeros_like(img, dtype=np.uint8)
     norm = (img - mn) / (mx - mn)
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
-
-
-def letterbox(
-    img: np.ndarray, new_shape: Tuple[int, int] = (640, 640)
-) -> Tuple[np.ndarray, Tuple[float, float]]:
-    """
-    Resize and pad image while maintaining aspect ratio.
-
-    Args:
-        img (np.ndarray): Input image with shape (H, W, C).
-        new_shape (Tuple[int, int]): Target shape (height, width).
-
-    Returns:
-        (np.ndarray): Resized and padded image.
-        (Tuple[float, float]): Padding ratios (top/height, left/width) for coordinate adjustment.
-    """
-    shape = img.shape[:2]  # Current shape [height, width]
-
-    # Scale ratio (new / old)
-    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-
-    # Compute padding
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    dw, dh = (new_shape[1] - new_unpad[0]) / 2, (new_shape[0] - new_unpad[1]) / 2  # wh padding
-
-    if shape[::-1] != new_unpad:  # Resize if needed
-        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
-
-    return img, (top / img.shape[0], left / img.shape[1])
 
 
 def create_rgb_from_slices(slice_prev: np.ndarray, slice_curr: np.ndarray, slice_next: np.ndarray) -> np.ndarray:
@@ -379,7 +349,7 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
     total_neg = 0
     print(f"Processing {len(all_series)} series for per-slice YOLO dataset (val fold = {val_fold})...")
 
-    for uid in all_series:
+    for uid in tqdm(all_series):
         if uid in ignore_uids:
             if args.verbose:
                 print(f"[SKIP] ignored series {uid}")
@@ -413,13 +383,14 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                     slice_prev, slice_curr, slice_next = adjacent_slices
                     img = create_rgb_from_slices(slice_prev, slice_curr, slice_next)
                     # For RGB, we need to handle 3D array (H, W, C)
-                    if args.img_size > 0:
-                        img_resized, (pad_h_ratio, pad_w_ratio) = letterbox(img, (args.img_size, args.img_size))
+                    if args.img_size > 0 and (
+                        img.shape[0] != args.img_size or img.shape[1] != args.img_size
+                    ):
+                        img_resized = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                         resize_w = resize_h = args.img_size
                     else:
                         img_resized = img
                         resize_h, resize_w = img_resized.shape[:2]
-                        pad_h_ratio = pad_w_ratio = 0.0
                 else:
                     # Original mode: single slice
                     frames = read_dicom_frames_hu(dcm_path)
@@ -433,13 +404,14 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                         elif 1 <= f_idx <= len(frames):
                             frame_index = f_idx - 1
                     img = min_max_normalize(frames[frame_index])
-                    if args.img_size > 0:
-                        img_resized, (pad_h_ratio, pad_w_ratio) = letterbox(img, (args.img_size, args.img_size))
+                    if args.img_size > 0 and (
+                        img.shape[0] != args.img_size or img.shape[1] != args.img_size
+                    ):
+                        img_resized = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                         resize_w = resize_h = args.img_size
                     else:
                         img_resized = img
                         resize_h, resize_w = img_resized.shape
-                        pad_h_ratio = pad_w_ratio = 0.0
 
                 # Name images to include frame index for multi-frame DICOMs to avoid collisions
                 if args.rgb_mode:
@@ -456,18 +428,15 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                     continue
                 cv2.imwrite(str(img_path), img_resized)
 
-                # Scale point for letterbox resize
+                # Scale point if resized
                 if args.rgb_mode:
                     # For RGB mode, use the current slice shape as reference
                     orig_h, orig_w = slice_curr.shape
                 else:
                     orig_h, orig_w = frames[frame_index].shape
-
-                if args.img_size > 0:
-                    # Calculate scaling factor to maintain aspect ratio
-                    scale_ratio = min(args.img_size / orig_h, args.img_size / orig_w)
-                    x_scaled = x * scale_ratio + pad_w_ratio * args.img_size
-                    y_scaled = y * scale_ratio + pad_h_ratio * args.img_size
+                if (resize_w, resize_h) != (orig_w, orig_h):
+                    x_scaled = x * (resize_w / orig_w)
+                    y_scaled = y * (resize_h / orig_h)
                 else:
                     x_scaled, y_scaled = x, y
                 xc, yc, bw, bh = build_box(x_scaled, y_scaled, args.box_size, resize_w, resize_h)
@@ -550,8 +519,10 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                     
                     if len(slices) == 3:
                         img = create_rgb_from_slices(slices[0], slices[1], slices[2])
-                        if args.img_size > 0:
-                            img, _ = letterbox(img, (args.img_size, args.img_size))
+                        if args.img_size > 0 and (
+                            img.shape[0] != args.img_size or img.shape[1] != args.img_size
+                        ):
+                            img = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
                         stem = f"{uid}_{dcm_path.stem}_rgb_neg"
                     else:
                         continue
@@ -560,11 +531,13 @@ def generate_for_fold(val_fold: int, args) -> Tuple[Path, Dict[str, int]]:
                     frames = read_dicom_frames_hu(dcm_path)
                     if not frames or frame_num >= len(frames):
                         continue
-
+                        
                     img = min_max_normalize(frames[frame_num])
-                    if args.img_size > 0:
-                        img, _ = letterbox(img, (args.img_size, args.img_size))
-
+                    if args.img_size > 0 and (
+                        img.shape[0] != args.img_size or img.shape[1] != args.img_size
+                    ):
+                        img = cv2.resize(img, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
+                    
                     # Name images to include frame index for multi-frame DICOMs to avoid collisions
                     if total_frames_in_dcm > 1:
                         stem = f"{uid}_{dcm_path.stem}_frame{frame_num}_neg"
@@ -617,7 +590,7 @@ def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_sc
         ]
     )
     with open(yaml_dir / yaml_name, "w") as f:
-        f.write("# Auto-generated by prepare_yolo_dataset_v2.py\n")
+        f.write("# Auto-generated by prepare_yolo_dataset.py\n")
         f.write(yaml_text)
 
 
@@ -640,8 +613,4 @@ if __name__ == "__main__":
         print("  train: images/train\n  val: images/val")
 
 
-#Locations (multiclass, with letterbox resize):
-#Example: python3 -m src.prepare_yolo_dataset_v4_25d_letterbox --generate-all-folds --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite
-
-#RGB mode (3-channel from adjacent slices, with letterbox resize):
-#Example: python3 -m src.prepare_yolo_dataset_v4_25d_letterbox --generate-all-folds --out-name yolo_dataset_rgb --img-size 512 --label-scheme locations --rgb-mode --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite
+# python3 -m src.prepare_yolo_dataset_v4_25d --generate-all-folds --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite
