@@ -1,7 +1,6 @@
 
 import argparse
 import ast
-import math
 import random
 import sys
 from pathlib import Path
@@ -11,7 +10,6 @@ import cv2
 import numpy as np
 import pandas as pd
 import pydicom
-from sklearn.model_selection import StratifiedKFold
 # Multilabel stratification for better balance across modality and classes
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold  # type: ignore
 

@@ -1,4 +1,21 @@
+"""Validate a 13-class YOLO aneurysm detector at series level.
 
+Preprocessing:
+    - DICOM -> HU -> per-slice min-max -> uint8 (rgb for YOLO inference)
+    - rgb mode: stacks 3 consecutive slices [i-1, i, i+1] as 3-channel images
+
+Series scores:
+    - Aneurysm Present = max detection confidence across ALL 13 classes over processed slices/MIP windows
+    - Location probs   = per-class max detection confidence over processed slices/MIP windows
+
+Outputs:
+    - Classification AUC (aneurysm present)
+    - Location macro AUC (macro over 13 classes)
+    - Optional CSV with per-series predictions
+
+Notes:
+    - Requires ultralytics (YOLOv8/11) and 13-class weights.
+"""
 import argparse
 from pathlib import Path
 import sys
@@ -30,49 +47,62 @@ def parse_args():
     ap.add_argument('--val-fold', type=int, default=1, help='Fold id to evaluate (matches  fold_id)')
     ap.add_argument('--series-limit', type=int, default=0, help='Optional limit on number of validation series (debug)')
     ap.add_argument('--max-slices', type=int, default=0, help='Optional cap on number of slices/windows per series (debug)')
+    ap.add_argument('--save-csv', type=str, default='', help='Optional path to save per-series predictions CSV (deprecated, prefer --out-dir)')
     ap.add_argument('--out-dir', type=str, default='', help='If set, writes metrics JSON/CSV into this directory')
     ap.add_argument('--batch-size', type=int, default=16, help='Batch size for inference (higher = faster, more VRAM)')
     ap.add_argument('--verbose', action='store_true')
     ap.add_argument('--slice-step', type=int, default=1, help='Process every Nth slice (default=1)')
-    # img size
-    ap.add_argument('--img-size', type=int, default=0, help='Optional resize of slice to this square size before inference (0 keeps original)')
+    # Sliding-window MIP mode
+    ap.add_argument('--mip-window', type=int, default=0, help='Half-window (in slices) for MIP; 0 = per-slice mode')
+    ap.add_argument('--img-size', type=int, default=0, help='Optional resize of MIP/slice to this square size before inference (0 keeps original)')
+    ap.add_argument('--mip-no-overlap', action='store_true', help='Use non-overlapping MIP windows (stride = 2*w+1 instead of slice_step)')
     # CV
     ap.add_argument('--cv', action='store_true', help='Run validation across all folds found in train_df.csv/')
     ap.add_argument('--folds', type=str, default='', help='Comma-separated fold ids to run (overrides --val-fold when provided)')
     # Weights & Biases
     ap.add_argument('--wandb', default=True, action='store_true', help='Log metrics and outputs to Weights & Biases')
-    ap.add_argument('--wandb-project', type=str, default='yolo_aneurysm_locations', help='W&B project name (no slashes)')
+    ap.add_argument('--wandb-project', type=str, default='yolo_aneurysm_location_all_negatives', help='W&B project name (no slashes)')
     ap.add_argument('--wandb-entity', type=str, default='', help='W&B entity (team/user)')
     ap.add_argument('--wandb-run-name', type=str, default='', help='W&B run name (defaults to val_fold{fold})')
     ap.add_argument('--wandb-group', type=str, default='', help='Optional W&B group')
     ap.add_argument('--wandb-tags', type=str, default='', help='Comma-separated W&B tags')
     ap.add_argument('--wandb-mode', type=str, default='online', choices=['online', 'offline'], help='W&B mode (online/offline)')
+    ap.add_argument('--rgb-mode', action='store_true', help='Use rgb mode (3-channel images from stacked slices)')
     ap.add_argument('--wandb-resume-id', type=str, default='', help='Resume W&B run id (optional)')
     ap.add_argument('--single-cls', action='store_true', help='Single class mode: only classify aneurysm present/absent (no location prediction)')
     return ap.parse_args()
 
 
+
+
 def read_dicom_frames_hu(path: Path) -> List[np.ndarray]:
+    """Read a DICOM file and return a list of frames in HU (float32).
+
+    Supports:
+      - 2D single-slice DICOM -> one frame [H,W]
+      - 3D multi-frame -> list of frames [N,H,W]
+      - 3-channel RGB DICOM -> converted to single grayscale frame
+    """
     ds = pydicom.dcmread(str(path), force=True)
     pix = ds.pixel_array
-    slope = float(getattr(ds, 'RescaleSlope', 1.0))
-    intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+    slope = float(getattr(ds, "RescaleSlope", 1.0))
+    intercept = float(getattr(ds, "RescaleIntercept", 0.0))
     frames: List[np.ndarray] = []
     if pix.ndim == 2:
         img = pix.astype(np.float32)
         frames.append(img * slope + intercept)
     elif pix.ndim == 3:
-        # RGB or multi-frame
+        # If RGB (H,W,3), take first channel; else assume multi-frame (N,H,W)
         if pix.shape[-1] == 3 and pix.shape[0] != 3:
-            try:
-                gray = cv2.cvtColor(pix.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
-            except Exception:
-                gray = pix[..., 0].astype(np.float32)
+            gray = pix[..., 0].astype(np.float32)
             frames.append(gray * slope + intercept)
         else:
             for i in range(pix.shape[0]):
                 frm = pix[i].astype(np.float32)
                 frames.append(frm * slope + intercept)
+    else:
+        # Unsupported layout
+        pass
     return frames
 
 
@@ -84,8 +114,93 @@ def min_max_normalize(img: np.ndarray) -> np.ndarray:
     return (norm * 255.0).clip(0, 255).astype(np.uint8)
 
 
-def collect_series_slices(series_dir: Path) -> List[Path]:
-    return sorted(series_dir.glob('*.dcm'))
+def letterbox(
+    img: np.ndarray, new_shape: Tuple[int, int] = (640, 640)
+) -> Tuple[np.ndarray, Tuple[float, float]]:
+    """
+    Resize and pad image while maintaining aspect ratio.
+
+    Args:
+        img (np.ndarray): Input image with shape (H, W, C).
+        new_shape (Tuple[int, int]): Target shape (height, width).
+
+    Returns:
+        (np.ndarray): Resized and padded image.
+        (Tuple[float, float]): Padding ratios (top/height, left/width) for coordinate adjustment.
+    """
+    shape = img.shape[:2]  # Current shape [height, width]
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+
+    # Compute padding
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = (new_shape[1] - new_unpad[0]) / 2, (new_shape[0] - new_unpad[1]) / 2  # wh padding
+
+    if shape[::-1] != new_unpad:  # Resize if needed
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+
+    return img, (top / img.shape[0], left / img.shape[1])
+
+
+def create_rgb_from_slices(slice_prev: np.ndarray, slice_curr: np.ndarray, slice_next: np.ndarray) -> np.ndarray:
+    """Create RGB image from three adjacent slices, normalizing each channel individually."""
+    # Normalize each slice individually
+    r_channel = min_max_normalize(slice_prev)
+    g_channel = min_max_normalize(slice_curr)
+    b_channel = min_max_normalize(slice_next)
+    
+    # Stack as RGB channels
+    rgb_img = np.stack([r_channel, g_channel, b_channel], axis=-1)
+    return rgb_img
+
+
+def ordered_dcm_paths(series_dir: Path) -> Tuple[List[Path], Dict[str, int]]:
+    """Collect all DICOM files in series directory and sort by spatial position."""
+    dicom_files = list(series_dir.glob("*.dcm"))
+    
+    if not dicom_files:
+        return [], {}
+    
+    # First pass: collect all slices with their spatial information
+    temp_slices = []
+    for filepath in dicom_files:
+        try:
+            ds = pydicom.dcmread(str(filepath), stop_before_pixels=True)
+            
+            # Priority order for sorting: SliceLocation > ImagePositionPatient > InstanceNumber
+            if hasattr(ds, "SliceLocation"):
+                # SliceLocation is the most reliable for slice ordering
+                sort_val = float(ds.SliceLocation)
+            elif hasattr(ds, "ImagePositionPatient") and len(ds.ImagePositionPatient) >= 3:
+                # Fallback to z-coordinate from ImagePositionPatient
+                sort_val = float(ds.ImagePositionPatient[-1])
+            else:
+                # Final fallback to InstanceNumber
+                sort_val = float(getattr(ds, "InstanceNumber", 0))
+            
+            # Store filepath with its sort value
+            temp_slices.append((sort_val, filepath))
+            
+        except Exception as e:
+            # Fallback: use filename as last resort
+            temp_slices.append((str(filepath.name), filepath))
+            continue
+    
+    if not temp_slices:
+        return [], {}
+    
+    # Sort slices by the determined sort value (spatial order)
+    temp_slices.sort(key=lambda x: x[0])
+    
+    # Extract the sorted filepaths
+    sorted_files = [item[1] for item in temp_slices]
+    sop_to_idx = {p.stem: i for i, p in enumerate(sorted_files)}
+    return sorted_files, sop_to_idx
+
 
 
 def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_id: int) -> Tuple[Dict[str, float], pd.DataFrame]:
@@ -102,7 +217,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
         val_series = val_series[:args.series_limit]
 
     print(f"Validation fold {fold_id}: {len(val_series)} series")
-    print(f"Processing every {args.slice_step} slice(s)")
+    print(f"Processing every {args.slice_step} slice(s); MIP half-window={args.mip_window}")
     model = YOLO(weights_path)
 
     series_probs: Dict[str, float] = {}
@@ -170,12 +285,17 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
             if args.verbose:
                 print(f"[MISS] {sid} (no directory)")
             continue
-        dicoms = collect_series_slices(series_dir)
+        dicoms, sop_to_idx = ordered_dcm_paths(series_dir)
         if not dicoms:
             if args.verbose:
                 print(f"[EMPTY] {sid}")
             continue
 
+        # In per-slice mode, apply stepping BEFORE max_slices
+        if args.mip_window <= 0:
+            dicoms = dicoms[::args.slice_step]
+            if args.max_slices and len(dicoms) > args.max_slices:
+                dicoms = dicoms[:args.max_slices]
 
         max_conf_all = 0.0
         per_class_max = np.zeros(N_LOC, dtype=np.float32)
@@ -186,7 +306,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
             nonlocal max_conf_all, total_dets, per_class_max
             if not batch_imgs:
                 return
-            results = model.predict(batch_imgs, verbose=False, conf=0.01)
+            results = model.predict(batch_imgs, verbose=False, conf=0.01, imgsz= 512)
             for r in results:
                 if not r or r.boxes is None or r.boxes.conf is None or len(r.boxes) == 0:
                     continue
@@ -213,25 +333,154 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                     except Exception:
                         pass
 
-
-        # Per-slice inference
-        for dcm_path in dicoms:
-            try:
-                frames = read_dicom_frames_hu(dcm_path)
-            except Exception as e:
-                if args.verbose:
-                    print(f"[SKIP] {dcm_path.name}: {e}")
+        if args.mip_window > 0:
+            # Build HU slices and slide MIP
+            slices_hu: list[np.ndarray] = []
+            shapes_count: Dict[tuple[int, int], int] = {}
+            for dcm_path in dicoms:
+                try:
+                    frames = read_dicom_frames_hu(dcm_path)
+                except Exception as e:
+                    if args.verbose:
+                        print(f"[SKIP] {dcm_path.name}: {e}")
+                    continue
+                for f in frames:
+                    f = f.astype(np.float32)
+                    slices_hu.append(f)
+                    shapes_count[f.shape] = shapes_count.get(f.shape, 0) + 1
+            if not slices_hu:
+                series_probs[sid] = 0.0
+                series_pred_loc_probs.append(np.zeros(N_LOC, dtype=np.float32))
+                series_pred_counts[sid] = 0
                 continue
-            for f in frames:
-                img_uint8 = min_max_normalize(f)
-                if args.img_size > 0 and (img_uint8.shape[0] != args.img_size or img_uint8.shape[1] != args.img_size):
-                    img_uint8 = cv2.resize(img_uint8, (args.img_size, args.img_size), interpolation=cv2.INTER_LINEAR)
-                if img_uint8.ndim == 2:
-                    img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
-                batch.append(img_uint8)
+            target_shape = max(shapes_count.items(), key=lambda kv: kv[1])[0]
+            th, tw = target_shape
+            n = len(slices_hu)
+            if args.mip_no_overlap:
+                w = max(0, int(args.mip_window))
+                window_size = 2 * w + 1
+                if n <= 0:
+                    centers: list[int] = []
+                elif n < window_size:
+                    centers = [n // 2]
+                else:
+                    centers = list(range(w, n, window_size))
+                    if centers and centers[-1] + w < n - 1:
+                        centers.append(min(n - 1 - w, n - 1))
+            else:
+                stride = max(1, args.slice_step)
+                centers = list(range(0, n, stride))
+            if args.max_slices and len(centers) > args.max_slices:
+                centers = centers[:args.max_slices]
+
+            resized_cache: Dict[int, np.ndarray] = {}
+            w = args.mip_window
+            for c in centers:
+                lo = max(0, c - w)
+                hi = min(n - 1, c + w)
+                mip_hu = None
+                for i in range(lo, hi + 1):
+                    arr = resized_cache.get(i)
+                    if arr is None:
+                        a = slices_hu[i]
+                        if a.shape != target_shape:
+                            a = cv2.resize(a, (tw, th), interpolation=cv2.INTER_LINEAR)
+                        resized_cache[i] = a
+                        arr = a
+                    mip_hu = arr if mip_hu is None else np.maximum(mip_hu, arr)
+                mip_u8 = min_max_normalize(mip_hu)
+                if args.img_size > 0:
+                    mip_u8, _ = letterbox(mip_u8, (args.img_size, args.img_size))
+                mip_rgb = cv2.cvtColor(mip_u8, cv2.COLOR_GRAY2RGB) if mip_u8.ndim == 2 else mip_u8
+                batch.append(mip_rgb)
                 if len(batch) >= args.batch_size:
                     flush_batch(batch)
                     batch.clear()
+            flush_batch(batch)
+        elif getattr(args, 'rgb_mode', False):
+            # RGB mode: stack 3 consecutive slices as channels (match data preparation approach)
+            slices_hu: list[np.ndarray] = []
+            for dcm_path in dicoms:
+                try:
+                    frames = read_dicom_frames_hu(dcm_path)
+                except Exception as e:
+                    if args.verbose:
+                        print(f"[SKIP] {dcm_path.name}: {e}")
+                    continue
+                for f in frames:
+                    # Keep as HU values, don't normalize yet (match data prep approach)
+                    slices_hu.append(f.astype(np.float32))
+
+            if len(slices_hu) < 3:
+                print("Not enough slices for rgb mode, skip this series")
+                # Not enough slices for rgb mode, skip this series
+                series_probs[sid] = 0.0
+                series_pred_loc_probs.append(np.zeros(N_LOC, dtype=np.float32))
+                series_pred_counts[sid] = 0
+                continue
+
+            # Apply slice stepping at slice level (match data prep exactly)
+            step = max(1, args.slice_step)
+            slice_indices = list(range(1, len(slices_hu)-1, step))
+            if args.max_slices and len(slice_indices) > args.max_slices:
+                slice_indices = slice_indices[:args.max_slices]
+
+            # Create RGB triplets for 2.5D (match data preparation approach)
+            for i in slice_indices:
+                try:
+                    # Get 3 consecutive slices: [i-1, i, i+1] (match test script v1 exactly)
+                    prev_frame = slices_hu[i-1]
+                    curr_frame = slices_hu[i]
+                    next_frame = slices_hu[i+1]
+
+                    # Ensure all frames are valid and same shape
+                    if prev_frame is None or curr_frame is None or next_frame is None:
+                        continue
+                        
+                    if not (prev_frame.shape == curr_frame.shape == next_frame.shape):
+                        print(f"Warning: Frame shape mismatch at index {i}")
+                        continue
+
+                    # Create RGB using individual normalization per channel (match data prep)
+                    rgb_img = create_rgb_from_slices(prev_frame, curr_frame, next_frame)
+
+                    # Validate output shape
+                    if rgb_img.shape[-1] != 3 or rgb_img.ndim != 3:
+                        print(f"Warning: Invalid RGB shape {rgb_img.shape} at index {i}")
+                        continue
+
+                    # Apply letterbox resizing if specified (match data prep behavior)
+                    #if args.img_size > 0:
+                    #    rgb_img, _ = letterbox(rgb_img, (args.img_size, args.img_size))
+
+                    batch.append(rgb_img)
+                    if len(batch) >= args.batch_size:
+                        flush_batch(batch)
+                        batch.clear()
+
+                except Exception as e:
+                    print(f"Error creating RGB triplet at index {i}: {e}")
+                    continue
+            flush_batch(batch)
+        else:
+            # Per-slice inference
+            for dcm_path in dicoms:
+                try:
+                    frames = read_dicom_frames_hu(dcm_path)
+                except Exception as e:
+                    if args.verbose:
+                        print(f"[SKIP] {dcm_path.name}: {e}")
+                    continue
+                for f in frames:
+                    img_uint8 = min_max_normalize(f)
+                    if args.img_size > 0:
+                        img_uint8, _ = letterbox(img_uint8, (args.img_size, args.img_size))
+                    if img_uint8.ndim == 2:
+                        img_uint8 = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2RGB)
+                    batch.append(img_uint8)
+                    if len(batch) >= args.batch_size:
+                        flush_batch(batch)
+                        batch.clear()
             flush_batch(batch)
 
         series_probs[sid] = max_conf_all
@@ -253,6 +502,7 @@ def _run_validation_for_fold(args: argparse.Namespace, weights_path: str, fold_i
                 except Exception:
                     loc_vec[idx] = 0.0
         loc_labels.append(loc_vec)
+        #print("series_name", sid, "series_probs", series_probs)
         
         # Track partial AUC every 10 series
         processed_count += 1
@@ -413,7 +663,10 @@ def _maybe_init_wandb(args: argparse.Namespace, fold_id: int, weights_path: str)
         'weights_path': weights_path,
         'val_fold': fold_id,
         'slice_step': args.slice_step,
+        'mip_window': args.mip_window,
         'img_size': args.img_size,
+        'mip_no_overlap': args.mip_no_overlap,
+        'rgb_mode': args.rgb_mode,
         'batch_size': args.batch_size,
         'series_limit': args.series_limit,
         'max_slices': args.max_slices,
@@ -539,34 +792,15 @@ def main():
         with open(out_dir / 'cv_summary.json', 'w') as fjs:
             json.dump(summary, fjs, indent=2)
 
-
+    # Back-compat: --save-csv if requested and no out_dir
+    if args.save_csv and not args.out_dir and all_fold_metrics:
+        # Only for the last fold run
+        metrics, per_series_df = all_fold_metrics[-1], None
+        # We didn't retain per_series_df here; encourage using out_dir.
+        print('Tip: prefer --out-dir to save structured outputs per fold.')
 
 
 if __name__ == '__main__':
     main()
 
-
-#Baseline yolo11n 48bbox slice-based
-# yolo11n.pt 48 bbox fold1
-#Classification AUC (aneurysm present): 0.6960
-#Location macro AUC: 0.7659
-#Combined (mean) metric: 0.7309
-
-
-
-
-#Baseline yolo11l 24bbox slice-based
-#/home/sersasj/RSNA-IAD-Codebase/runs/yolo_aneurysm_locations/baseline_slice_24bbox2/weights/best.pt
-#Classification AUC (aneurysm present): 0.6992
-#Location macro AUC: 0.7517
-#Combined (mean) metric: 0.7255
-
-#Baseline yolo11n 24bbox slice-based + mosaic + mixup
-#Classification AUC (aneurysm present): 0.7084
-#Location macro AUC: 0.7570
-#Combined (mean) metric: 0.7327
-
-#Baseline yolo11s 24bbox slice-based + mosaic + mixup
-#Classification AUC (aneurysm present): 0.7189
-#Location macro AUC: 0.7840
-#Combined (mean) metric: 0.7514
+# python3 /home/sersasj/RSNA-IAD-Codebase/yolo_multiclass_validation.py --weights yolo_aneurysm_locations/cv_mobilenet_more_negatives_fold22/weights/best.pt --val-fold 2 --out-dir yolo_aneurysm_locations/cv_mobilenet_more_negatives_fold22/series_validation --batch-size 16 --slice-step 1 

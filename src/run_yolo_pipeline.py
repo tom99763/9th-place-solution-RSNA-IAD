@@ -16,8 +16,6 @@ Usage example:
 import argparse
 from pathlib import Path
 import sys
-import json
-import shutil
 from typing import List
 
 sys.path.insert(0, "ultralytics-timm")
@@ -72,12 +70,11 @@ def parse_args():
 
 def run():
     print("waiting")
-    import time
     args = parse_args()
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']
 
     # Call the validation script programmatically
-    val_script = ROOT / 'yolo_multiclass_validation_old_copy.py'
+    val_script = ROOT / 'yolo_multiclass_validation.py'
     if not val_script.exists():
         raise SystemExit(f"Validation script not found at {val_script}")
 
@@ -192,7 +189,6 @@ def run():
         wandb_info = _get_wandb_resume_info(save_dir)
         if wandb_info or args.val_wandb or args.wandb_project:
             cmd.append('--wandb')
-            run_name = f"{args.name}_fold{f}_val"
             if wandb_info:
                 if wandb_info.get('project'):
                     cmd += ['--wandb-project', wandb_info['project']]
