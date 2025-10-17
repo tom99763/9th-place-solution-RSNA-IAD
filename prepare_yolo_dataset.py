@@ -586,7 +586,7 @@ def write_yolo_yaml(yaml_dir: Path, yaml_name: str, dataset_root: Path, label_sc
             names_lines.append(f"  {i}: {label}")
     yaml_text = "\n".join(
         [
-            f"path: {relative_path}",
+            f"path: ./data/{relative_path.stem}",
             f"train: images/train",
             f"val: images/val",
             "",

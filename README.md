@@ -3,13 +3,21 @@
 
 To reproduce 0.79 submission:
 
-1. Download ultralytics-timm from Kaggle
+1. Download `ultralytics-timm` from kaggle using Download ultralytics-timm from Kaggle
 
-2. Prepare data:
 ```bash
-python3 -m src.prepare_yolo_dataset_v2 --generate-all-folds --neg-per-series 1 --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite
+    kaggle datasets download sersasj/ultralytcs-timm-rsna
+    unzip ultralytcs-timm-rsna.zip
 ```
 
-3. Train model:
+2. Prepare data:
+
 ```bash
-python3 -m src.run_yolo_pipeline --model xxxxx --epochs 100 --img 512 --batch 16 --project yolo_aneurysm_locations --name cv_efficientnet_v2_b0-config2 --data-fold-template configs/yolo_fold{fold}.yaml --folds 0,1,2,3,4
+python3 ./prepare_yolo_dataset.py --generate-all-folds --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite --rgb-mode
+```
+
+3. Train YOLO 8m:
+
+```bash
+python3 ./run_yolo_pipeline.py  --epochs 100 --img 512 --batch 32 --model yolov8m --project yolo_aneurysm_locations --name yolo_8m --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --cls 1.0
+```
