@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 from typing import List
 
-sys.path.insert(0, "ultralytics-timm")
+sys.path.insert(0, "../ultralytics-timm")
 from ultralytics import YOLO  # type: ignore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +74,7 @@ def run():
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']
 
     # Call the validation script programmatically
-    val_script = Path('./yolo_validation.py')
+    val_script = Path('yolo_validation.py')
     if not val_script.exists():
         raise SystemExit(f"Validation script not found at {val_script}")
 
