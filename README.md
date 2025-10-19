@@ -1,6 +1,11 @@
 
 # 9th-place-solution-RSNA Intracranial Aneurysm Detection
 
+## Install Dependencies
+```bash
+pip3 install -r requirements.txt
+```
+
 ## Yolo 2.5D
 
 ### Environment 
