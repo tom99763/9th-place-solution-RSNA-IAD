@@ -1,5 +1,13 @@
 
-# RSNA IAD Codebase
+# 9th-place-solution-RSNA Intracranial Aneurysm Detection
+
+## Yolo 2.5D
+
+### Environment 
+| Hardware Setup | GPU | CPU | RAM | Time per Fold | Total (5 folds) |
+| --- | --- | --- | --- | --- | --- |
+| @sersasj | RTX 3090 | Intel Core i5-12400F (12) @ 4.4GHz | 32GB | 4-5 hours | ~24 hours |
+| @iamparadox | RTX 4090 | AMD Ryzen 9 7950X (32) @ 5.883GHz | 64GB | ~2 hours | ~10 hours |
 
 To reproduce yolo 2.5D
 
