@@ -49,7 +49,7 @@ python3 ./yolo25d/run_yolo_pipeline.py  --epochs 50 --img 512 --batch 32 --model
 
 ## Meta Classifier
 
-train meta classifier:
+Generate trained weights of meta classifier:
 ```batch
 python3 ./train_meta_classifier.py
 ```
