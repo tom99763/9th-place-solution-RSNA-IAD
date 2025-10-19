@@ -19,8 +19,14 @@ To reproduce yolo 2.5D
 1. Download `ultralytics-timm` from kaggle using Download ultralytics-timm from Kaggle
 
 ```bash
-    kaggle datasets download sersasj/ultralytcs-timm-rsna
-    unzip ultralytcs-timm-rsna.zip
+# 1. Create target directory
+mkdir -p ./yolo25d
+
+# 2. Download the dataset into that directory
+kaggle datasets download -d sersasj/ultralytcs-timm-rsna -p ./yolo25d
+
+# 3. Unzip the dataset inside the same directory
+unzip ./yolo25d/ultralytcs-timm-rsna.zip -d ./yolo25d
 ```
 
 2. Prepare data:
