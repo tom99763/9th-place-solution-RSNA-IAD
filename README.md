@@ -1,6 +1,11 @@
 
 # 9th-place-solution-RSNA Intracranial Aneurysm Detection
 
+## Install Dependencies
+```bash
+pip3 install -r requirements.txt
+```
+
 ## Yolo 2.5D
 
 ### Environment 
@@ -14,25 +19,35 @@ To reproduce yolo 2.5D
 1. Get all the competition data and setup directory structure
 
 ```bash
-    ./get-data.sh
+# Download the dataset into that directory
+kaggle datasets download -d sersasj/ultralytcs-timm-rsna -p ./yolo25d
+
+# Unzip the dataset inside the same directory
+unzip ./yolo25d/ultralytcs-timm-rsna.zip -d ./yolo25d
 ```
 
 2. Prepare data:
 
 ```bash
-python3 ./prepare_yolo_dataset.py --generate-all-folds --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite --rgb-mode
+python3 ./yolo25d/prepare_yolo_dataset.py --generate-all-folds --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite --rgb-mode
 ```
 
 3. Train YOLO 11m:
 
 ```bash
-python3 ./run_yolo_pipeline.py  --epochs 80 --img 512 --batch 32 --model yolo11m.pt --project ./models --name yolo_11m --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --cls 1.0
+python3 ./yolo25d/run_yolo_pipeline.py  --epochs 80 --img 512 --batch 32 --model yolo11m.pt --project yolo_aneurysm_locations --name yolo_11m --rgb-mode --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --cls 1.0
 ```
 
 4. Train Yolo with tf_efficientnetv2_s.in21k_ft_in1k backbone:
 
 ```bash
-python3 ./run_yolo_pipeline.py  --epochs 100 --img 512 --batch 32 --model yolo-11-effnetv2_s.yaml --project ./models/ --name yolo_effv2 --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0 --cls 1.0
+python3 ./yolo25d/run_yolo_pipeline.py  --epochs 50 --img 512 --batch 32 --model yolo-11-effnetv2_s.yaml --project yolo_aneurysm_locations --name yolo_effnetv2 --rgb-mode --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --cls 1.0
+```
+
+5. Output weights:
+```
+yolo25d/yolo-11m-2.5D_[fold id]/weights/best.pt
+yolo25d/cv_effnetv2_s_drop_path_25d_[fold id]/weights/best.pt
 ```
 
 5. Strip best weights for trained yolo:
@@ -45,3 +60,18 @@ Now all the weights of the the trained YOLO(s) will be present under ./models wi
 
 
 ## EfficientV2s + 3D-CenterNet (Flayer)
+
+
+## Meta Classifier
+
+1. Generate trained weights of meta classifier:
+```batch
+python3 ./train_meta_classifier.py
+```
+
+2. Output weights
+```
+meta_classifier/cat/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifier/lgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifier/xgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+```
