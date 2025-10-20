@@ -60,7 +60,7 @@ yolo25d/cv_effnetv2_s_drop_path_25d_[fold id]/weights/best.pt
 python3 ./train_meta_classifier.py
 ```
 
-2. Output files
+2. Output weights
 ```
 meta_classifier/cat/meta_classifier_[class name]_fold_fold[fold id].pkl
 meta_classifier/lgb/meta_classifier_[class name]_fold_fold[fold id].pkl
