@@ -53,3 +53,10 @@ python3 ./yolo25d/run_yolo_pipeline.py  --epochs 50 --img 512 --batch 32 --model
 ```batch
 python3 ./train_meta_classifier.py
 ```
+
+2. Output files
+```
+meta_classifier/cat/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifier/lgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifier/xgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+```
