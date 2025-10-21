@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 from typing import List
 
-sys.path.insert(0, "ultralytics-timm")
+sys.path.insert(0, "../ultralytics-timm")
 from ultralytics import YOLO  # type: ignore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +33,7 @@ def parse_args():
     ap.add_argument('--batch', type=int, default=16)
     ap.add_argument('--device', type=str, default='')
     ap.add_argument('--project', type=str, default='yolo_aneurysm_locations')
-    ap.add_argument('--name', type=str, default='exp-2-folds')
+    ap.add_argument('--name', type=str, default='yolo-models')
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--freeze', type=int, default=0)
     ap.add_argument('--patience', type=int, default=150)
@@ -74,7 +74,7 @@ def run():
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']
 
     # Call the validation script programmatically
-    val_script = Path('./yolo_validation.py')
+    val_script = Path('yolo_validation.py')
     if not val_script.exists():
         raise SystemExit(f"Validation script not found at {val_script}")
 
