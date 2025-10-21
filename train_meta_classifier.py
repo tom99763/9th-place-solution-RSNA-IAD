@@ -403,7 +403,7 @@ def train_meta_multilabel_catboost(df, df_main, args, feature_cols):
         oof_preds[LABEL_COLS].values
     )
     score = 0.5 * cls_score + 0.5 * loc_score
-    print(f'ccatboost kaggle score: {score:.6f}')
+    print(f'catboost kaggle score: {score:.6f}')
 
     # Average feature importance across all folds and labels
     fi_cols = [col for col in feature_importances.columns if col != "feature"]
