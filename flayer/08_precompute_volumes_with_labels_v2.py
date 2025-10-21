@@ -1,3 +1,4 @@
+import argparse
 import os
 import numpy as np
 import pydicom
@@ -269,13 +270,19 @@ class DICOMPreprocessorKaggle:
 
         return volume
 
-def main():
-    # Config
-    csv_path = "/ssd3/rsna_2025_flayer/data/train.csv"
-    localize_csv_path = "/ssd3/rsna_2025_flayer/data/train_localizers.csv"
-    series_root = "/ssd3/rsna_2025_flayer/data/series"
-    output_dir = "/ssd3/rsna_2025_flayer/input/pre_volumes_withlabel_448_64"
-    #output_dir = "/home/ubuntu/work/data1/kaggle/2025_rsna/pre_volumes_withlabel_448"
+def main(args):
+
+    csv_path = args.csv_path
+    localize_csv_path = args.localize_csv_path
+    series_root = args.series_root
+    output_dir = args.output_dir
+
+    print(f"CSV path           : {csv_path}")
+    print(f"Localizer CSV path : {localize_csv_path}")
+    print(f"Series root        : {series_root}")
+    print(f"Output directory   : {output_dir}")
+    
+    
     os.makedirs(output_dir, exist_ok=True)
 
     # 0. load train.csv to df_train, load train_localizers.csv to df_locale
@@ -322,4 +329,33 @@ def main():
     # print(f"Wrote updated CSV -> {out_csv}")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Model preprocessing pipeline for RSNA 2025"
+    )
+
+    parser.add_argument(
+        "--csv_path", type=str,
+        default="data/train.csv",
+        help="Path to the main training CSV file containing case metadata."
+    )
+
+    parser.add_argument(
+        "--localize_csv_path", type=str,
+        default="data/train_localizers.csv",
+        help="Path to the CSV file containing localizer metadata for alignment."
+    )
+
+    parser.add_argument(
+        "--series_root", type=str,
+        default="data/series",
+        help="Root directory containing DICOM or NIfTI image series."
+    )
+
+    parser.add_argument(
+        "--output_dir", type=str,
+        default="output/pre_volumes_withlabel_448_64",
+        help="Output directory for generated preprocessed volumes with labels."
+    )
+
+    args = parser.parse_args()
+    main(args)
