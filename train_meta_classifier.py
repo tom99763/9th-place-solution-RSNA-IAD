@@ -283,7 +283,6 @@ def train_meta_multilabel_xgb(df, df_main, args, feature_cols):
                 reg_lambda=0.0047,
                 n_estimators=2000,
                 random_state=0,
-                #tree_method="hist",       # faster for large datasets
                 n_jobs=-1,
                 verbosity=0
             )
