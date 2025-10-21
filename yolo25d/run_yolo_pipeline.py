@@ -33,7 +33,7 @@ def parse_args():
     ap.add_argument('--batch', type=int, default=16)
     ap.add_argument('--device', type=str, default='')
     ap.add_argument('--project', type=str, default='yolo_aneurysm_locations')
-    ap.add_argument('--name', type=str, default='exp-2-folds')
+    ap.add_argument('--name', type=str, default='yolo-models')
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--freeze', type=int, default=0)
     ap.add_argument('--patience', type=int, default=150)

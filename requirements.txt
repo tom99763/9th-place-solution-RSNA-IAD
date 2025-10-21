@@ -486,3 +486,7 @@ zarr==2.18.4
 zict==3.0.0
 zipp==3.23.0
 zstandard==0.23.0
+xgboost==2.0.3
+catboost==1.2.8
+lightgbm==4.5.0
+
