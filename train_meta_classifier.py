@@ -432,6 +432,9 @@ def compute_score(p_cls, p_loc):
 
 def train():
     args = parse_args()
+    if not os.path.exists(args.meta_cls_weight_path):
+        os.mkdir(args.meta_cls_weight_path)
+
     for name in ['lgb', 'xgb', 'cat']:
         if not os.path.exists(f'{args.meta_cls_weight}/{name}'):
             os.mkdir(f'{args.meta_cls_weight}/{name}')
