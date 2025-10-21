@@ -16,15 +16,12 @@ pip3 install -r requirements.txt
 
 To reproduce yolo 2.5D
 
-1. Download `ultralytics-timm` from kaggle using Download ultralytics-timm from Kaggle
+1. Get all the competition data and setup directory structure
 
-```bash
-# Download the dataset into that directory
-kaggle datasets download -d sersasj/ultralytcs-timm-rsna -p ./yolo25d
+  ```bash
+      ./get-data.sh
+  ```
 
-# Unzip the dataset inside the same directory
-unzip ./yolo25d/ultralytcs-timm-rsna.zip -d ./yolo25d
-```
 
 2. Prepare data:
 
@@ -44,7 +41,28 @@ python3 ./yolo25d/run_yolo_pipeline.py  --epochs 80 --img 512 --batch 32 --model
 python3 ./yolo25d/run_yolo_pipeline.py  --epochs 50 --img 512 --batch 32 --model yolo-11-effnetv2_s.yaml --project yolo_aneurysm_locations --name yolo_effnetv2 --rgb-mode --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --cls 1.0
 ```
 
+5. Strip best weights for trained yolo:
+
+```
+python3 ./get_weights.py
+```
+
+Now all the weights of the the trained YOLO(s) will be present under ./models with format: `yolo_{model_version}_fold{fold_number}.pt`
+
+
 ## EfficientV2s + 3D-CenterNet (Flayer)
 
 
 ## Meta Classifier
+
+1. Generate trained weights of meta classifier:
+```batch
+python3 ./train_meta_classifier.py
+```
+
+2. Output weights
+```
+meta_classifier/cat/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifier/lgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifier/xgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+```
