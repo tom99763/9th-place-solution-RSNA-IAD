@@ -67,7 +67,8 @@ python3 ./train_meta_classifier.py --data_path [data path of train.csv] --meta_c
 
 2. Output weights
 ```
-meta_classifier/cat/meta_classifier_[class name]_fold_fold[fold id].pkl
-meta_classifier/lgb/meta_classifier_[class name]_fold_fold[fold id].pkl
-meta_classifier/xgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifiers/cat/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifiers/lgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifiers/xgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifiers/label_encoder_sex.pkl
 ```
