@@ -324,13 +324,7 @@ class DICOMPreprocessorKaggle:
 
 def main(args):
     
-    # Config
-    csv_path = "/ssd3/rsna_2025_flayer/data/train.csv"
-    localize_csv_path = "/ssd3/rsna_2025_flayer/data/train_localizers.csv"
-    series_root = "/ssd3/rsna_2025_flayer/data/series"
-    #output_dir = "/home/ubuntu/work/data1/kaggle/2025_rsna/pre_volumes_withlabel_512"
-    output_dir = "/ssd3/rsna_2025_flayer/input1"
-    #axis_df_path = "/ssd3/rsna_2025_flayer/input1/axis_df.csv"
+
     
     # 從 args 讀取參數
     csv_path = args.csv_path
@@ -491,16 +485,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RSNA 2025 preprocessing pipeline")
 
     parser.add_argument("--csv_path", type=str,
-                        default="/ssd3/rsna_2025_flayer/data/train.csv",
+                        default="data/train.csv",
                         help="Path to main training CSV file")
     parser.add_argument("--localize_csv_path", type=str,
-                        default="/ssd3/rsna_2025_flayer/data/train_localizers.csv",
+                        default="data/train_localizers.csv",
                         help="Path to localizer CSV file")
     parser.add_argument("--series_root", type=str,
-                        default="/ssd3/rsna_2025_flayer/data/series",
+                        default="data/series",
                         help="Root directory of DICOM series")
     parser.add_argument("--output_dir", type=str,
-                        default="/ssd3/rsna_2025_flayer/input1",
+                        default="output",
                         help="Output directory for generated data")
 
     args = parser.parse_args()
