@@ -11,11 +11,10 @@
 
 To reproduce yolo 2.5D
 
-1. Download `ultralytics-timm` from kaggle using Download ultralytics-timm from Kaggle
+1. Get all the competition data and setup directory structure
 
 ```bash
-    kaggle datasets download sersasj/ultralytcs-timm-rsna
-    unzip ultralytcs-timm-rsna.zip
+    ./get-data.sh
 ```
 
 2. Prepare data:
