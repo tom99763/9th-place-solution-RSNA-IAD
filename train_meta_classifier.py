@@ -7,25 +7,13 @@ from sklearn.metrics import roc_auc_score
 from typing import List, Optional
 from scipy.optimize import minimize
 import pickle
-
-
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import roc_auc_score, accuracy_score
 import lightgbm as lgb
 import joblib
 from lightgbm import early_stopping
 import xgboost as xgb
-
-from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import roc_auc_score
-from sklearn.preprocessing import StandardScaler
-
-from sklearn.svm import SVC
-from sklearn.metrics import roc_auc_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.inspection import permutation_importance
 from catboost import CatBoostClassifier, Pool
 from sklearn.preprocessing import LabelEncoder
 from xgboost.callback import EarlyStopping
@@ -70,8 +58,6 @@ YOLO_LABELS = sorted(list(YOLO_LABELS_TO_IDX.keys()))
 
 loc_cols = [f"loc_prob_{i}" for i in range(13)]
 
-feature_cols = ['aneurysm_prob'] + loc_cols + LABEL_COLS +  ['Aneurysm Present'] + ['PatientAge', 'PatientSex']
-yolo2flayer_loc_cols = [f'loc_prob_{LABEL_COLS.index(YOLO_INV_MAP[int(loc_col[-1])])}' for loc_col in loc_cols]
 N = 14
 
 xgb.set_config(verbosity=0)
@@ -194,7 +180,7 @@ def weighted_multilabel_auc(
     # Compute weighted average
     return np.sum(individual_aucs * weights_array)
 
-def train_meta_multilabel_lgb(df, df_main, args):
+def train_meta_multilabel_lgb(df, df_main, args, feature_cols):
     """
     Multi-label LightGBM training: trains one binary classifier per label.
     Computes OOF predictions and per-label AUROC.
@@ -260,7 +246,7 @@ def train_meta_multilabel_lgb(df, df_main, args):
     return oof_preds, feature_importances
 
 
-def train_meta_multilabel_xgb(df, df_main, args):
+def train_meta_multilabel_xgb(df, df_main, args, feature_cols):
     """
     Multi-label XGBoost training: trains one binary classifier per label.
     Computes OOF predictions and per-label AUROC.
@@ -342,7 +328,7 @@ def train_meta_multilabel_xgb(df, df_main, args):
 
     return oof_preds, feature_importances
 
-def train_meta_multilabel_catboost(df, df_main, args):
+def train_meta_multilabel_catboost(df, df_main, args, feature_cols):
     """
     Multi-label CatBoost training: trains one binary classifier per label.
     Computes OOF predictions and per-label AUROC.
@@ -436,8 +422,8 @@ def train():
         os.mkdir(args.meta_cls_weight_path)
 
     for name in ['lgb', 'xgb', 'cat']:
-        if not os.path.exists(f'{args.meta_cls_weight}/{name}'):
-            os.mkdir(f'{args.meta_cls_weight}/{name}')
+        if not os.path.exists(f'{args.meta_cls_weight_path}/{name}'):
+            os.mkdir(f'{args.meta_cls_weight_path}/{name}')
 
     df_main = pd.read_csv(f'{args.data_path}/train.csv')
     # Load data
@@ -452,7 +438,7 @@ def train():
     df_meta['PatientSex'] = le.fit_transform(df_meta['PatientSex'].astype(str))
 
     # Save the LabelEncoder
-    with open(f'{args.meta_cls_weight}/label_encoder_sex.pkl', 'wb') as f:
+    with open(f'{args.meta_cls_weight_path}/label_encoder_sex.pkl', 'wb') as f:
         pickle.dump(le, f)
 
     all_folds_yolo11m, all_folds_yolo_eff2s = get_yolo_weight_path(args)
@@ -467,8 +453,13 @@ def train():
 
     label_to_yolo_idx = {label: YOLO_LABELS_TO_IDX[label] for label in LABEL_COLS}
 
+    yolo11m_loc_cols = [f'yolo11m_{loc_col}' for loc_col in loc_cols]
+    yolo_eff2s_loc_cols = [f'yolo_eff2s_{loc_col}' for loc_col in loc_cols]
     yolo11m_loc_col_map = [f"yolo11m_loc_prob_{label_to_yolo_idx[label]}" for label in LABEL_COLS]
     yolo_eff2s_loc_col_map = [f"yolo_eff2s_loc_prob_{label_to_yolo_idx[label]}" for label in LABEL_COLS]
+    feature_cols = ['yolo11m_aneurysm_prob'] + yolo11m_loc_cols + [
+        'yolo_eff2s_aneurysm_prob'] + yolo_eff2s_loc_cols + LABEL_COLS + ['Aneurysm Present'] + ['PatientAge',
+                                                                                                 'PatientSex']
 
     merged = pd.merge(all_df_yolo11m, all_df_yolo_eff2s, on="SeriesInstanceUID", how="inner")
     merged = pd.merge(merged, df_flayer, on="SeriesInstanceUID", how="inner")
@@ -476,9 +467,9 @@ def train():
     merged['fold_id'] = all_df_yolo11m['fold_id'].copy()
     df_main = df_main.set_index('SeriesInstanceUID').loc[merged['SeriesInstanceUID']].reset_index()
 
-    oof_preds_lgb, feature_importances_lgb = train_meta_multilabel_lgb(merged, df_main, args)
-    oof_preds_xgb, feature_importances_xgb = train_meta_multilabel_xgb(merged, df_main, args)
-    oof_preds_cat, feature_importances_cat = train_meta_multilabel_catboost(merged, df_main, args)
+    oof_preds_lgb, feature_importances_lgb = train_meta_multilabel_lgb(merged, df_main, args, feature_cols )
+    oof_preds_xgb, feature_importances_xgb = train_meta_multilabel_xgb(merged, df_main, args, feature_cols )
+    oof_preds_cat, feature_importances_cat = train_meta_multilabel_catboost(merged, df_main, args, feature_cols )
 
     #compute cv
     gt_loc = df_main[LABEL_COLS]
