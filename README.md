@@ -51,6 +51,12 @@ Now all the weights of the the trained YOLO(s) will be present under ./models wi
 
 ## EfficientV2s + 3D-CenterNet (Flayer)
 
+### Environment 
+
+| Hardware Setup | GPU | CPU | RAM | Time per Fold | Total (5 folds) |
+| --- | --- | --- | --- | --- | --- |
+| @fateplsf | pro 6000 | AMD Ryzen Threadripper PRO 9975WX 32-Cores | 512GB | 4-5 hours | ~24 hours |
+
 
 ## Meta Classifier
 
