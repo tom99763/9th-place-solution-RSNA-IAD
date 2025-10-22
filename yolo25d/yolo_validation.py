@@ -28,7 +28,7 @@ import pydicom
 import cv2
 from sklearn.metrics import roc_auc_score, average_precision_score
 from tqdm import tqdm
-import time
+
 sys.path.insert(0, "../ultralytics-timm")
 from ultralytics import YOLO
 

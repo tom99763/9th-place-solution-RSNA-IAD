@@ -60,37 +60,37 @@ xgb.set_config(verbosity=0)
 def get_yolo_weight_path(args):
     all_folds_yolo11m = {
         "fold0": {
-            "y11_yolo11m": f"{args.yolo_weight_path}/yolo-11m-2.5D_fold0",
+            "y11_yolo11m": f"{args.yolo_weight_path}/yolo_11m_fold0",
         },
         "fold1": {
-            "y11_yolo11m": f"{args.yolo_weight_path}yolo-11m-2.5D_fold1",
+            "y11_yolo11m": f"{args.yolo_weight_path}/yolo_11m_fold1",
         },
         "fold2": {
-            "y11_yolo11m": f"{args.yolo_weight_path}/yolo-11m-2.5D_fold22",
+            "y11_yolo11m": f"{args.yolo_weight_path}/yolo_11m_fold2",
         },
         "fold3": {
-            "y11_yolo11m": f"{args.yolo_weight_path}/yolo-11m-2.5D_fold3",
+            "y11_yolo11m": f"{args.yolo_weight_path}/yolo_11m_fold3",
         },
         "fold4": {
-            "y11_yolo11m": f"{args.yolo_weight_path}/yolo-11m-2.5D_fold4",
+            "y11_yolo11m": f"{args.yolo_weight_path}/yolo_11m_fold4",
         },
     }
 
     all_folds_yolo_eff2s = {
         "fold0": {
-            "y11_effnetv_25d": f"{args.yolo_weight_path}/cv_effnetv2_s_drop_path_25d_fold0",
+            "y11_effnetv_25d": f"{args.yolo_weight_path}/yolo_effnetv2_fold0",
         },
         "fold1": {
-            "y11_effnetv_25d": f"{args.yolo_weight_path}/cv_effnetv2_s_drop_path_25d_fold1",
+            "y11_effnetv_25d": f"{args.yolo_weight_path}/yolo_effnetv2_fold1",
         },
         "fold2": {
-            "y11_effnetv_25d": f"{args.yolo_weight_path}/cv_effnetv2_s_drop_path_25d_fold2",
+            "y11_effnetv_25d": f"{args.yolo_weight_path}/yolo_effnetv2_fold2",
         },
         "fold3": {
-            "y11_effnetv_25d": f"{args.yolo_weight_path}/cv_effnetv2_s_drop_path_25d_fold3",
+            "y11_effnetv_25d": f"{args.yolo_weight_path}/yolo_effnetv2_fold3",
         },
         "fold4": {
-            "y11_effnetv_25d": f"{args.yolo_weight_path}/cv_effnetv2_s_drop_path_25d_fold4",
+            "y11_effnetv_25d": f"{args.yolo_weight_path}/yolo_effnetv2_fold4",
         },
     }
     return all_folds_yolo11m, all_folds_yolo_eff2s
@@ -421,7 +421,7 @@ def train():
 
     df_main = pd.read_csv(f'{args.data_path}/train.csv')
     # Load data
-    df_flayer = pd.read_csv(f'{args.flayer_weight_path}/oof_df_cv7722_seg_aux.csv')
+    df_flayer = pd.read_csv(f'{args.flayer_weight_path}/oof_df.csv')
     df_meta = df_main.copy()[['SeriesInstanceUID', 'PatientAge', 'PatientSex']]
 
     # Convert age to numeric
@@ -461,9 +461,9 @@ def train():
     merged['fold_id'] = all_df_yolo11m['fold_id'].copy()
     df_main = df_main.set_index('SeriesInstanceUID').loc[merged['SeriesInstanceUID']].reset_index()
 
-    oof_preds_lgb, feature_importances_lgb = train_meta_multilabel_lgb(merged, df_main, args, feature_cols )
-    oof_preds_xgb, feature_importances_xgb = train_meta_multilabel_xgb(merged, df_main, args, feature_cols )
-    oof_preds_cat, feature_importances_cat = train_meta_multilabel_catboost(merged, df_main, args, feature_cols )
+    oof_preds_lgb, _ = train_meta_multilabel_lgb(merged, df_main, args, feature_cols )
+    oof_preds_xgb, _ = train_meta_multilabel_xgb(merged, df_main, args, feature_cols )
+    oof_preds_cat, _ = train_meta_multilabel_catboost(merged, df_main, args, feature_cols )
 
     #compute cv
     gt_loc = df_main[LABEL_COLS]

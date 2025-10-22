@@ -74,7 +74,7 @@ def run():
     folds: List[int] = [int(x) for x in args.folds.split(',') if x.strip() != '']
 
     # Call the validation script programmatically
-    val_script = Path('yolo_validation.py')
+    val_script = Path('./yolo_validation.py')
     if not val_script.exists():
         raise SystemExit(f"Validation script not found at {val_script}")
 
