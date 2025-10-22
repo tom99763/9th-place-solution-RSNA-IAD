@@ -57,15 +57,14 @@ def seed_everything(seed: int) -> None:
 @dataclass
 class TrainConfig:
     npy_dir: str = "./npy"
-    seg_dir: str = "/ssd3/IAD/atom1231/input/seg_pred_448_s64"
-    train_csv: str = "/ssd3/IAD/atom1231/input/train_with_folds_optimized_axis_v1.csv"
+    train_csv: str = "/ssd3/IAD/atom1231/input/train_with_folds_optimized_axis.csv"
     localizer_csv: str = "/ssd3/IAD/atom1231/input/train_locale_fnum.csv"
+    model_dir: str = "./modoel/flayer"
     output_dir: str = "/ssd3/IAD/atom1231/output/outputs_heatmap"
     fold: int = 0
     num_folds: int = 5
     seed: int = 42
     batch_size: int = 2
-    accumulate_steps: int = 2
     val_batch_size: int = 2
     num_workers: int = 4
     epochs: int = 12
@@ -76,7 +75,6 @@ class TrainConfig:
     heatmap_loss_weight: float = 1.0
     offset_loss_weight: float = 1.0
     cls_loss_weight: float = 0.5
-    aux_loss_weight: float = 0.5
     gaussian_sigma: float = 1.5
     default_depth_factor: float = 0.5
     save_best: bool = True
@@ -87,7 +85,7 @@ class TrainConfig:
     # model
     in_channels: int = 1
     base_channels: int = 32
-    device: str = "cuda:2"
+    device: str = "cuda:0"
     encoder_name: str = "r3d_18"
     pretrained_encoder: bool = True
     freeze_encoder: bool = False
@@ -246,42 +244,15 @@ class RSNACenterNetDataset(Dataset):
         # self.translate_frac = (-0.1, 0.1)#(-0.05, 0.05)
         self.rotate_range = (-10.0, 10.0)
         #self.scale_range = (0.9, 1.1)
-        self.translate_frac = (-0.05, 0.05)        
+        self.translate_frac = (-0.1, 0.1) #(-0.05, 0.05)        
         self.flip_prob = 0.0
         #self.transform = A.Compose([A.Resize(CFG.IMG_SIZE, CFG.IMG_SIZE), A.Normalize(), ToTensorV2()])
         self.transform = A.Compose([A.Normalize(), ToTensorV2()])
-        #self.mask_transform = A.Compose([ToTensorV2()])
 
         # 可選：是否對 NaN/Inf 做處理與是否裁切極端值
         self.handle_invalid = True
         self.clip_percentile = None  # 例如 (0.5, 99.5) 可啟用分位裁切；None 表
 
-        #for 3d torio normalize
-        # 維持原本結構與順序：Resize -> Normalize -> ToTensorV2
-        # 將 Normalize 設為灰階 no-op，避免 TorchIO 做完 3D Normalize 後又被改動
-        # self.transform = A.Compose([
-        #     #A.Resize(CFG.IMG_SIZE, CFG.IMG_SIZE),
-        #     A.Normalize(mean=(0.0,), std=(1.0,)),  # no-op for 1-channel
-        #     ToTensorV2()
-        # ])
-
-        # # TorchIO：對 3D 體積做符合語意的 Z-score Normalize（整體均值0、方差1）
-        # self.tio_norm = tio.Compose([
-        #     tio.ZNormalization()  # 可視需求改成 RescaleIntensity
-        # ])
-
-    # def _tio_normalize(self, volume_np: np.ndarray) -> np.ndarray:
-    #     """
-    #     volume_np: (D, H, W) float32/float64/… -> 回傳 (D, H, W) float32
-    #     """
-    #     # TorchIO 需要張量 shape: (C, D, H, W)
-    #     tensor = torch.from_numpy(volume_np.astype(np.float32))[None, ...]  # (1, D, H, W)
-    #     img = tio.ScalarImage(tensor=tensor)
-    #     img = self.tio_norm(img)
-    #     norm_vol = img.data[0].cpu().numpy()  # (D, H, W)
-    #     return norm_vol
-
-    # ---- 純 NumPy/PyTorch 3D Normalize（等價 ZNormalization） ----
     def _zscore_normalize_volume(self, volume_np: np.ndarray) -> np.ndarray:
         """
         針對整個 3D 體積 (D, H, W) 做 Z-score normalize：
@@ -345,16 +316,6 @@ class RSNACenterNetDataset(Dataset):
         else:
             raise ValueError(f"Unexpected volume shape {volume.shape} for {series_id}")
         volume = volume.astype(np.float32)
-        
-        seg_pth = os.path.join(self.cfg.seg_dir, f"{series_id}.npy")
-        
-        if not os.path.exists(seg_pth):
-            seg_img = np.zeros(volume.shape)
-        else:
-            seg_img = np.load(seg_pth)
-            seg_img = seg_img[np.newaxis, ...]
-        
-        
         depth, height, width = volume.shape[1:]
         lesions = self.locator_map.get(series_id, [])
         lesions = [dict(les) for les in lesions]
@@ -371,7 +332,7 @@ class RSNACenterNetDataset(Dataset):
                 lesion['orig_depth'] = float(depth)
 
         if self.is_train:
-            volume, seg_img, affine_mat = self.apply_affine(volume,seg_img)
+            volume, affine_mat = self.apply_affine(volume)
             if affine_mat is not None and lesions:
                 for lesion in lesions:
                     x = float(lesion['label_x'])
@@ -414,7 +375,6 @@ class RSNACenterNetDataset(Dataset):
 
         #3d ok1
         # volume shape: (D, H, W)
-        
         volume = volume.squeeze(0)  # (D, H, W)
         image = volume.transpose(1, 2, 0)
         #print(image.shape)
@@ -451,14 +411,13 @@ class RSNACenterNetDataset(Dataset):
             'heatmap': torch.from_numpy(heatmap),
             'offset': torch.from_numpy(offset),
             'offset_mask': torch.from_numpy(offset_mask),
-            'seg_mask': torch.from_numpy(seg_img).long(),
             'labels': torch.from_numpy(self.labels[idx]),
         }
         return sample
 
-    def apply_affine(self, volume: np.ndarray,mask: Optional[np.ndarray]) -> Tuple[np.ndarray,Optional[np.ndarray], Optional[np.ndarray]]:
+    def apply_affine(self, volume: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         if np.random.rand() >= self.affine_prob:
-            return volume, mask,None
+            return volume, None
         channels, depth, height, width = volume.shape
         angle = np.random.uniform(*self.rotate_range)
         scale = np.random.uniform(*self.scale_range)
@@ -478,37 +437,8 @@ class RSNACenterNetDataset(Dataset):
                     flags=cv2.INTER_LINEAR,
                     borderMode=cv2.BORDER_CONSTANT,
                     borderValue=0,
-                    )
-        warped_mask = None
-        if mask is not None:
-            #print(mask.shape)
-            # 將 mask 視為 (M, D, H, W) 統一處理（M=K 或 1 或 1 from (D,H,W)）
-            if mask.ndim == 3:
-                m = mask[None, ...]             # (1, D, H, W)
-            elif mask.ndim == 4:
-                m = mask
-            else:
-                raise ValueError("mask must be (D,H,W) or (M,D,H,W)")
-
-            M = m.shape[0]
-            # 保存 dtype（如整數/布林）
-            mask_dtype = m.dtype
-            warped_m = np.empty_like(m)
-            for z in range(depth):
-                for k in range(M):
-                    warped_m[k, z] = cv2.warpAffine(
-                        m[k, z],
-                        mat,
-                        (width, height),
-                        flags=cv2.INTER_NEAREST,           # 最重要：避免類別值被插值
-                        borderMode=cv2.BORDER_CONSTANT,
-                        borderValue=0,
-                    )
-            warped_mask = warped_m
-        else:
-            warped_mask = mask
-                
-        return warped,warped_mask, mat
+                )
+        return warped, mat
 
 
 class CenterNet3D(nn.Module):
@@ -526,7 +456,7 @@ class CenterNet3D(nn.Module):
             cfg.encoder_name,
             pretrained=cfg.pretrained_encoder,
             features_only=True,
-            out_indices=(1,-2),
+            out_indices=(-2,),
         )
 
         # self.backbone = timm.create_model(
@@ -554,15 +484,6 @@ class CenterNet3D(nn.Module):
             #raise
             self.encoder_in_channels = default_input[0] if isinstance(default_input, (list, tuple)) else int(default_input)
 
-
-        c_aux  = self.backbone.feature_info.channels()[0]
-        self.aux_head2d = nn.Sequential(
-            nn.Conv2d(c_aux, cfg.base_channels, 3, padding=1),
-            nn.BatchNorm2d(cfg.base_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(cfg.base_channels, 1, 1)
-        )
-        
         head_channels = cfg.base_channels
         self.temporal_head = nn.Sequential(
             nn.Conv3d(self.feature_channels, head_channels, kernel_size=3, padding=1),
@@ -589,15 +510,7 @@ class CenterNet3D(nn.Module):
                 )
 
         #print(x.shape)  # torch.Size([128, 3, 148, 148])
-        feat_aux2d, features = self.backbone(x) 
-        
-        aux_logits_2d = self.aux_head2d(feat_aux2d)      # (B*D,1,h',w')
-        
-        aux_logits_2d = F.interpolate(
-            aux_logits_2d, size=(h, w), mode='bilinear', align_corners=False
-        )
-        aux_logits_3d = aux_logits_2d.view(b, d, 1, h, w).permute(0, 2, 1, 3, 4)  
-        
+        features = self.backbone(x)[0]
         feat_c, feat_h, feat_w = features.shape[1:]
         #print(features.shape)  # torch.Size([128, 256, 14, 14])  l2 :[128, 160, 28, 28]
         #print(feat_c, feat_h, feat_w)  # 256 14 14
@@ -613,7 +526,57 @@ class CenterNet3D(nn.Module):
         offset = self.offset_head(feat3d)
         #print(offset.shape)  # torch.Size([4, 3, 32, 14, 14])
         #raise
-        return {'heatmap': heatmap, 'offset': offset,'aux': aux_logits_3d}
+        return {'heatmap': heatmap, 'offset': offset}
+    
+    
+
+class CenterNet3DInfer(nn.Module):
+    """Inference model mirroring training CenterNet3D architecture."""
+    def __init__(self, cfg: TrainConfig, num_classes: int) -> None:
+        super().__init__()
+        self.backbone = timm.create_model(
+            cfg.encoder_name,
+            pretrained=False,
+            features_only=True,
+            #out_indices=(-1,),
+            out_indices=(-2,),
+        )
+        info = self.backbone.feature_info
+        self.feature_channels = info.channels()[-1]
+        self.encoder_in_channels = getattr(self.backbone, 'in_chans', None)
+        if self.encoder_in_channels is None:
+            default_input = self.backbone.default_cfg.get('input_size', (3,))
+            if isinstance(default_input, (list, tuple)):
+                self.encoder_in_channels = default_input[0]
+            else:
+                self.encoder_in_channels = int(default_input)
+        head_channels = cfg.base_channels
+        self.temporal_head = nn.Sequential(
+            nn.Conv3d(self.feature_channels, head_channels, kernel_size=3, padding=1),
+            nn.BatchNorm3d(head_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(head_channels, head_channels, kernel_size=3, padding=1),
+            nn.BatchNorm3d(head_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.heatmap_head = nn.Conv3d(head_channels, num_classes, kernel_size=1)
+        self.offset_head = nn.Conv3d(head_channels, 3, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        b, c, d, h, w = x.shape
+        x = x.permute(0, 2, 1, 3, 4).reshape(b * d, c, h, w)
+        if x.shape[1] != self.encoder_in_channels:
+            if x.shape[1] == 1 and self.encoder_in_channels == 3:
+                x = x.repeat(1, 3, 1, 1)
+            else:
+                raise ValueError(f"Input has {x.shape[1]} channels but encoder expects {self.encoder_in_channels}")
+        feats = self.backbone(x)[0]
+        feat_c, feat_h, feat_w = feats.shape[1:]
+        feats = feats.view(b, d, feat_c, feat_h, feat_w).permute(0, 2, 1, 3, 4)
+        feat3d = self.temporal_head(feats)
+        heatmap = self.heatmap_head(feat3d)
+        offset = self.offset_head(feat3d)
+        return {"heatmap": heatmap, "offset": offset}
 
 
 def centernet_focal_loss(pred: torch.Tensor, target: torch.Tensor, alpha: float = 2.0, beta: float = 4.0) -> torch.Tensor:
@@ -634,19 +597,25 @@ def centernet_focal_loss(pred: torch.Tensor, target: torch.Tensor, alpha: float 
     return loss
 
 
-def dice_bce_loss_with_logits(pred, target, smooth=1e-5):
-    pred_sigmoid = torch.sigmoid(pred)
-    intersection = (pred_sigmoid * target).sum()
-    dice = 1 - (2. * intersection + smooth) / (pred_sigmoid.sum() + target.sum() + smooth)
-    bce = F.binary_cross_entropy_with_logits(pred, target.float())
-    return bce + dice
+# def compute_class_logits(heatmap_logits: torch.Tensor) -> torch.Tensor:
+#     b, c, d, h, w = heatmap_logits.shape
+#     flat = heatmap_logits.view(b, c, -1)
+#     class_logits = flat.max(dim=2).values
+#     presence_logits = class_logits.max(dim=1, keepdim=True).values
+#     return torch.cat([class_logits, presence_logits], dim=1)
+
 
 
 def compute_class_logits(heatmap_logits: torch.Tensor) -> torch.Tensor:
     b, c, d, h, w = heatmap_logits.shape
     flat = heatmap_logits.view(b, c, -1)
     class_logits = flat.max(dim=2).values
-    presence_logits = class_logits.max(dim=1, keepdim=True).values
+
+    #presence_logits = class_logits.max(dim=1, keepdim=True).values
+
+    # 使用 LogSumExp 聚合13個類別的證據
+    presence_logits = torch.logsumexp(class_logits, dim=1, keepdim=True) # Shape: (b, 1)
+
     return torch.cat([class_logits, presence_logits], dim=1)
 
 
@@ -674,83 +643,9 @@ def compute_auc(targets: List[np.ndarray], preds: List[np.ndarray]) -> Dict[str,
     return scores
 
 
-def save_checkpoint(state: Dict[str, object], is_best: bool, cfg: TrainConfig, epoch: int, fold: int) -> None:
-    os.makedirs(cfg.output_dir, exist_ok=True)
-    epoch_path = os.path.join(
-        cfg.output_dir,
-        f"{cfg.encoder_name}_fold{fold}_epoch{epoch}.pth"
-    )
-    torch.save(state, epoch_path)
-    if is_best and cfg.save_best:
-        best_path = os.path.join(
-            cfg.output_dir,
-            f"{cfg.encoder_name}_fold{fold}_best.pth"
-        )
-        torch.save(state, best_path)
 
 
-def train_one_epoch(
-    model: CenterNet3D,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    scaler: torch.cuda.amp.GradScaler,
-    scheduler,
-    cfg: TrainConfig,
-) -> float:
-    model.train()
-    total_loss = 0.0
-    for step, batch in enumerate(loader):
-        images = batch['image'].to(cfg.device, non_blocking=True)
-        heatmap_target = batch['heatmap'].to(cfg.device)
-        offset_target = batch['offset'].to(cfg.device)
-        offset_mask = batch['offset_mask'].to(cfg.device)
-        seg_mask = batch['seg_mask'].to(cfg.device)
-        labels = batch['labels'].to(cfg.device)
-        #optimizer.zero_grad(set_to_none=True)
-        # print("train loop")
-        # print(images.shape) #[2, 1, 32, 448, 448]) 2->batch size
-        # print(heatmap_target.shape)#torch.Size([2, 13, 8, 112, 112])
-        # print(offset_target.shape) #torch.Size([2, 3, 8, 112, 112])
-        # print(offset_mask.shape) #torch.Size([2, 1, 8, 112, 112])
-        # print(labels.shape)#torch.Size([2, 14])
-        #raise
-        with torch.cuda.amp.autocast(enabled=cfg.amp):
-            outputs = model(images)
-            heat_loss = centernet_focal_loss(outputs['heatmap'], heatmap_target)
-            if offset_mask.sum() > 0:
-                pred_offset = outputs['offset'].permute(0, 2, 3, 4, 1)
-                tgt_offset = offset_target.permute(0, 2, 3, 4, 1)
-                mask = offset_mask.squeeze(1) > 0
-                offset_loss = F.l1_loss(pred_offset[mask], tgt_offset[mask])
-            else:
-                offset_loss = torch.tensor(0.0, device=cfg.device)
-                
-                
-            #if segqev
-            class_logits = compute_class_logits(outputs['heatmap'])
-            cls_loss = F.binary_cross_entropy_with_logits(class_logits, labels)
-            
-            if seg_mask.sum()>0: 
-                aux_loss = dice_bce_loss_with_logits(outputs["aux"],seg_mask)
-            else:
-                aux_loss = torch.tensor(0.0, device=cfg.device)
-            loss = cfg.heatmap_loss_weight * heat_loss + cfg.offset_loss_weight * offset_loss + cfg.cls_loss_weight * cls_loss + cfg.aux_loss_weight * aux_loss
-        loss = loss / cfg.accumulate_steps
-        scaler.scale(loss).backward()
-        if (step + 1) % cfg.accumulate_steps == 0:
-            if cfg.grad_clip:
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad(set_to_none=True) 
-        total_loss += loss.item()* cfg.accumulate_steps
-        if cfg.log_interval and (step + 1) % cfg.log_interval == 0:
-            current_lr = optimizer.param_groups[0].get('lr', cfg.learning_rate)
-            print(f"train step {step + 1}/{len(loader)} loss {loss.item():.4f} lr {current_lr:.2e}")
-    if scheduler is not None and not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-        scheduler.step()
-    return total_loss / max(len(loader), 1)
+
 
 
 @torch.no_grad()
@@ -759,7 +654,10 @@ def validate_epoch(model: CenterNet3D, loader: DataLoader, cfg: TrainConfig) -> 
     total_loss = 0.0
     targets: List[np.ndarray] = []
     preds: List[np.ndarray] = []
+    sids_list: List[str] = []
     for batch in loader:
+        sids=batch["id"]
+        sids_list.append(sids)
         images = batch['image'].to(cfg.device, non_blocking=True)
         heatmap_target = batch['heatmap'].to(cfg.device)
         offset_target = batch['offset'].to(cfg.device)
@@ -781,9 +679,9 @@ def validate_epoch(model: CenterNet3D, loader: DataLoader, cfg: TrainConfig) -> 
         probs = torch.sigmoid(class_logits).cpu().numpy()
         preds.append(probs)
         targets.append(labels.cpu().numpy())
+   
     metrics = compute_auc(targets, preds)
-    return total_loss / max(len(loader), 1), metrics
-
+    return np.concatenate(sids_list),np.concatenate(preds, axis=0),metrics    
 
 def build_scheduler(optimizer: torch.optim.Optimizer, cfg: TrainConfig):
     name = cfg.scheduler.lower()
@@ -830,21 +728,20 @@ def parse_args() -> TrainConfig:
     parser = argparse.ArgumentParser(description="3D CenterNet-style training for RSNA aneurysm classification")
     #parser.add_argument('--npy_dir', type=str, default="/home/ubuntu/work/data1/kaggle/2025_rsna/precomputed_volumes")
     #parser.add_argument('--npy_dir', type=str, default="/home/ubuntu/work/data1/kaggle/2025_rsna/pre_volumes_withlabel_448")
-    parser.add_argument('--npy_dir', type=str, default="output/pre_volumes_withlabel_448_64")
-    parser.add_argument('--seg_dir', type=str, default="output/seg_pred_448_s64")
+    parser.add_argument('--npy_dir', type=str, default="./output/pre_volumes_withlabel_448_64")
  
-    parser.add_argument('--train_csv', type=str, default="output/train_with_folds_optimized_axis_v1.csv")
-    parser.add_argument('--localizer_csv', type=str, default="output/train_locale_fnum.csv")
-    parser.add_argument('--output_dir', type=str, default="model/flayer")
+    parser.add_argument('--train_csv', type=str, default="./output/train_with_folds_optimized_axis_v1.csv")
+    parser.add_argument('--localizer_csv', type=str, default="./output/train_locale_fnum.csv")
+    parser.add_argument('--model_dir', type=str, default="./modoel/flayer")
+    parser.add_argument('--output_dir', type=str, default="./output")
     parser.add_argument('--fold', type=int, default=-1) #<0 means training all folds
     parser.add_argument('--num_folds', type=int, default=5)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--batch_size', type=int, default=4) #4
-    parser.add_argument('--accumulate_steps', type=int, default=2) #4
-    parser.add_argument('--val_batch_size', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=16) #4
+    parser.add_argument('--val_batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=16)
-    parser.add_argument('--epochs', type=int, default=16)#16 #12
-    parser.add_argument('--learning_rate', type=float, default=2.5e-4) #2e-4
+    parser.add_argument('--epochs', type=int, default=20)#16 #12
+    parser.add_argument('--learning_rate', type=float, default=2e-4) #2e-4
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     parser.add_argument('--amp', action='store_true')
     parser.add_argument('--no-amp', dest='amp', action='store_false')
@@ -852,7 +749,6 @@ def parse_args() -> TrainConfig:
     parser.add_argument('--heatmap_loss_weight', type=float, default=1.0)
     parser.add_argument('--offset_loss_weight', type=float, default=1.0)
     parser.add_argument('--cls_loss_weight', type=float, default=1) #0.5
-    parser.add_argument('--aux_loss_weight', type=float, default=0.5) #0.5
     parser.add_argument('--gaussian_sigma', type=float, default=0.2)
     parser.add_argument('--default_depth_factor', type=float, default=0.5)
     parser.add_argument('--save_best', action='store_true')
@@ -878,7 +774,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument('--output_stride_height', type=int, default=16) #32
     parser.add_argument('--output_stride_width', type=int, default=16) #32
     parser.add_argument('--scheduler', type=str, default='cosineannealinglr')  #none, cosineannealinglr, steplr, reducelronplateau
-    parser.add_argument('--cosine_tmax', type=int, default=16) #0,12 #16
+    parser.add_argument('--cosine_tmax', type=int, default=20) #0,12 #16
     parser.add_argument('--cosine_min_lr', type=float, default=1e-6)
     parser.add_argument('--step_lr_step_size', type=int, default=1)
     parser.add_argument('--step_lr_gamma', type=float, default=0.1)
@@ -908,8 +804,11 @@ def main() -> None:
     #fold<0 means training all folds
     fold_indices = [cfg.fold] if cfg.fold >= 0 else list(range(cfg.num_folds))
     all_results = []
-
-    for fold in fold_indices:
+    all_oof=[]
+    
+    #out_folder = cfg.output_dir.split("/")[-1]
+    
+    for fold in range(5):#fold_indices:
         print(f"\n===== Fold {fold} =====")
         fold_cfg = replace(cfg, fold=fold)
         meta_folds = meta['fold'].astype(int)
@@ -919,15 +818,15 @@ def main() -> None:
         valid_ids = meta.index[valid_mask].tolist()
         print(f"Train {len(train_ids)} series, Valid {len(valid_ids)} series")
 
-        train_ds = RSNACenterNetDataset(train_ids, meta, locator_map, fold_cfg, is_train=True)
+        # train_ds = RSNACenterNetDataset(train_ids, meta, locator_map, fold_cfg, is_train=True)
         valid_ds = RSNACenterNetDataset(valid_ids, meta, locator_map, fold_cfg, is_train=False)
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=fold_cfg.batch_size,
-            shuffle=True,
-            num_workers=fold_cfg.num_workers,
-            pin_memory=True,
-        )
+        # train_loader = DataLoader(
+        #     train_ds,
+        #     batch_size=fold_cfg.batch_size,
+        #     shuffle=True,
+        #     num_workers=fold_cfg.num_workers,
+        #     pin_memory=True,
+        # )
         valid_loader = DataLoader(
             valid_ds,
             batch_size=fold_cfg.val_batch_size,
@@ -936,68 +835,32 @@ def main() -> None:
             pin_memory=True,
         )
 
-        model = CenterNet3D(fold_cfg, num_classes=len(VESSEL_LABELS))
+        model = CenterNet3DInfer(fold_cfg, num_classes=len(VESSEL_LABELS))
+        checkpoint = torch.load(f"{cfg.model_dir}/tf_efficientnetv2_s.in21k_ft_in1k_fold{fold}_best.pth", map_location=fold_cfg.device, weights_only=True)
+        state = checkpoint['model'] if isinstance(checkpoint, dict) and 'model' in checkpoint else checkpoint
+        model.load_state_dict(state, strict=False)
         model.to(fold_cfg.device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=fold_cfg.learning_rate, weight_decay=fold_cfg.weight_decay)
-        scheduler = build_scheduler(optimizer, fold_cfg)
-        scaler = torch.cuda.amp.GradScaler(enabled=fold_cfg.amp)
-        best_auc = -float('inf')
-        start_epoch = 0
+        model.eval()
+        
+        
+        
+        fold_sid,fold_preds,metrics = validate_epoch(model, valid_loader, fold_cfg)
+        mean_auc = metrics.get('mean_auc', float('nan'))
+        weighted_auc = metrics.get('weighted_auc', float('nan'))
+        print(f"mean_auc {mean_auc:.4f} weighted_auc {weighted_auc:.4f}")
+                
+        fold_df = pd.DataFrame(
+            np.column_stack([fold_sid, fold_preds]),   # 先水平拼起來
+            columns=["SeriesInstanceUID"] + LABEL_COLS
+        )
 
-        if fold_cfg.resume and os.path.exists(fold_cfg.resume):
-            checkpoint = torch.load(fold_cfg.resume, map_location=fold_cfg.device)
-            model.load_state_dict(checkpoint['model'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            scaler.load_state_dict(checkpoint['scaler'])
-            start_epoch = checkpoint.get('epoch', 0)
-            best_auc = checkpoint.get('best_auc', best_auc)
-            print(f"Resumed from {fold_cfg.resume} epoch {start_epoch}")
-
-        for epoch in range(start_epoch, fold_cfg.epochs):
-            print(f"Epoch {epoch + 1}/{fold_cfg.epochs}")
-            train_loss = train_one_epoch(model, train_loader, optimizer, scaler, scheduler, fold_cfg)
-            val_loss, metrics = validate_epoch(model, valid_loader, fold_cfg)
-            if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler_step_on_plateau(scheduler, metrics, val_loss, fold_cfg)
-            mean_auc = metrics.get('mean_auc', float('nan'))
-            weighted_auc = metrics.get('weighted_auc', float('nan'))
-            print(f"train_loss {train_loss:.4f} val_loss {val_loss:.4f} mean_auc {mean_auc:.4f} weighted_auc {weighted_auc:.4f}")
-            for name in LABEL_COLS:
-                score = metrics.get(name)
-                if score is None or math.isnan(score):
-                    continue
-                print(f"  {name}: {score:.4f}")
-
-            is_best = mean_auc > best_auc
-            if is_best:
-                best_auc = mean_auc
-
-            state = {
-                'epoch': epoch + 1,
-                'model': model.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'scaler': scaler.state_dict(),
-                'best_auc': best_auc,
-                'config': asdict(fold_cfg),
-            }
-
-            if fold_cfg.checkpoint_every and (epoch + 1) % fold_cfg.checkpoint_every == 0:
-                save_checkpoint(state, False, fold_cfg, epoch + 1, fold)
-            if is_best:
-                save_checkpoint(state, True, fold_cfg, epoch + 1, fold)
-
-        print(f"Fold {fold} best mean AUC: {best_auc:.4f}")
-        all_results.append((fold, best_auc))
-
-    if len(all_results) > 1:
-        avg_auc = np.mean([auc for _, auc in all_results])
-        print("\n===== Summary =====")
-        for fold, auc in all_results:
-            print(f"Fold {fold}: {auc:.4f}")
-        print(f"Average AUC: {avg_auc:.4f}")
-    elif all_results:
-        print(f"Best mean AUC: {all_results[0][1]:.4f}")
-
+        # 將數值欄轉為 float（因為剛剛 column_stack 會轉成字串）
+        fold_df[LABEL_COLS] = fold_df[LABEL_COLS].astype(float)
+        fold_df["fold"]=fold
+        
+        all_oof.append(fold_df)
+    oof_df = pd.concat(all_oof, ignore_index=True)
+    oof_df.to_csv(f"{cfg.output_dir}/flayer_oof_df.csv",index=False)
 
 if __name__ == '__main__':
     main()

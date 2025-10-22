@@ -272,9 +272,15 @@ class DICOMPreprocessorKaggle:
 
 def main(args):
 
-    csv_path = args.csv_path
-    localize_csv_path = args.localize_csv_path
-    series_root = args.series_root
+
+
+    csv_path = os.path.join(args.data_folder, "train.csv")
+    localize_csv_path = os.path.join(args.data_folder, "train_localizers.csv")
+    series_root = os.path.join(args.data_folder, "series")
+    
+    # csv_path = args.csv_path
+    # localize_csv_path = args.localize_csv_path
+    # series_root = args.series_root
     output_dir = args.output_dir
 
     print(f"CSV path           : {csv_path}")
@@ -333,23 +339,32 @@ if __name__ == "__main__":
         description="Model preprocessing pipeline for RSNA 2025"
     )
 
-    parser.add_argument(
-        "--csv_path", type=str,
-        default="data/train.csv",
-        help="Path to the main training CSV file containing case metadata."
-    )
+
 
     parser.add_argument(
-        "--localize_csv_path", type=str,
-        default="data/train_localizers.csv",
-        help="Path to the CSV file containing localizer metadata for alignment."
+        "--data_folder", type=str,
+        default="./data",
+        help="Root folder of RSNA Intracranial Aneurysm Detection dataset"
     )
+    
 
-    parser.add_argument(
-        "--series_root", type=str,
-        default="data/series",
-        help="Root directory containing DICOM or NIfTI image series."
-    )
+    # parser.add_argument(
+    #     "--csv_path", type=str,
+    #     default="data/train.csv",
+    #     help="Path to the main training CSV file containing case metadata."
+    # )
+
+    # parser.add_argument(
+    #     "--localize_csv_path", type=str,
+    #     default="data/train_localizers.csv",
+    #     help="Path to the CSV file containing localizer metadata for alignment."
+    # )
+
+    # parser.add_argument(
+    #     "--series_root", type=str,
+    #     default="data/series",
+    #     help="Root directory containing DICOM or NIfTI image series."
+    # )
 
     parser.add_argument(
         "--output_dir", type=str,

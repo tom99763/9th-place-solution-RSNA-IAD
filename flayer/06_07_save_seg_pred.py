@@ -23,7 +23,7 @@ from monai.inferers import sliding_window_inference
 # from monai.utils import set_determinism
 from tqdm.auto import tqdm
 import cc3d
-
+from scipy import ndimage
 
 def get_volume(base_dir,sid):
     files = glob.glob(f"{base_dir}/{sid}/*.dcm")
@@ -84,13 +84,11 @@ def get_volume(base_dir,sid):
         return None
     
 
-    img = percentile_clip_minmax_np(img, pmin=0.5, pmax=99.5)
+    img = percentile_clip_minmax_np(img, pmin=1.0, pmax=99.0) #0.5 99.0
 
     return img
 
-def predictor_highest(x):
-    out = model(x)
-    return out[0] if isinstance(out, (list, tuple)) else out
+
 
 
 def percentile_clip_minmax_np(img: torch.Tensor, pmin=1.0, pmax=99.0):
@@ -107,16 +105,33 @@ def percentile_clip_minmax_np(img: torch.Tensor, pmin=1.0, pmax=99.0):
 
     # 回 torch.float32，放回原本裝置
     return torch.from_numpy(arr).to(img.device)
-def save_seg_pred(img,save_dir,sid):
+def save_seg_pred(model,img,save_dir,sid,ROI_SIZE):
     os.makedirs(save_dir,exist_ok=True)
     if img.ndim == 3:
         img = img[None, ...]  # -> [C,H,W,D]
         
     sample = {"image": img}
+    val_tf = Compose([
+        SpatialPadd(
+            keys=["image"], 
+            spatial_size=ROI_SIZE,
+            method="symmetric", 
+            mode="constant", 
+            constant_values=0
+        ),
+        EnsureTyped(keys=["image"]),
+        ToTensord(keys=["image"]),
+    ])
+    
+    
     sample = val_tf(sample)
     
     img = sample["image"].to(device)  
     # === sliding-window 推論 ===
+    def predictor_highest(x):
+        out = model(x)
+        return out[0] if isinstance(out, (list, tuple)) else out
+    
     with torch.no_grad():
         logits = sliding_window_inference(
             img.unsqueeze(0), roi_size=ROI_SIZE, sw_batch_size=2,
@@ -160,7 +175,7 @@ def resize_volume_3d(volume,target_shape=(64,448,448)):
 
 
 def main(args):
-
+    global device
     base_dir = args.base_dir
     save_dir = args.save_dir
     device = args.device
@@ -168,6 +183,8 @@ def main(args):
     target_shape = tuple(args.target_shape)
     pred_resize_dir = args.pred_resize_dir
     axis_csv = args.axis_csv
+    
+    
 
     print(f"Base directory     : {base_dir}")
     print(f"Save directory     : {save_dir}")
@@ -176,7 +193,8 @@ def main(args):
     print(f"Target shape       : {target_shape}")
     print(f"Resize output dir  : {pred_resize_dir}")
     print(f"Axis CSV path      : {axis_csv}")
-
+    
+    os.makedirs(pred_resize_dir,exist_ok=True)
 
     axis_df=pd.read_csv(axis_csv)
     strides = [
@@ -209,17 +227,7 @@ def main(args):
     model.eval()
 
     ROI_SIZE    = (96,256,256) 
-    val_tf = Compose([
-        SpatialPadd(
-            keys=["image"], 
-            spatial_size=ROI_SIZE,
-            method="symmetric", 
-            mode="constant", 
-            constant_values=0
-        ),
-        EnsureTyped(keys=["image"]),
-        ToTensord(keys=["image"]),
-    ])
+    
 
 
     z_df=axis_df[axis_df["axis"]=="z"].reset_index(drop=True)
@@ -232,7 +240,7 @@ def main(args):
         
         try:
             volume=get_volume(base_dir,sid)
-            seg_pred=save_seg_pred(volume,save_dir,sid)
+            seg_pred=save_seg_pred(model,volume,save_dir,sid,ROI_SIZE)
             
             resized_v = resize_volume_3d(seg_pred,target_shape=target_shape)
             
@@ -266,7 +274,7 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--model_pth", type=str,
-        default="model/seg/job13_fold1_best.pt",
+        default="model/seg/dynunet_model_best.pth",
         help="Path to the trained segmentation model checkpoint."
     )
 

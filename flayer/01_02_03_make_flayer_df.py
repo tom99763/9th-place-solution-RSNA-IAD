@@ -276,7 +276,9 @@ class DICOMPreprocessorKaggle:
         """
         以 datasets 建 volume；同時把「resize 前的原始影像 shape」(height, width, depth) 記到 df_train：
           - orig_height, orig_width 取自於第一張 slice 的 img.shape
-          - orig_depth 為排序後的 slice 數量（或 3D frame 數）
+          - orig_depth 為排序後的 slice 數量（或 3D frame 數）csv_path = os.path.join(args.data_folder, "train.csv")
+            localize_csv_path = os.path.join(args.data_folder, "train_localizers.csv")
+            series_root = os.path.join(args.data_folder, "series")
         """
         first_ds = datasets[0]
         first_img = first_ds.pixel_array
@@ -327,9 +329,11 @@ def main(args):
 
     
     # 從 args 讀取參數
-    csv_path = args.csv_path
-    localize_csv_path = args.localize_csv_path
-    series_root = args.series_root
+    
+    
+    csv_path = os.path.join(args.data_folder, "train.csv")
+    localize_csv_path = os.path.join(args.data_folder, "train_localizers.csv")
+    series_root = os.path.join(args.data_folder, "series")
     output_dir = args.output_dir
 
     print(f"csv_path: {csv_path}")
@@ -483,16 +487,22 @@ def main(args):
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="RSNA 2025 preprocessing pipeline")
+    
+    parser.add_argument(
+        "--data_folder", type=str,
+        default="./data",
+        help="Root folder of RSNA Intracranial Aneurysm Detection dataset"
+    )
 
-    parser.add_argument("--csv_path", type=str,
-                        default="data/train.csv",
-                        help="Path to main training CSV file")
-    parser.add_argument("--localize_csv_path", type=str,
-                        default="data/train_localizers.csv",
-                        help="Path to localizer CSV file")
-    parser.add_argument("--series_root", type=str,
-                        default="data/series",
-                        help="Root directory of DICOM series")
+    # parser.add_argument("--csv_path", type=str,
+    #                     default="data/train.csv",
+    #                     help="Path to main training CSV file")
+    # parser.add_argument("--localize_csv_path", type=str,
+    #                     default="data/train_localizers.csv",
+    #                     help="Path to localizer CSV file")
+    # parser.add_argument("--series_root", type=str,
+    #                     default="data/series",
+    #                     help="Root directory of DICOM series")
     parser.add_argument("--output_dir", type=str,
                         default="output",
                         help="Output directory for generated data")
