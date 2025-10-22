@@ -733,7 +733,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument('--train_csv', type=str, default="./output/train_with_folds_optimized_axis_v1.csv")
     parser.add_argument('--localizer_csv', type=str, default="./output/train_locale_fnum.csv")
     parser.add_argument('--model_dir', type=str, default="./modoel/flayer")
-    parser.add_argument('--output_dir', type=str, default="./output")
+    parser.add_argument('--output_dir', type=str, default="./model/flayer")
     parser.add_argument('--fold', type=int, default=-1) #<0 means training all folds
     parser.add_argument('--num_folds', type=int, default=5)
     parser.add_argument('--seed', type=int, default=42)

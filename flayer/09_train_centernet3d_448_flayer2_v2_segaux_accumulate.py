@@ -680,7 +680,7 @@ def save_checkpoint(state: Dict[str, object], is_best: bool, cfg: TrainConfig, e
         cfg.output_dir,
         f"{cfg.encoder_name}_fold{fold}_epoch{epoch}.pth"
     )
-    torch.save(state, epoch_path)
+    #torch.save(state, epoch_path)
     if is_best and cfg.save_best:
         best_path = os.path.join(
             cfg.output_dir,
@@ -835,7 +835,7 @@ def parse_args() -> TrainConfig:
  
     parser.add_argument('--train_csv', type=str, default="output/train_with_folds_optimized_axis_v1.csv")
     parser.add_argument('--localizer_csv', type=str, default="output/train_locale_fnum.csv")
-    parser.add_argument('--output_dir', type=str, default="model/flayer")
+    parser.add_argument('--output_dir', type=str, default="./model/flayer")
     parser.add_argument('--fold', type=int, default=-1) #<0 means training all folds
     parser.add_argument('--num_folds', type=int, default=5)
     parser.add_argument('--seed', type=int, default=42)
@@ -981,8 +981,8 @@ def main() -> None:
                 'config': asdict(fold_cfg),
             }
 
-            if fold_cfg.checkpoint_every and (epoch + 1) % fold_cfg.checkpoint_every == 0:
-                save_checkpoint(state, False, fold_cfg, epoch + 1, fold)
+            # if fold_cfg.checkpoint_every and (epoch + 1) % fold_cfg.checkpoint_every == 0:
+            #     save_checkpoint(state, False, fold_cfg, epoch + 1, fold)
             if is_best:
                 save_checkpoint(state, True, fold_cfg, epoch + 1, fold)
 

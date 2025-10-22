@@ -32,5 +32,5 @@ python ./09_train_centernet3d_448_flayer2_v2_segaux_accumulate.py --device cuda:
 
 Get out-of-fold predictions
 ```python
-python flayer_model_oof_pred.py
+python flayer_model_oof_pred.py --output_dir ./model/flayer
 ```
