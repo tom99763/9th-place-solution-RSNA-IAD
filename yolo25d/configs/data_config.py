@@ -1,4 +1,4 @@
-data_path = './data'
+data_path = '../data'
 windows = {
     'CT': (40, 80),
     'CTA': (50, 350),

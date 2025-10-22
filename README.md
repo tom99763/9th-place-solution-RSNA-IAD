@@ -22,32 +22,41 @@ To reproduce yolo 2.5D
       ./get-data.sh
   ```
 
+  - After that `cd ./yolo25d`
+
+
+Run the following commands inside `yolo25d` directory.
+
 2. Prepare data:
 
 ```bash
-python3 ./yolo25d/prepare_yolo_dataset.py --generate-all-folds --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite --rgb-mode
+python3 ./prepare_yolo_dataset.py --generate-all-folds --out-name yolo_dataset --img-size 512 --label-scheme locations --yaml-out-dir configs --yaml-name-template yolo_fold{fold}.yaml --overwrite --rgb-mode
 ```
 
 3. Train YOLO 11m:
 
 ```bash
-python3 ./yolo25d/run_yolo_pipeline.py  --epochs 80 --img 512 --batch 32 --model yolo11m.pt --project yolo_aneurysm_locations --name yolo_11m --rgb-mode --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --cls 1.0
+python3 ./run_yolo_pipeline.py  --epochs 80 --img 512 --batch 32 --model yolo11m.pt --project yolo_aneurysm_locations --name yolo_11m --data-fold-template ./configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --cls 1.0
 ```
 
 4. Train Yolo with tf_efficientnetv2_s.in21k_ft_in1k backbone:
 
 ```bash
-python3 ./yolo25d/run_yolo_pipeline.py  --epochs 50 --img 512 --batch 32 --model yolo-11-effnetv2_s.yaml --project yolo_aneurysm_locations --name yolo_effnetv2 --rgb-mode --data-fold-template configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --cls 1.0
+python3 ./run_yolo_pipeline.py  --epochs 50 --img 512 --batch 32 --model yolo-11-effnetv2_s.yaml --project yolo_aneurysm_locations --name yolo_effnetv2 --data-fold-template ./configs/yolo_fold{fold}.yaml  --folds 0,1,2,3,4 --cls 1.0
 ```
 
-5. Strip best weights for trained yolo:
+After running the above training commands, the weights of the models will be available at: `./yolo_aneurysm_locations` (inside ./yolo25d).
+
+```bash
+ls ./yolo25d/yolo_aneurysm_locations/
+```
+
+This should folders of both `yolo_11m` and `yolo_effnetv2`, eg:
 
 ```
-python3 ./get_weights.py
+yolo_11m_fold0  
+yolo_effnetv2_fold0
 ```
-
-Now all the weights of the the trained YOLO(s) will be present under ./models with format: `yolo_{model_version}_fold{fold_number}.pt`
-
 
 ## EfficientV2s + 3D-CenterNet (Flayer)
 
@@ -75,3 +84,13 @@ meta_classifiers/label_encoder_sex.pkl
 
 
 ## Inference Pipeline
+
+After training Yolo, Flayer and meta classifier models. We can run inference. To run it use the following command:
+
+```bash
+python3 ./inference.py --data_path ./data/kaggle_evaluation/series --meta_cls_weight_path ./meta_classifiers --yolo_weight_path ./yolo25d/yolo_aneurysm_locations --flayer_weight_path ./flayer/flayer_weights
+```
+
+Note: You would might need to update the weight paths of these models.
+
+If you want to run the inference directly without training, then download the models from: `https://www.kaggle.com/models/tom99763/9th-place-models-rsna-iad/pyTorch/default`.
