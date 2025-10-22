@@ -62,14 +62,15 @@ Now all the weights of the the trained YOLO(s) will be present under ./models wi
 
 1. Generate trained weights of meta classifier:
 ```batch
-python3 ./train_meta_classifier.py
+python3 ./train_meta_classifier.py --data_path [data path of train.csv] --meta_cls_weight_path [the weights directory of meta classifiers] --yolo_weight_path [the weight directory of yolo] --flayer_weight_path [the weight directory of flayer]
 ```
 
 2. Output weights
 ```
-meta_classifier/cat/meta_classifier_[class name]_fold_fold[fold id].pkl
-meta_classifier/lgb/meta_classifier_[class name]_fold_fold[fold id].pkl
-meta_classifier/xgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifiers/cat/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifiers/lgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifiers/xgb/meta_classifier_[class name]_fold_fold[fold id].pkl
+meta_classifiers/label_encoder_sex.pkl
 ```
 
 
