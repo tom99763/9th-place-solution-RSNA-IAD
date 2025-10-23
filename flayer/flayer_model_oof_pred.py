@@ -58,6 +58,7 @@ def seed_everything(seed: int) -> None:
 class TrainConfig:
     npy_dir: str = "./npy"
     train_csv: str = "/ssd3/IAD/atom1231/input/train_with_folds_optimized_axis.csv"
+    fold_csv: str = "./output/train_with_folds_optimized_axis_v1.csv"
     localizer_csv: str = "/ssd3/IAD/atom1231/input/train_locale_fnum.csv"
     model_dir: str = "./modoel/flayer"
     output_dir: str = "/ssd3/IAD/atom1231/output/outputs_heatmap"
@@ -106,50 +107,17 @@ class TrainConfig:
 
 def load_metadata(cfg: TrainConfig) -> Tuple[pd.DataFrame, Dict[str, List[Dict[str, object]]]]:
     df = pd.read_csv(cfg.train_csv)
+    fold_df = pd.read_csv(cfg.fold_csv)
+
+    df = df.merge(fold_df[["SeriesInstanceUID","fold"]],on="SeriesInstanceUID",how="left")
+    df["fold"]=df["fold"].fillna(0)
+ 
     if 'fold' not in df.columns:
         raise KeyError("train CSV must contain a 'fold' column")
     df = df.set_index('SeriesInstanceUID')
-    locale = pd.read_csv(cfg.localizer_csv)
-    required_cols = {
-        'SeriesInstanceUID',
-        'SOPInstanceUID',
-        'label_x',
-        'label_y',
-        'label_frame_num',
-        'orig_height',
-        'orig_width',
-        'orig_depth',
-        'location',
-    }
-    missing = required_cols - set(locale.columns)
-    if missing:
-        raise KeyError(f"Missing columns in localizer CSV: {sorted(missing)}")
+    
 
-    locator_map: Dict[str, List[Dict[str, object]]] = {}
-    for _, row in locale.iterrows():
-        series_id = str(row['SeriesInstanceUID'])
-        location = str(row['location']).strip()
-        if location not in LABEL_COLS:
-            continue
-        label_x = row['label_x']
-        label_y = row['label_y']
-        label_frame = row['label_frame_num']
-        orig_h = row['orig_height']
-        orig_w = row['orig_width']
-        orig_d = row['orig_depth']
-        if any(pd.isna(v) for v in (label_x, label_y, label_frame, orig_h, orig_w, orig_d)):
-            continue
-        entry = {
-            'location': location,
-            'label_x': float(label_x),
-            'label_y': float(label_y),
-            'label_frame': float(label_frame),
-            'orig_height': float(orig_h),
-            'orig_width': float(orig_w),
-            'orig_depth': float(orig_d),
-        }
-        locator_map.setdefault(series_id, []).append(entry)
-    return df, locator_map
+    return df
 
 
 def draw_gaussian_3d(heatmap: np.ndarray, center: Tuple[float, float, float], sigma: float) -> None:
@@ -228,13 +196,13 @@ class RSNACenterNetDataset(Dataset):
         self,
         ids: List[str],
         meta: pd.DataFrame,
-        locator_map: Dict[str, List[Dict[str, object]]],
+        #locator_map: Dict[str, List[Dict[str, object]]],
         cfg: TrainConfig,
         is_train: bool,
     ) -> None:
         self.ids = ids
         self.meta = meta
-        self.locator_map = locator_map
+        #self.locator_map = locator_map
         self.cfg = cfg
         self.is_train = is_train
         self.labels = meta.loc[ids, LABEL_COLS].astype(np.float32).values
@@ -317,100 +285,32 @@ class RSNACenterNetDataset(Dataset):
             raise ValueError(f"Unexpected volume shape {volume.shape} for {series_id}")
         volume = volume.astype(np.float32)
         depth, height, width = volume.shape[1:]
-        lesions = self.locator_map.get(series_id, [])
-        lesions = [dict(les) for les in lesions]
-        if lesions:
-            for lesion in lesions:
-                orig_w = max(float(lesion['orig_width']), 1.0)
-                orig_h = max(float(lesion['orig_height']), 1.0)
-                orig_d = max(float(lesion['orig_depth']), 1.0)
-                lesion['label_x'] = float(lesion['label_x']) * width / orig_w
-                lesion['label_y'] = float(lesion['label_y']) * height / orig_h
-                lesion['label_frame'] = float(lesion['label_frame']) * depth / orig_d
-                lesion['orig_width'] = float(width)
-                lesion['orig_height'] = float(height)
-                lesion['orig_depth'] = float(depth)
+  
 
         if self.is_train:
             volume, affine_mat = self.apply_affine(volume)
-            if affine_mat is not None and lesions:
-                for lesion in lesions:
-                    x = float(lesion['label_x'])
-                    y = float(lesion['label_y'])
-                    new_x = affine_mat[0, 0] * x + affine_mat[0, 1] * y + affine_mat[0, 2]
-                    new_y = affine_mat[1, 0] * x + affine_mat[1, 1] * y + affine_mat[1, 2]
-                    lesion['label_x'] = np.clip(new_x, 0, width - 1)
-                    lesion['label_y'] = np.clip(new_y, 0, height - 1)
-            # if np.random.rand() < self.flip_prob:
-            #     volume = volume[..., ::-1]
-            #     width = volume.shape[-1]
-            #     if lesions:
-            #         for lesion in lesions:
-            #             lesion['label_x'] = width - 1 - float(lesion['label_x'])
+            
             if np.random.rand() < self.flip_prob:
                 volume = volume[..., ::-1, :]
                 height = volume.shape[-2]
-                if lesions:
-                    for lesion in lesions:
-                        lesion['label_y'] = height - 1 - float(lesion['label_y'])
+ 
         out_shape = (
             max(1, depth // self.cfg.output_stride_depth),
             max(1, height // self.cfg.output_stride_height),
             max(1, width // self.cfg.output_stride_width),
         )
-        #print("hihi")
-        #print(volume.shape)  # (1, 32, 448, 448)
-
-        # # Albumentations 逐切片轉 tensor
-        # slices = []
-        # for z in range(depth):
-        #     slice_img = volume[:, z]
-        #     slice_img = slice_img.transpose(1, 2, 0)  # (H,W,C)
-        #     transformed = self.transform(image=slice_img)
-        #     tensor_slice = transformed['image']  # (C, H, W)
-        #     slices.append(tensor_slice)
-        # volume_tensor = torch.stack(slices, dim=1)  # (C, D, H, W)
-        # print(volume_tensor.shape)  # torch.Size([1, 32, 448, 448])
-        #raise
-
-        #3d ok1
-        # volume shape: (D, H, W)
+        
         volume = volume.squeeze(0)  # (D, H, W)
         image = volume.transpose(1, 2, 0)
         #print(image.shape)
         transformed = self.transform(image=image)
         tensor = transformed['image']  # (D, H, W)
         volume_tensor = tensor.unsqueeze(0)  # (d, 1, H, W)
-        # print(volume_tensor.shape)  # torch.Size([1, 32, 448, 448])
-        # # raise
-
-        # #3d+2d
-        # volume = volume.squeeze(0) 
-        # # 1) 先做 TorchIO 3D Normalize（語意正確）
-        # #volume = self._tio_normalize(volume)   # (D, H, W) float32
-        # volume = self._zscore_normalize_volume(volume)  # (D, H, W) float32
-        # #print(volume.shape)  # (32, 448, 448)
-        # # 2) 再用原本的 Albumentations pipeline（逐 slice 處理）
-        # volume_tensor = self._apply_albu_per_slice(volume)  # (1, D, H', W')
-        # #print(volume_tensor.shape)  # torch.Size([1, 32, 448, 448])
-
-        heatmap, offset, offset_mask, center_index = build_targets(
-            lesions=lesions,
-            volume_shape=(depth, height, width),
-            out_shape=out_shape,
-            stride_depth=self.cfg.output_stride_depth,
-            stride_height=self.cfg.output_stride_height,
-            stride_width=self.cfg.output_stride_width,
-            num_classes=len(VESSEL_LABELS),
-            sigma=self.cfg.gaussian_sigma,
-            default_depth_factor=self.cfg.default_depth_factor,
-        )
+    
         sample = {
             'id': series_id,
             'image': volume_tensor,
-            'heatmap': torch.from_numpy(heatmap),
-            'offset': torch.from_numpy(offset),
-            'offset_mask': torch.from_numpy(offset_mask),
+      
             'labels': torch.from_numpy(self.labels[idx]),
         }
         return sample
@@ -445,12 +345,7 @@ class CenterNet3D(nn.Module):
     def __init__(self, cfg: TrainConfig, num_classes: int) -> None:
         super().__init__()
         self.cfg = cfg
-        # self.backbone = timm.create_model(
-        #     cfg.encoder_name,
-        #     pretrained=cfg.pretrained_encoder,
-        #     features_only=True,
-        #     out_indices=(-1,),
-        # )
+ 
 
         self.backbone = timm.create_model(
             cfg.encoder_name,
@@ -458,14 +353,6 @@ class CenterNet3D(nn.Module):
             features_only=True,
             out_indices=(-2,),
         )
-
-        # self.backbone = timm.create_model(
-        #     cfg.encoder_name,
-        #     pretrained=cfg.pretrained_encoder,
-        #     features_only=True,
-        #     out_indices=(-1,),
-        #     in_chans=32
-        # )
 
 
         if cfg.freeze_encoder:
@@ -579,30 +466,6 @@ class CenterNet3DInfer(nn.Module):
         return {"heatmap": heatmap, "offset": offset}
 
 
-def centernet_focal_loss(pred: torch.Tensor, target: torch.Tensor, alpha: float = 2.0, beta: float = 4.0) -> torch.Tensor:
-    pred_sigmoid = torch.sigmoid(pred).clamp(1e-6, 1 - 1e-6)
-    pos_inds = target.eq(1.0)
-    neg_inds = target.lt(1.0)
-    pos_loss = torch.log(pred_sigmoid) * torch.pow(1 - pred_sigmoid, alpha)
-    neg_loss = torch.log(1 - pred_sigmoid) * torch.pow(pred_sigmoid, alpha) * torch.pow(1 - target, beta)
-    num_pos = pos_inds.sum()
-    pos_loss = pos_loss[pos_inds]
-    neg_loss = neg_loss[neg_inds]
-    loss = 0.0
-    if num_pos > 0:
-        loss += -pos_loss.sum() / num_pos
-    else:
-        loss += 0.0
-    loss += -neg_loss.mean()
-    return loss
-
-
-# def compute_class_logits(heatmap_logits: torch.Tensor) -> torch.Tensor:
-#     b, c, d, h, w = heatmap_logits.shape
-#     flat = heatmap_logits.view(b, c, -1)
-#     class_logits = flat.max(dim=2).values
-#     presence_logits = class_logits.max(dim=1, keepdim=True).values
-#     return torch.cat([class_logits, presence_logits], dim=1)
 
 
 
@@ -610,13 +473,12 @@ def compute_class_logits(heatmap_logits: torch.Tensor) -> torch.Tensor:
     b, c, d, h, w = heatmap_logits.shape
     flat = heatmap_logits.view(b, c, -1)
     class_logits = flat.max(dim=2).values
-
-    #presence_logits = class_logits.max(dim=1, keepdim=True).values
-
-    # 使用 LogSumExp 聚合13個類別的證據
-    presence_logits = torch.logsumexp(class_logits, dim=1, keepdim=True) # Shape: (b, 1)
-
+    presence_logits = class_logits.max(dim=1, keepdim=True).values
     return torch.cat([class_logits, presence_logits], dim=1)
+
+
+
+
 
 
 def compute_auc(targets: List[np.ndarray], preds: List[np.ndarray]) -> Dict[str, float]:
@@ -649,9 +511,9 @@ def compute_auc(targets: List[np.ndarray], preds: List[np.ndarray]) -> Dict[str,
 
 
 @torch.no_grad()
-def validate_epoch(model: CenterNet3D, loader: DataLoader, cfg: TrainConfig) -> Tuple[float, Dict[str, float]]:
+def inference(model: CenterNet3D, loader: DataLoader, cfg: TrainConfig) -> Tuple[float, Dict[str, float]]:
     model.eval()
-    total_loss = 0.0
+    # total_loss = 0.0
     targets: List[np.ndarray] = []
     preds: List[np.ndarray] = []
     sids_list: List[str] = []
@@ -659,23 +521,12 @@ def validate_epoch(model: CenterNet3D, loader: DataLoader, cfg: TrainConfig) -> 
         sids=batch["id"]
         sids_list.append(sids)
         images = batch['image'].to(cfg.device, non_blocking=True)
-        heatmap_target = batch['heatmap'].to(cfg.device)
-        offset_target = batch['offset'].to(cfg.device)
-        offset_mask = batch['offset_mask'].to(cfg.device)
+    
         labels = batch['labels'].to(cfg.device)
         outputs = model(images)
-        heat_loss = centernet_focal_loss(outputs['heatmap'], heatmap_target)
-        if offset_mask.sum() > 0:
-            pred_offset = outputs['offset'].permute(0, 2, 3, 4, 1)
-            tgt_offset = offset_target.permute(0, 2, 3, 4, 1)
-            mask = offset_mask.squeeze(1) > 0
-            offset_loss = F.l1_loss(pred_offset[mask], tgt_offset[mask])
-        else:
-            offset_loss = torch.tensor(0.0, device=cfg.device)
+
         class_logits = compute_class_logits(outputs['heatmap'])
-        cls_loss = F.binary_cross_entropy_with_logits(class_logits, labels)
-        loss = cfg.heatmap_loss_weight * heat_loss + cfg.offset_loss_weight * offset_loss + cfg.cls_loss_weight * cls_loss
-        total_loss += loss.item()
+    
         probs = torch.sigmoid(class_logits).cpu().numpy()
         preds.append(probs)
         targets.append(labels.cpu().numpy())
@@ -730,9 +581,10 @@ def parse_args() -> TrainConfig:
     #parser.add_argument('--npy_dir', type=str, default="/home/ubuntu/work/data1/kaggle/2025_rsna/pre_volumes_withlabel_448")
     parser.add_argument('--npy_dir', type=str, default="./output/pre_volumes_withlabel_448_64")
  
-    parser.add_argument('--train_csv', type=str, default="./output/train_with_folds_optimized_axis_v1.csv")
+    parser.add_argument('--fold_csv', type=str, default="./output/train_with_folds_optimized_axis_v1.csv")
+    parser.add_argument('--train_csv', type=str, default="./data/train.csv")
     parser.add_argument('--localizer_csv', type=str, default="./output/train_locale_fnum.csv")
-    parser.add_argument('--model_dir', type=str, default="./modoel/flayer")
+    parser.add_argument('--model_dir', type=str, default="./model/flayer")
     parser.add_argument('--output_dir', type=str, default="./model/flayer")
     parser.add_argument('--fold', type=int, default=-1) #<0 means training all folds
     parser.add_argument('--num_folds', type=int, default=5)
@@ -798,7 +650,8 @@ def main() -> None:
     seed_everything(cfg.seed)
     if cfg.device.startswith('cuda') and not torch.cuda.is_available():
         cfg.device = 'cpu'
-    meta, locator_map = load_metadata(cfg)
+    #meta, locator_map = load_metadata(cfg)
+    meta = load_metadata(cfg)
     if 'fold' not in meta.columns:
         raise KeyError("train CSV must include a 'fold' column")
     #fold<0 means training all folds
@@ -819,7 +672,8 @@ def main() -> None:
         print(f"Train {len(train_ids)} series, Valid {len(valid_ids)} series")
 
         # train_ds = RSNACenterNetDataset(train_ids, meta, locator_map, fold_cfg, is_train=True)
-        valid_ds = RSNACenterNetDataset(valid_ids, meta, locator_map, fold_cfg, is_train=False)
+        #valid_ds = RSNACenterNetDataset(valid_ids, meta, locator_map, fold_cfg, is_train=False)
+        valid_ds = RSNACenterNetDataset(valid_ids, meta, fold_cfg, is_train=False)
         # train_loader = DataLoader(
         #     train_ds,
         #     batch_size=fold_cfg.batch_size,
@@ -844,7 +698,7 @@ def main() -> None:
         
         
         
-        fold_sid,fold_preds,metrics = validate_epoch(model, valid_loader, fold_cfg)
+        fold_sid,fold_preds,metrics = inference(model, valid_loader, fold_cfg)
         mean_auc = metrics.get('mean_auc', float('nan'))
         weighted_auc = metrics.get('weighted_auc', float('nan'))
         print(f"mean_auc {mean_auc:.4f} weighted_auc {weighted_auc:.4f}")
@@ -861,6 +715,7 @@ def main() -> None:
         all_oof.append(fold_df)
     oof_df = pd.concat(all_oof, ignore_index=True)
     oof_df.to_csv(f"{cfg.output_dir}/flayer_oof_df.csv",index=False)
+    print(len(oof_df))
 
 if __name__ == '__main__':
     main()
